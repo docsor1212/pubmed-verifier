@@ -1,12 +1,16 @@
 ---
 name: pubmed-verifier
 description: >
+  Batch PubMed citation verifier — detect AI-fabricated references in one click.
+  Five-state verdict: ✅ Correct / ⚠️ Mismatch (PMID points to different paper) / 🔶 Partial / ❌ Invalid / ❓ Unknown.
+  Auto-parses citation context, cross-checks claimed vs actual metadata (title/authors/journal/year) with fuzzy matching.
+  Supports 70+ medical abbreviation expansion, auto-suggests correct PMIDs, SQLite incremental cache, CSV/JSON claims input, Crossref DOI verification.
+  Generates HTML/JSON/CLI reports. Zero dependencies, runs fully local.
+
   PubMed文献引用批量验证工具 — 一键检测AI编造的虚假文献引用。
   五态验证：✅正确 / ⚠️PMID指向不同论文 / 🔶部分匹配 / ❌PMID不存在 / ❓元数据不足。
-  自动解析引用上下文，交叉比对claimed vs actual元数据（标题/作者/期刊/年份）。
-  支持70+医学缩写展开，自动推荐正确PMID，SQLite缓存加速，CSV/JSON claims输入，Crossref DOI验证。
-  生成HTML/JSON/文本报告。
-  适用场景：学术论文引用审查、医学/临床HTML文件审计、系统综述质量控制、药物警戒文献核查。
+  自动解析引用上下文，交叉比对元数据，支持70+医学缩写展开，自动推荐正确PMID，SQLite缓存，CSV/JSON输入，Crossref DOI验证。
+  适用场景：学术论文引用审查、医学/临床HTML审计、系统综述质量控制、药物警戒文献核查。
   适合研究人员、医学写作者、药物警戒团队、循证医学项目使用。
   Keywords: PMID验证, PubMed引用核查, 文献审计, AI幻觉检测, 学术写作, 医学文献,
   批量验证, 引用核对, 论文引用检查, reference validation, citation audit,
