@@ -61,3 +61,7 @@ Audited a 35-file pediatric rheumatology evidence library (225 PMID citations):
 ## License
 
 MIT
+
+## Download History
+
+[![Download History](https://skill-history.com/chart/docsor1212/pubmed-verifier.svg)](https://skill-history.com/docsor1212/pubmed-verifier)
