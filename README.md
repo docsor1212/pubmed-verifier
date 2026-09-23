@@ -9,12 +9,13 @@ Academic projects routinely contain hundreds of PMID citations. Manual verificat
 ## Features
 
 - **Batch verification** — Scan entire project directories, extract all PMIDs, verify against PubMed in one run
-- **Existence check** — Confirm every PMID resolves to a real article
-- **Metadata validation** — Title, authors, journal, date, DOI all retrieved
+- **Mismatch detection** — Five-state verdicts catch a REAL PMID pointing to a DIFFERENT paper (the most common AI hallucination)
+- **Metadata validation** — Title, authors, journal and date fuzzy-compared against your claims (DOI cross-checked via Crossref with `--verify-doi`)
+- **Dual sources** — NCBI E-utilities primary, Europe PMC automatic fallback when NCBI is unreachable
+- **Network hardening** — Optional NCBI API key (3x faster batches), Crossref polite pool, 429 Retry-After backoff, UA rotation, per-host circuit breaker
 - **Content matching** — Keyword overlap scoring flags potentially irrelevant citations
-- **Smart cross-domain detection** — Flags low-match items for human review without auto-deleting valid cross-references (e.g., HLH guidelines cited in disease-specific MAS cases)
 - **Replacement search** — Find correct PMIDs for broken citations via PubMed search
-- **Multiple output formats** — HTML report, JSON, or terminal summary
+- **Multiple output formats** — HTML report, JSON (with per-entry metadata origin), or terminal summary
 
 ## Quick Start
 
@@ -28,8 +29,8 @@ python3 scripts/verify_pmids.py --source /path/to/project --output report.html
 # Verify specific PMIDs
 python3 scripts/verify_pmids.py --pmids 31018962,22213727,999999999
 
-# With content matching
-python3 scripts/verify_pmids.py --source ./papers --match-keywords --threshold 0.2
+# Institutional mode: API key + polite pool
+python3 scripts/verify_pmids.py --source ./papers --verify-doi --ncbi-api-key $NCBI_API_KEY --mailto you@lab.org
 ```
 
 ## Use Cases
@@ -52,12 +53,14 @@ Audited a 35-file pediatric rheumatology evidence library (225 PMID citations):
 
 ## Technical Details
 
-- **API**: PubMed E-utilities (esummary, esearch) — no API key required
-- **Rate limit**: 3 req/s (free), 0.4s batch delay built-in
+- **APIs**: PubMed E-utilities (esummary, esearch); Europe PMC fallback; Crossref DOI check
+- **Rate limit**: 3 req/s free (0.4s batch delay), 10 req/s with `--ncbi-api-key` (0.12s)
+- **Resilience**: 429 Retry-After backoff, 403/406 UA rotation, per-host circuit breaker
 - **Batch size**: 50 PMIDs per request
 - **File types**: `.html`, `.md`, `.txt`, `.json`, `.htm`
 - **PMID patterns**: `PMID: 12345678`, `PubMed: 12345678`, `pubmed.ncbi.nlm.nih.gov/12345678/`
+- **Exit codes**: 0 clean / 1 problems found / 2 network-incomplete
 
 ## License
 
-MIT
+MIT-0
