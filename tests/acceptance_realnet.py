@@ -48,7 +48,7 @@ def fetch_real(pmid):
     return vp.fetch_summaries([pmid], batch_size=1)[pmid]
 
 
-print("== pubmed-verifier v2.4.0 real-network acceptance ==")
+print("== pubmed-verifier v2.5.0 real-network acceptance ==")
 
 # ── T0: ground truth reachable ──
 truth = {}

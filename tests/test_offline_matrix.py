@@ -303,7 +303,7 @@ class TestCli(_Reset):
         script = Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"
         out = subprocess.run([sys.executable, str(script), "--version"],
                              capture_output=True, text=True)
-        self.assertIn("2.4.0", out.stdout + out.stderr)
+        self.assertIn("2.5.0", out.stdout + out.stderr)
 
     def test_host_key_granularity(self):
         self.assertEqual(vp._host_key("https://eutils.ncbi.nlm.nih.gov/a?b=c"),
@@ -455,6 +455,78 @@ class TestJournalAbbrev(_Reset):
         # words present but out of order must NOT match
         self.assertFalse(vp._journal_abbrev_match(
             "Med Engl J N", "New England Journal of Medicine"))
+
+
+class TestAuthorVerification(_Reset):
+    """v2.5.0 author-name verification (initials + CJK cross-language)."""
+
+    def test_initial_only_claim_never_matches(self):
+        claimed = {"claimed_title": "", "claimed_authors": ["A"],
+                   "claimed_journal": "", "claimed_year": ""}
+        actual = {"title": "", "authors": ["Zaripova A"], "journal": "", "pubdate": ""}
+        r = vp.cross_check_citation(claimed, actual)
+        self.assertFalse(r["author_match"])   # "a" must not substring-hit
+
+    def test_initials_dropped_both_sides(self):
+        claimed = {"claimed_title": "", "claimed_authors": ["Zaripova", "A."],
+                   "claimed_journal": "", "claimed_year": ""}
+        actual = {"title": "", "authors": ["A Zaripova", "B Smith"], "journal": "", "pubdate": ""}
+        r = vp.cross_check_citation(claimed, actual)
+        # "A." dropped from claims; "A Zaripova"→"zaripova" (not "a"); hit via zaripova
+        self.assertTrue(r["author_match"])
+
+    def test_cjk_vs_latin_skipped_not_mismatch(self):
+        claimed = {"claimed_title": "", "claimed_authors": ["张三"],
+                   "claimed_journal": "", "claimed_year": ""}
+        actual = {"title": "", "authors": ["Zhang San"], "journal": "", "pubdate": ""}
+        r = vp.cross_check_citation(claimed, actual)
+        self.assertEqual(r.get("author_check"), "skipped (cross-language CJK↔Latin)")
+        self.assertEqual(r["verdict"], "unknown")   # nothing comparable → honest unknown
+
+    def test_cjk_skip_falls_back_to_other_fields(self):
+        claimed = {"claimed_title": "", "claimed_authors": ["张三"],
+                   "claimed_journal": "Lancet", "claimed_year": "2007"}
+        actual = {"title": "", "authors": ["Zhang San"], "journal": "Lancet",
+                  "pubdate": "2007 Jun"}
+        r = vp.cross_check_citation(claimed, actual)
+        self.assertEqual(r.get("author_check"), "skipped (cross-language CJK↔Latin)")
+        self.assertTrue(r["journal_match"] and r["year_match"])
+        # review P1: comparable fields unanimous -> correct, never mismatch
+        self.assertEqual(r["verdict"], "correct")
+
+    def test_claimed_full_name_token_extracted(self):
+        # "Zaripova A" as a claimed token must extract to "zaripova" (v2.5.0)
+        claimed = {"claimed_title": "", "claimed_authors": ["Zaripova A"],
+                   "claimed_journal": "", "claimed_year": ""}
+        actual = {"title": "", "authors": ["Zaripova A"], "journal": "", "pubdate": ""}
+        r = vp.cross_check_citation(claimed, actual)
+        self.assertTrue(r["author_match"])
+
+    def test_mixed_language_partial_skip(self):
+        # Latin token stays comparable, CJK token ignored (per-token skip)
+        claimed = {"claimed_title": "", "claimed_authors": ["Smith", "张三"],
+                   "claimed_journal": "", "claimed_year": ""}
+        actual = {"title": "", "authors": ["Smith J"], "journal": "", "pubdate": ""}
+        r = vp.cross_check_citation(claimed, actual)
+        self.assertTrue(r["author_match"])
+        self.assertIn("partial skip", r.get("author_check", ""))
+
+    def test_mismatch_details_not_fabricated(self):
+        # title never claimed -> details must not say "title differs"
+        claimed = {"claimed_title": "", "claimed_authors": ["Ravelli"],
+                   "claimed_journal": "", "claimed_year": ""}
+        actual = {"title": "", "authors": ["Smith J"], "journal": "", "pubdate": ""}
+        r = vp.cross_check_citation(claimed, actual)
+        self.assertEqual(r["verdict"], "mismatch")
+        self.assertNotIn("title differs", r["details"])
+        self.assertIn("author differs", r["details"])
+
+    def test_regression_latin_match_unchanged(self):
+        claimed = {"claimed_title": "", "claimed_authors": ["Zaripova"],
+                   "claimed_journal": "", "claimed_year": ""}
+        actual = {"title": "", "authors": ["Zaripova A"], "journal": "", "pubdate": ""}
+        r = vp.cross_check_citation(claimed, actual)
+        self.assertTrue(r["author_match"])
 
 
 class TestRetraction(_Reset):

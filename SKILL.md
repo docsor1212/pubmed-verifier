@@ -2,25 +2,25 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 2.4.0
+version: 2.5.0
 description: >-
   Batch-verify PMID citations against PubMed and catch the hallucination that
-  existence checks miss: a REAL PMID pointing to a DIFFERENT paper (the most
-  common AI-fabricated citation). Five-state verdicts (correct / mismatch /
-  partial / invalid / unknown), citation-context parsing, dual fuzzy matching,
-  Crossref DOI cross-check, retraction detection (RETRACTED papers capped at
-  partial), correct-PMID suggestion, SQLite cache, CSV/JSON claims,
-  HTML/JSON/text reports. Dual data sources with automatic Europe PMC
+  existence checks miss — a REAL PMID pointing to a DIFFERENT paper (the most
+  common AI-fabricated citation). Five-state citation verification (correct /
+  mismatch / partial / invalid / unknown), citation-context parsing, dual
+  fuzzy matching, Crossref DOI cross-check, retraction detection (RETRACTED
+  papers capped at partial), correct-PMID suggestion, SQLite cache, CSV/JSON
+  claims, HTML/JSON/text reports. Dual data sources with automatic Europe PMC
   fallback, optional NCBI API key (faster batches), Crossref polite pool,
   Retry-After backoff, UA rotation, host circuit breaker. Network failures are
   honestly reported as unverified, never as "not found". Zero dependencies,
-  runs fully local. Triggers: verify PMIDs, check citations, validate
+  runs fully local. Triggers — verify PMIDs, check citations, validate
   references, citation audit, reference check, PMID check, audit references,
   batch verify references, AI hallucination detection, verify DOI, DOI check,
   validate citations, PubMed citation verifier.
 ---
 
-# PubMed Citation Verifier v2.4.0
+# PubMed Citation Verifier v2.5.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -119,6 +119,36 @@ Known limits: highly ambiguous abbreviations can over-match at the
 journal-only level ("J Immunol" ~ "Journal of Immunology Research") — the
 title remains the decisive field. A DOI-splice flag can also appear on an
 otherwise-unverifiable citation (the DOI mismatch is an independent fact).
+
+## v2.5.0 — author-name verification
+
+- **Initials never match**: single-letter tokens ("A.", "L.") on either side
+  are excluded from surname matching — an initial is not evidence, and
+  substring-matching one produced false author hits.
+- **Cross-language honesty**: CJK author names claimed against Latin
+  registry records (or the reverse) are skipped, not counted as a mismatch —
+  the report marks them `author_check: skipped` and the verdict falls back
+  to what was actually comparable (title/journal/year), or to ❓ unknown
+  when nothing else is checkable.
+
+## Security & behavior declaration
+
+- Single-run CLI: scan, verify, write the report, exit. No daemons, no
+  background jobs, nothing downloaded or installed at runtime (pure standard
+  library, zero dependencies).
+- Network access is limited to these official academic registries, always
+  over HTTPS: `eutils.ncbi.nlm.nih.gov`, `www.ebi.ac.uk` (Europe PMC),
+  `api.crossref.org`. No other hosts are contacted; no telemetry, no
+  analytics, no data collection — the only outbound payloads are the PMIDs,
+  DOIs and titles you asked to verify.
+- Your files and reports stay on your machine. Writes are limited to the
+  report paths you pass and the SQLite cache under
+  `~/.cache/pubmed-verifier/` (`--no-cache` to disable).
+- Optional environment variables `NCBI_API_KEY` / `PUBMED_VERIFIER_MAILTO`
+  authenticate or attribute your own API requests and are never sent
+  anywhere else.
+- No OS integration: no subprocesses, no system services, no privilege
+  changes, no scheduled tasks.
 
 ## How it works
 
@@ -226,7 +256,7 @@ Feed the full citation via `--claims-file` for a precise verdict.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v2.4.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v2.5.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref API notes |
 | `tests/` | Offline matrix + real-network acceptance (repo only, not in the package) |
 

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v2.4.0
+PMID Citation Verifier -- PubMed E-utilities API v2.5.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
+Author verification (v2.5.0): single-letter initials never take part in
+surname matching, and CJK↔Latin cross-language author names are skipped
+honestly (no fabricated mismatches).
 Retraction detection (v2.3.0): with --verify-doi, papers Crossref lists as
 RETRACTED are flagged and their verdict capped at partial (human review required).
 DOI↔PMID cross-check (v2.4.0): a claimed DOI that differs from the DOI
@@ -58,7 +61,7 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_UA_TOOL = "pubmed-verifier/2.4 (+PMID citation verifier; stdlib-only)"
+_UA_TOOL = "pubmed-verifier/2.5 (+PMID citation verifier; stdlib-only)"
 _UA_BROWSER = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 _CIRCUIT_THRESHOLD = 2  # call-level consecutive transport failures per host
@@ -555,22 +558,62 @@ def cross_check_citation(claimed: dict, actual: dict) -> dict:
 
     # --- Author match ---
     if claimed.get("claimed_authors") and actual.get("authors"):
+        def _has_cjk(s: str) -> bool:
+            # CJK ideographs + kana + Hangul + ext-A: cross-language tokens
+            return any('\u3040' <= ch <= '\u30ff' or '\u3400' <= ch <= '\u4dbf'
+                       or '\u4e00' <= ch <= '\u9fff' or '\uac00' <= ch <= '\ud7af'
+                       for ch in s)
+
+        def _extract_surname(name: str) -> str:
+            parts = name.split()
+            if not parts:
+                return ""
+            if len(parts) == 1:
+                surname = parts[0]
+            elif len(parts[0]) == 1 or (len(parts[0]) == 2 and parts[0].endswith(".")) \
+                    or "." in parts[0]:
+                surname = parts[-1]   # initials-first "A Zaripova" / "J.-P. Martin"
+            else:
+                surname = parts[0]    # esummary format "Zaripova A" → Zaripova
+            return surname.lower().rstrip(".")
+
         actual_surnames = []
         for a in actual["authors"][:10]:
-            parts = a.split()
-            if parts:
-                # Take last name (surname)
-                surname = parts[-1] if len(parts) == 1 else parts[0]
-                actual_surnames.append(surname.lower())
-        
-        claimed_lower = [s.lower() for s in claimed["claimed_authors"]]
-        hits = sum(1 for c in claimed_lower if any(c in a for a in actual_surnames))
-        
-        if len(claimed_lower) >= 2:
-            result["author_match"] = hits >= 2
-        else:
-            result["author_match"] = hits >= 1
-        checks_run += 1
+            surname = _extract_surname(a)
+            if len(surname) >= 2:      # single-letter initials never match (CH v1.7)
+                actual_surnames.append(surname)
+
+        claimed_all = []
+        for s in claimed["claimed_authors"]:
+            token = _extract_surname(str(s))
+            if len(token) >= 2:        # drop initials ("A." → "a")
+                claimed_all.append(token)
+
+        claimed_cjk = any(_has_cjk(s) for s in claimed_all)
+        actual_cjk = any(_has_cjk(a) for a in actual_surnames)
+        claimed_list = claimed_all
+        full_skip = False
+        if claimed_all and actual_surnames and claimed_cjk != actual_cjk:
+            # Cross-language tokens carry no signal (CH v1.7): drop them on
+            # the claimed side; if nothing comparable remains, skip honestly.
+            kept = [s for s in claimed_all if _has_cjk(s) == actual_cjk]
+            if kept:
+                claimed_list = kept
+                result["author_check"] = "partial skip: cross-language token(s) ignored"
+            else:
+                claimed_list = []
+                full_skip = True
+                result["author_check"] = "skipped (cross-language CJK↔Latin)"
+
+        if full_skip:
+            result["author_match"] = False
+        elif claimed_list and actual_surnames:
+            hits = sum(1 for c in claimed_list if any(c in a for a in actual_surnames))
+            if len(claimed_list) >= 2:
+                result["author_match"] = hits >= 2
+            else:
+                result["author_match"] = hits >= 1
+            checks_run += 1
 
     # --- Journal match ---
     if claimed.get("claimed_journal") and actual.get("journal"):
@@ -594,6 +637,15 @@ def cross_check_citation(claimed: dict, actual: dict) -> dict:
         checks_run += 1
 
     # --- Compute confidence ---
+    if checks_run == 0:
+        # Nothing comparable was checked. Honest answer: unknown, never a
+        # fabricated mismatch.
+        if result.get("author_check"):
+            result["details"] = ("author names skipped (cross-language CJK↔Latin); "
+                                 "no other claimed metadata to check")
+        else:
+            result["details"] = "Insufficient claimed metadata for cross-check"
+        return result
     match_count = sum([result["title_match"], result["author_match"], 
                        result["journal_match"], result["year_match"]])
     result["confidence"] = match_count / max(checks_run, 1)
@@ -604,6 +656,18 @@ def cross_check_citation(claimed: dict, actual: dict) -> dict:
     if not claimed.get("claimed_title") and not claimed.get("claimed_authors"):
         result["verdict"] = "unknown"
         result["details"] = "Insufficient claimed metadata for cross-check"
+        return result
+
+    author_skipped = bool(result.get("author_check"))
+
+    # Cross-language author skip + no claimed title + all comparable fields
+    # match: the comparable evidence is unanimous -- correct, not mismatch
+    # (v2.5.0 review P1).
+    if author_skipped and not claimed.get("claimed_title") \
+            and result["journal_match"] and result["year_match"]:
+        result["verdict"] = "correct"
+        result["details"] = ("author skipped (cross-language); all comparable "
+                             "fields match")
         return result
 
     if result["title_match"] and (result["author_match"] or result["journal_match"]):
@@ -620,13 +684,13 @@ def cross_check_citation(claimed: dict, actual: dict) -> dict:
         details_parts.append("title matches but author/journal not claimed or differ")
     else:
         result["verdict"] = "mismatch"
-        if not result["title_match"]:
+        if claimed.get("claimed_title") and not result["title_match"]:
             details_parts.append("title differs")
-        if not result["author_match"]:
+        if not author_skipped and not result["author_match"]:
             details_parts.append("author differs")
-        if not result["journal_match"]:
+        if claimed.get("claimed_journal") and not result["journal_match"]:
             details_parts.append("journal differs")
-        if not result["year_match"]:
+        if claimed.get("claimed_year") and not result["year_match"]:
             details_parts.append("year differs")
 
     result["details"] = "; ".join(details_parts) if details_parts else "all metadata matches"
@@ -1139,14 +1203,14 @@ tr.invalid{{background:#ffebee;}}
 <th>Journal</th><th>Date</th><th>Details</th><th>Suggested</th>{"<th>Relevance</th>" if unmatched else ""}
 </tr>
 {rows}</table>
-<div class="footer">Generated by pubmed-verifier skill (v2.4) · {time.strftime("%Y-%m-%d %H:%M")}</div>
+<div class="footer">Generated by pubmed-verifier skill (v2.5) · {time.strftime("%Y-%m-%d %H:%M")}</div>
 </body></html>"""
 
 
 # ── Main ──
 
 def main():
-    parser = argparse.ArgumentParser(description="PMID Citation Verifier v2.4.0 -- Five-state verification with caching, CSV, DOI support, retraction detection, DOI-splice cross-check, journal abbreviation matching, and dual-source network hardening")
+    parser = argparse.ArgumentParser(description="PMID Citation Verifier v2.5.0 -- Five-state verification with caching, CSV, DOI support, retraction detection, DOI-splice cross-check, journal abbreviation and author-name matching, and dual-source network hardening")
     parser.add_argument("--source", help="File or directory to scan for PMIDs")
     parser.add_argument("--pmids", help="Comma-separated PMIDs to verify directly")
     parser.add_argument("--claims", help="JSON string with claimed metadata: [{pmid,title,authors,journal,year},...]")
@@ -1168,7 +1232,7 @@ def main():
     parser.add_argument("--meta-source", choices=["auto", "ncbi", "europepmc"], default="auto",
                         help="Metadata source: auto = NCBI with Europe PMC fallback (default)")
     parser.add_argument("--timeout", type=float, default=20, help="Per-request timeout seconds (default: 20)")
-    parser.add_argument("--version", action="version", version="pubmed-verifier 2.4.0")
+    parser.add_argument("--version", action="version", version="pubmed-verifier 2.5.0")
     args = parser.parse_args()
 
     _OPTS["ncbi_key"] = args.ncbi_api_key or os.environ.get("NCBI_API_KEY", "")
@@ -1374,6 +1438,8 @@ def main():
                 entry["author_match"] = cross["author_match"]
                 entry["journal_match"] = cross["journal_match"]
                 entry["year_match"] = cross["year_match"]
+                if cross.get("author_check"):
+                    entry["author_check"] = cross["author_check"]
 
                 stats[cross["verdict"]] = stats.get(cross["verdict"], 0) + 1
 
