@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v2.5.0
+PMID Citation Verifier -- PubMed E-utilities API v2.6.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
-Author verification (v2.5.0): single-letter initials never take part in
-surname matching, and CJK↔Latin cross-language author names are skipped
-honestly (no fabricated mismatches).
+Audit working-paper (v2.6.0): --export-audit writes a self-contained JSON
+trail -- tool identity, redacted invocation, per-citation evidence chain
+(claimed vs registered fields, match scores, verdict-ladder trace) -- so a
+third party can replay the verification.
+HTML report v2 (v2.6.0): verdict filter tabs, severity sort, field-level
+evidence column, retraction/splice highlighting, reproducibility footer.
+Reliability (v2.6.0): negative cache entries expire in 3 days (a legitimately
+new, ahead-of-print PMID is no longer reported "not found" for a month), and
+the circuit breaker self-heals -- after a 30 s cooldown it admits one probe
+call and resets on success.
 Retraction detection (v2.3.0): with --verify-doi, papers Crossref lists as
 RETRACTED are flagged and their verdict capped at partial (human review required).
 DOI↔PMID cross-check (v2.4.0): a claimed DOI that differs from the DOI
@@ -61,11 +68,13 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_UA_TOOL = "pubmed-verifier/2.5 (+PMID citation verifier; stdlib-only)"
+_UA_TOOL = "pubmed-verifier/2.6 (+PMID citation verifier; stdlib-only)"
 _UA_BROWSER = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 _CIRCUIT_THRESHOLD = 2  # call-level consecutive transport failures per host
+_BREAKER_COOLDOWN_S = 30  # half-open: after this, admit one probe call
 _HOST_FAILS = defaultdict(int)
+_HOST_OPENED_AT = {}
 
 
 class CircuitOpenError(RuntimeError):
@@ -89,10 +98,21 @@ def _api_get(url: str, max_retries: int = 3, timeout=None) -> bytes:
     timeout = _OPTS["timeout"] if timeout is None else timeout
     hk = _host_key(url)
     if _HOST_FAILS[hk] >= _CIRCUIT_THRESHOLD:
-        raise CircuitOpenError(
-            f"{hk} 已连续 {_CIRCUIT_THRESHOLD} 次传输失败并熔断，跳过本批次后续请求。"
-            f"建议：确认网络/代理后重试；或 --timeout {_OPTS['timeout'] * 2:.0f} 放宽超时；"
-            f"或 --meta-source europepmc 改走 Europe PMC 兜底源。")
+        opened_at = _HOST_OPENED_AT.get(hk)
+        if opened_at is None:
+            _HOST_OPENED_AT[hk] = time.time()
+            raise CircuitOpenError(
+                f"{hk} 已连续 {_CIRCUIT_THRESHOLD} 次传输失败并熔断，跳过本批次后续请求。"
+                f"建议：确认网络/代理后重试；或 --timeout {_OPTS['timeout'] * 2:.0f} 放宽超时；"
+                f"或 --meta-source europepmc 改走 Europe PMC 兜底源。")
+        if time.time() - opened_at >= _BREAKER_COOLDOWN_S:
+            # half-open: admit one probe call; success resets below
+            _HOST_FAILS[hk] = _CIRCUIT_THRESHOLD - 1
+            _HOST_OPENED_AT.pop(hk, None)
+        else:
+            raise CircuitOpenError(
+                f"{hk} 熔断中（{_BREAKER_COOLDOWN_S:.0f}s 冷却后自动试探）。"
+                f"建议：--meta-source europepmc 改走 Europe PMC 兜底源。")
     last_err = None
     transport = False
     for attempt in range(max_retries):
@@ -102,6 +122,7 @@ def _api_get(url: str, max_retries: int = 3, timeout=None) -> bytes:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 body = resp.read()
             _HOST_FAILS[hk] = 0  # success resets the breaker
+            _HOST_OPENED_AT.pop(hk, None)
             return body
         except urllib.error.HTTPError as e:
             last_err, transport = e, False  # HTTP responses never trip the breaker
@@ -857,6 +878,8 @@ def _cache_path() -> Path:
 
 CACHE_SCHEMA_VERSION = 2  # v2: clears pre-v2.2.0 rows that mislabeled network
                           # failures as valid=0 (30-day "invalid" poisoning)
+NEG_CACHE_TTL_DAYS = 3    # negatives expire faster: an ahead-of-print PMID
+                          # must not read "not found" for a month (v2.6.0)
 
 
 def _cache_init(db_path: Path) -> None:
@@ -886,14 +909,16 @@ def _cache_load(db_path: Path, pmids: list[str], max_age_days: int = 30) -> dict
     """Load cached results for given PMIDs. Returns {pmid: metadata_dict}."""
     results = {}
     cutoff = time.time() - max_age_days * 86400
+    neg_cutoff = time.time() - min(max_age_days, NEG_CACHE_TTL_DAYS) * 86400
     conn = sqlite3.connect(str(db_path))
     try:
         with conn:
             placeholders = ",".join("?" * len(pmids))
             rows = conn.execute(
                 f"SELECT pmid,title,authors,journal,pubdate,doi,valid,error,cached_at,source "
-                f"FROM pmid_cache WHERE pmid IN ({placeholders}) AND cached_at > ?",
-                pmids + [cutoff]
+                f"FROM pmid_cache WHERE pmid IN ({placeholders}) "
+                f"AND ((valid = 1 AND cached_at > ?) OR (valid = 0 AND cached_at > ?))",
+                pmids + [cutoff, neg_cutoff]
             ).fetchall()
         for row in rows:
             pmid, title, authors_json, journal, pubdate, doi, valid, error, cached_at, source = row
@@ -1078,11 +1103,79 @@ def _load_csv_claims(filepath: str) -> dict:
 
 # ── Report generation ──
 
+_VERDICT_LADDER = (
+    "correct = title match AND (author or journal match); "
+    "partial = title-only match, or author+journal match without title, "
+    "or capped from correct by retraction/DOI-splice signals; "
+    "mismatch = none of the above; "
+    "unknown = insufficient comparable claims or unreachable sources. "
+    "Single-letter author initials never match; CJK↔Latin author names are "
+    "skipped honestly, never counted as misses."
+)
+
+
+def _redacted_argv() -> list:
+    """argv with the NCBI API key redacted (audit/HTML reproducibility).
+
+    argparse accepts prefix abbreviations by default (--nc, --ncbi-api,
+    --ncbi-api-key=x all resolve to --ncbi-api-key), so redaction matches
+    any "--" token that is a prefix of the flag — over-redaction is free,
+    under-redaction leaks."""
+    redacted, skip_next = [], False
+    for a in sys.argv[1:]:
+        if skip_next:
+            redacted.append("***")
+            skip_next = False
+            continue
+        prefix = a.split("=", 1)[0]
+        if prefix.startswith("--") and "--ncbi-api-key".startswith(prefix):
+            redacted.append(prefix + ("=***" if "=" in a else ""))
+            skip_next = "=" not in a
+            continue
+        redacted.append(a)
+    return redacted
+
+
+def generate_audit_report(entries: list, stats: dict, args) -> str:
+    """Self-contained audit working-paper (v2.6.0): tool identity, redacted
+    invocation, per-citation evidence chain and verdict-ladder trace. A third
+    party can replay the whole verification from this file alone."""
+    audit = {
+        "tool": {
+            "name": "pubmed-verifier",
+            "version": "2.6.0",
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "argv": _redacted_argv(),
+            "options": {
+                "meta_source": args.meta_source,
+                "verify_doi": args.verify_doi,
+                "suggest": args.suggest,
+                "timeout_s": args.timeout,
+                "cache_days": args.cache_days,
+                "cache_used": not args.no_cache,
+                "ncbi_api_key_configured": bool(_OPTS["ncbi_key"]),
+                "mailto_configured": bool(_OPTS["mailto"]),
+            },
+            "data_sources": ["eutils.ncbi.nlm.nih.gov", "www.ebi.ac.uk/europepmc",
+                             "api.crossref.org"],
+            "verdict_ladder": _VERDICT_LADDER,
+        },
+        "summary": stats,
+        "citations": entries,
+        "honesty_notes": [
+            "Network failures are reported as unknown, never as not-found, and are not cached.",
+            "A missing retraction record is not evidence of no retraction (source outages skip the check).",
+            f"Negative cache entries expire after {NEG_CACHE_TTL_DAYS} days.",
+        ],
+    }
+    return json.dumps(audit, ensure_ascii=False, indent=2)
+
+
 def generate_json_report(results: list[dict], stats: dict) -> str:
     return json.dumps({"stats": stats, "results": results}, ensure_ascii=False, indent=2)
 
 
-def generate_html_report(results: list[dict], stats: dict, source: str) -> str:
+def generate_html_report(results: list[dict], stats: dict, source: str, repro: dict = None) -> str:
     total = stats["total"]
     correct = stats.get("correct", 0)
     mismatch = stats.get("mismatch", 0)
@@ -1092,25 +1185,40 @@ def generate_html_report(results: list[dict], stats: dict, source: str) -> str:
     unmatched = stats.get("unmatched", 0)
     pct = (correct / total * 100) if total else 0
 
+    def _sev(r: dict) -> int:
+        if r.get("retracted") or r.get("doi_splice_suspect"):
+            return 0
+        return {"mismatch": 1, "invalid": 2, "partial": 3, "unknown": 4}.get(r.get("verdict", ""), 5)
+
+    def _mark(v) -> str:
+        return "✓" if v else ("✗" if v is False else "—")
+
+    ordered = sorted(results, key=_sev)
     rows = ""
-    for r in results:
+    for r in ordered:
         pmid = r["pmid"]
         verdict = r.get("verdict", "")
         if verdict == "correct":
-            status_icon = "✅"
-            row_class = "correct"
+            status_icon, row_class = "✅", "correct"
         elif verdict == "mismatch":
-            status_icon = "⚠️"
-            row_class = "mismatch"
+            status_icon, row_class = "⚠️", "mismatch"
         elif verdict == "partial":
-            status_icon = "🔶"
-            row_class = "partial"
+            status_icon, row_class = "🔶", "partial"
         elif verdict == "invalid":
-            status_icon = "❌"
-            row_class = "invalid"
+            status_icon, row_class = "❌", "invalid"
         else:
-            status_icon = "❓"
-            row_class = "unknown"
+            status_icon, row_class = "❓", "unknown"
+        flags = []
+        if r.get("retracted"):
+            flags.append("RETRACTED")
+            row_class += " retracted"
+        if r.get("doi_splice_suspect"):
+            flags.append("DOI-SPLICE")
+            row_class += " splice"
+        flag_html = (' <span class="flag">' + " · ".join(flags) + "</span>") if flags else ""
+
+        fld = r.get("fields") or {}
+        evidence = " · ".join(f"{k} {_mark(fld.get(k))}" for k in ("title", "author", "journal", "year"))
 
         claimed_title = html.escape(r.get("claimed_title", "")[:80])
         actual_title = html.escape(str(r.get("title", r.get("error", "?")))[:80])
@@ -1127,16 +1235,17 @@ def generate_html_report(results: list[dict], stats: dict, source: str) -> str:
             )
         match_score = r.get("match_score")
         match_cell = f'<td>{match_score:.0%}</td>' if match_score is not None else '<td>—</td>'
-        
+
         rows += (
             f'<tr class="{row_class}">'
             f'<td>{status_icon}</td>'
-            f'<td>{pmid}</td>'
+            f'<td>{pmid}{flag_html}</td>'
             f'<td>{source_file}</td>'
             f'<td class="claimed">{claimed_title}</td>'
             f'<td>{actual_title}</td>'
             f'<td>{journal}</td>'
             f'<td>{date}</td>'
+            f'<td class="evidence">{evidence}</td>'
             f'<td class="details">{details}</td>'
             f'<td>{suggested_str}</td>'
             f'{match_cell}</tr>\n'
@@ -1153,6 +1262,14 @@ def generate_html_report(results: list[dict], stats: dict, source: str) -> str:
     splice_card = (f'<div class="stat"><div class="num" style="color:#c0392b">{stats.get("doi_splice", 0)}</div>'
                    f'<div class="label">DOI Splice</div></div>' if stats.get("doi_splice") else "")
 
+    repro_html = ""
+    if repro:
+        repro_html = ('<div class="repro"><b>Reproducibility</b><br>'
+                      f'command: <code>{html.escape(repro["command"])}</code><br>'
+                      f'version: {html.escape(repro["version"])} · '
+                      f'sources: {html.escape(repro["sources"])} · '
+                      f'generated: {html.escape(repro["generated_at"])}</div>')
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1160,23 +1277,41 @@ def generate_html_report(results: list[dict], stats: dict, source: str) -> str:
 <title>PMID Verification Report</title>
 <style>
 body{{font-family:-apple-system,sans-serif;margin:20px auto;max-width:1400px;padding:0 16px;background:#faf8f5;color:#2d2a26;line-height:1.5;}}
-h1{{color:#20a39e;}} 
+h1{{color:#20a39e;}}
 .stats{{display:flex;gap:14px;margin:16px 0;flex-wrap:wrap;}}
 .stat{{background:#fff;border-radius:8px;padding:12px 20px;border:1px solid #e5e0d8;text-align:center;min-width:80px;}}
 .stat .num{{font-size:1.8rem;font-weight:700;}} .stat .label{{font-size:.75rem;color:#6b6560;}}
+.filters{{margin:12px 0;}}
+.filters button{{border:1px solid #e5e0d8;background:#fff;border-radius:16px;padding:4px 12px;margin-right:6px;cursor:pointer;font-size:.8rem;}}
+.filters button:hover{{background:#20a39e;color:#fff;}}
 table{{width:100%;border-collapse:collapse;margin:16px 0;font-size:.78rem;}}
 th{{background:#20a39e;color:#fff;padding:8px;text-align:left;position:sticky;top:0;}}
 td{{padding:7px 8px;border-bottom:1px solid #e5e0d8;vertical-align:top;}}
 tr:nth-child(even){{background:#fafafa;}}
 tr.mismatch{{background:#fff8e1;}}
 tr.invalid{{background:#ffebee;}}
+tr.retracted{{background:#fdecea;box-shadow:inset 3px 0 0 #c0392b;}}
+tr.splice{{background:#fdecea;box-shadow:inset 3px 0 0 #c0392b;}}
 .claimed{{color:#6b6560;font-style:italic;}}
+.evidence{{font-size:.72rem;white-space:nowrap;}}
+.flag{{color:#c0392b;font-weight:700;font-size:.7rem;}}
 .details{{font-size:.72rem;color:#8a8580;}}
+.repro{{background:#f4f1ec;border-radius:8px;padding:10px 14px;font-size:.72rem;color:#6b6560;margin-top:16px;word-break:break-all;}}
 .footer{{text-align:center;padding:16px;color:#9e9893;font-size:.75rem;border-top:1px solid #e5e0d8;margin-top:20px;}}
 .legend{{margin:10px 0;font-size:.82rem;color:#6b6560;}}
 </style></head><body>
 <h1>📋 PMID Citation Verification Report</h1>
 <p>Source: <code>{html.escape(source)}</code></p>
+<div class="filters">
+<button onclick="flt('all')">All ({total})</button>
+<button onclick="flt('retracted')">Retracted</button>
+<button onclick="flt('splice')">DOI-Splice</button>
+<button onclick="flt('mismatch')">Mismatch ({mismatch})</button>
+<button onclick="flt('invalid')">Invalid ({invalid})</button>
+<button onclick="flt('partial')">Partial ({partial})</button>
+<button onclick="flt('unknown')">Unknown ({unknown})</button>
+<button onclick="flt('correct')">Correct ({correct})</button>
+</div>
 <div class="stats">
 <div class="stat"><div class="num">{total}</div><div class="label">Total</div></div>
 <div class="stat"><div class="num" style="color:#4a9e3f">{correct}</div><div class="label">Correct</div></div>
@@ -1196,21 +1331,30 @@ tr.invalid{{background:#ffebee;}}
 ❌ Invalid: PMID not found &nbsp;|&nbsp;
 🔶 Partial: Some metadata matches &nbsp;|&nbsp;
 ❓ Unknown: Insufficient metadata for cross-check, or data sources unreachable (network)
+<br>Evidence column: title / author / journal / year — ✓ matched · ✗ differed · — not claimed or not comparable. Rows sorted by severity.
 </div>
 {epmc_note}
-<table><tr>
+<table><thead><tr>
 <th></th><th>PMID</th><th>Source</th><th>Claimed Title</th><th>Actual Title</th>
-<th>Journal</th><th>Date</th><th>Details</th><th>Suggested</th>{"<th>Relevance</th>" if unmatched else ""}
-</tr>
-{rows}</table>
-<div class="footer">Generated by pubmed-verifier skill (v2.5) · {time.strftime("%Y-%m-%d %H:%M")}</div>
+<th>Journal</th><th>Date</th><th>Evidence</th><th>Details</th><th>Suggested</th>{"<th>Relevance</th>" if unmatched else ""}
+</tr></thead><tbody>
+{rows}</tbody></table>
+<script>
+function flt(c) {{
+  document.querySelectorAll('tbody tr').forEach(function(tr) {{
+    tr.style.display = (c === 'all' || tr.classList.contains(c)) ? '' : 'none';
+  }});
+}}
+</script>
+{repro_html}
+<div class="footer">Generated by pubmed-verifier skill (v2.6) · {time.strftime("%Y-%m-%d %H:%M")}</div>
 </body></html>"""
 
 
 # ── Main ──
 
 def main():
-    parser = argparse.ArgumentParser(description="PMID Citation Verifier v2.5.0 -- Five-state verification with caching, CSV, DOI support, retraction detection, DOI-splice cross-check, journal abbreviation and author-name matching, and dual-source network hardening")
+    parser = argparse.ArgumentParser(description="PMID Citation Verifier v2.6.0 -- Five-state verification with caching, CSV, DOI support, retraction detection, DOI-splice cross-check, author/journal matching, audit working-paper export, and dual-source network hardening")
     parser.add_argument("--source", help="File or directory to scan for PMIDs")
     parser.add_argument("--pmids", help="Comma-separated PMIDs to verify directly")
     parser.add_argument("--claims", help="JSON string with claimed metadata: [{pmid,title,authors,journal,year},...]")
@@ -1232,7 +1376,9 @@ def main():
     parser.add_argument("--meta-source", choices=["auto", "ncbi", "europepmc"], default="auto",
                         help="Metadata source: auto = NCBI with Europe PMC fallback (default)")
     parser.add_argument("--timeout", type=float, default=20, help="Per-request timeout seconds (default: 20)")
-    parser.add_argument("--version", action="version", version="pubmed-verifier 2.5.0")
+    parser.add_argument("--export-audit", metavar="PATH",
+                        help="Write a self-contained JSON audit working-paper: tool identity, redacted invocation, per-citation evidence chain and verdict trace")
+    parser.add_argument("--version", action="version", version="pubmed-verifier 2.6.0")
     args = parser.parse_args()
 
     _OPTS["ncbi_key"] = args.ncbi_api_key or os.environ.get("NCBI_API_KEY", "")
@@ -1360,6 +1506,7 @@ def main():
 
     # Build results with three-state verdict
     results = []
+    audit_entries = []
     stats = {"total": len(pmid_entries), "correct": 0, "mismatch": 0, "partial": 0,
              "invalid": 0, "unknown": 0, "unmatched": 0, "retracted": 0, "doi_splice": 0}
 
@@ -1440,6 +1587,20 @@ def main():
                 entry["year_match"] = cross["year_match"]
                 if cross.get("author_check"):
                     entry["author_check"] = cross["author_check"]
+                reg_year = any(ch.isdigit() for ch in str(info.get("pubdate", "")))
+                entry["fields"] = {
+                    # bool only when the field was actually compared (claimed
+                    # AND present in the registry); otherwise None (= "—")
+                    "title": cross["title_match"]
+                             if (claimed.get("claimed_title") and info.get("title")) else None,
+                    "author": (None if str(cross.get("author_check", "")).startswith("skipped")
+                               else cross["author_match"])
+                              if (claimed.get("claimed_authors") and info.get("authors")) else None,
+                    "journal": cross["journal_match"]
+                               if (claimed.get("claimed_journal") and info.get("journal")) else None,
+                    "year": cross["year_match"]
+                            if (claimed.get("claimed_year") and reg_year) else None,
+                }
 
                 stats[cross["verdict"]] = stats.get(cross["verdict"], 0) + 1
 
@@ -1472,7 +1633,48 @@ def main():
                 else:
                     stats["invalid"] += 1
 
+            if entry.get("valid"):
+                audit_entries.append({
+                    "pmid": pmid,
+                    "source_file": entry["source_file"],
+                    "claimed": claimed,
+                    "registered": {
+                        "title": entry.get("title", ""), "journal": entry.get("journal", ""),
+                        "pubdate": entry.get("pubdate", ""),
+                        "authors": info.get("authors", []),
+                        "doi": entry.get("doi", ""), "registry": entry.get("meta_source", ""),
+                    },
+                    "evidence": cross,
+                    "doi_cross": {
+                        "claimed_doi": entry.get("claimed_doi", ""),
+                        "registered_doi": entry.get("doi", ""),
+                        "match": entry.get("doi_cross_match"),
+                        "splice_suspect": entry.get("doi_splice_suspect", False)},
+                    "retraction": {
+                        "flagged": entry.get("retracted", False),
+                        "note": entry.get("retraction_note", ""),
+                        "source": "crossref updated-by" if entry.get("retracted") else ""},
+                    "verdict": {"final": entry["verdict"], "details": entry["details"],
+                                "confidence": entry.get("confidence")},
+                })
+            else:
+                audit_entries.append({
+                    "pmid": pmid,
+                    "source_file": entry["source_file"],
+                    "claimed": claimed,
+                    "registered": None,
+                    "verdict": {"final": entry["verdict"], "details": entry["details"]},
+                    "error": entry.get("error", ""),
+                    "network_error": entry.get("network_error", False),
+                })
             results.append(entry)
+
+    repro = {
+        "command": "verify_pmids.py " + " ".join(_redacted_argv()),
+        "version": "2.6.0",
+        "sources": "eutils.ncbi.nlm.nih.gov · www.ebi.ac.uk (Europe PMC) · api.crossref.org — all HTTPS",
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
 
     # Output
     if args.output:
@@ -1483,13 +1685,18 @@ def main():
         if args.format == "json" or ext == ".json":
             output_text = generate_json_report(results, stats)
         elif args.format == "html" or ext in (".html", ".htm"):
-            output_text = generate_html_report(results, stats, args.source or args.pmids or "claims")
+            output_text = generate_html_report(results, stats, args.source or args.pmids or "claims", repro)
         else:
             print("Unsupported --output extension (use .json or .html); "
                   "omit --output for terminal text output.", file=sys.stderr)
             sys.exit(1)
         Path(args.output).write_text(output_text, encoding="utf-8")
         print(f"Report written to {args.output}")
+
+    if args.export_audit:
+        Path(args.export_audit).write_text(
+            generate_audit_report(audit_entries, stats, args), encoding="utf-8")
+        print(f"Audit trail written to {args.export_audit}")
     else:
         # Text output
         correct = stats.get("correct", 0)

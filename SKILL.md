@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 2.5.0
+version: 2.6.0
 description: >-
   Batch-verify PMID citations against PubMed and catch the hallucination that
   existence checks miss — a REAL PMID pointing to a DIFFERENT paper (the most
@@ -20,7 +20,7 @@ description: >-
   validate citations, PubMed citation verifier.
 ---
 
-# PubMed Citation Verifier v2.5.0
+# PubMed Citation Verifier v2.6.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -67,8 +67,8 @@ python3 scripts/verify_pmids.py --claims '[{"pmid":"34078778","title":"JIA patho
 # Claims from a CSV file + suggest correct PMIDs for mismatches
 python3 scripts/verify_pmids.py --claims-file claims.csv --suggest --output report.html
 
-# Crossref DOI cross-verification + full pipeline
-python3 scripts/verify_pmids.py --source /path/to/files --verify-doi --suggest --output report.html
+# Crossref DOI cross-verification + audit working-paper + full pipeline
+python3 scripts/verify_pmids.py --source /path/to/files --verify-doi --suggest --output report.html --export-audit audit.json
 
 # Institutional niceties (recommended): NCBI API key + contact email
 python3 scripts/verify_pmids.py --source . --verify-doi --ncbi-api-key $NCBI_API_KEY --mailto you@lab.org
@@ -149,6 +149,24 @@ otherwise-unverifiable citation (the DOI mismatch is an independent fact).
   anywhere else.
 - No OS integration: no subprocesses, no system services, no privilege
   changes, no scheduled tasks.
+
+## v2.6.0 — audit working-paper & report v2
+
+- **`--export-audit audit.json`** — a self-contained JSON working-paper for
+  transparent review: tool identity and version, the exact (API-key-redacted)
+  invocation, per-citation evidence chains (claimed vs registered fields,
+  title match scores from both algorithms, author match with cross-language
+  skip records, DOI cross-check, retraction signals) and the
+  verdict-ladder trace for every citation. A reviewer can replay the entire
+  verification from this file alone.
+- **HTML report v2** — verdict filter tabs, severity-sorted rows (retracted
+  and DOI-splice first, highlighted), a field-level evidence column
+  (title/author/journal/year ✓✗—) and a reproducibility footer (redacted
+  command line + version + data sources).
+- **Reliability** — negative cache entries now expire after 3 days (a
+  legitimately new, ahead-of-print PMID is no longer reported "not found"
+  for a month), and the circuit breaker self-heals: after a 30 s cooldown it
+  admits one probe call and resets on success.
 
 ## How it works
 
@@ -256,7 +274,7 @@ Feed the full citation via `--claims-file` for a precise verdict.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v2.5.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v2.6.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref API notes |
 | `tests/` | Offline matrix + real-network acceptance (repo only, not in the package) |
 

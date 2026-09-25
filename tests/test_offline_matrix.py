@@ -303,7 +303,7 @@ class TestCli(_Reset):
         script = Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"
         out = subprocess.run([sys.executable, str(script), "--version"],
                              capture_output=True, text=True)
-        self.assertIn("2.5.0", out.stdout + out.stderr)
+        self.assertIn("2.6.0", out.stdout + out.stderr)
 
     def test_host_key_granularity(self):
         self.assertEqual(vp._host_key("https://eutils.ncbi.nlm.nih.gov/a?b=c"),
@@ -527,6 +527,79 @@ class TestAuthorVerification(_Reset):
         actual = {"title": "", "authors": ["Zaripova A"], "journal": "", "pubdate": ""}
         r = vp.cross_check_citation(claimed, actual)
         self.assertTrue(r["author_match"])
+
+
+class TestReliability(_Reset):
+    """v2.6.0 negative-cache TTL + circuit-breaker half-open."""
+
+    def test_negative_cache_short_ttl(self):
+        import sqlite3
+        now = __import__("time").time()
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "cache.db"
+            conn = sqlite3.connect(str(db))
+            with conn:
+                conn.execute("CREATE TABLE pmid_cache (pmid TEXT PRIMARY KEY, title TEXT, authors TEXT,"
+                             " journal TEXT, pubdate TEXT, doi TEXT, valid INTEGER, error TEXT,"
+                             " cached_at REAL, source TEXT DEFAULT 'pubmed')")
+                conn.execute("INSERT INTO pmid_cache VALUES ('11111111','','','','','',0,'nf',?, 'pubmed')",
+                             (now - 4 * 86400,))          # 4 days old -> expired
+                conn.execute("INSERT INTO pmid_cache VALUES ('22222222','','','','','',0,'nf',?, 'pubmed')",
+                             (now - 2 * 86400,))          # 2 days old -> still cached
+                conn.execute("INSERT INTO pmid_cache VALUES ('33333333','T','[]','J','2020','',1,'',?, 'pubmed')",
+                             (now - 10 * 86400,))         # positive 10 days -> cached (30d)
+                conn.execute("PRAGMA user_version = 2")   # simulate already-migrated DB
+            conn.close()
+            vp._cache_init(db)   # migration is a no-op at version 2
+            cached = vp._cache_load(db, ["11111111", "22222222", "33333333"])
+            self.assertNotIn("11111111", cached)   # negative expired at 3 days
+            self.assertIn("22222222", cached)
+            self.assertIn("33333333", cached)
+
+    def test_breaker_half_open_after_cooldown(self):
+        calls = {"n": 0}
+
+        def flaky(req, timeout=None):
+            calls["n"] += 1
+            if calls["n"] <= 6:                      # 2 exhausted calls
+                raise urllib.error.URLError("down")
+            return _ok(b"recovered")
+
+        with mock.patch.object(vp.urllib.request, "urlopen", side_effect=flaky), \
+             mock.patch.object(vp.time, "sleep"):
+            for _ in range(2):
+                with self.assertRaises(urllib.error.URLError):
+                    vp._api_get("https://eutils.ncbi.nlm.nih.gov/x")
+            with self.assertRaises(vp.CircuitOpenError):
+                vp._api_get("https://eutils.ncbi.nlm.nih.gov/x")
+            # simulate cooldown elapsed, then the probe succeeds and resets
+            vp._HOST_OPENED_AT["https://eutils.ncbi.nlm.nih.gov"] = \
+                __import__("time").time() - vp._BREAKER_COOLDOWN_S - 1
+            self.assertEqual(vp._api_get("https://eutils.ncbi.nlm.nih.gov/x"), b"recovered")
+            self.assertEqual(vp._HOST_FAILS["https://eutils.ncbi.nlm.nih.gov"], 0)
+
+    def test_audit_export_redacts_key(self):
+        # sealed (no network): main() runs against a mocked esummary reply
+        with tempfile.TemporaryDirectory() as td:
+            audit_path = Path(td) / "a.json"
+            fake = _ok(json.dumps({"result": {}}).encode())
+            with mock.patch.object(sys, "argv",
+                                   ["verify_pmids.py", "--pmids", "1", "--no-cache",
+                                    "--ncbi-api-key", "SECRETVAL",
+                                    "--nc", "ALSOSECRET",
+                                    "--export-audit", str(audit_path)]), \
+                 mock.patch.object(vp.urllib.request, "urlopen", side_effect=lambda req, timeout=None: fake), \
+                 mock.patch.object(vp.time, "sleep"):
+                try:
+                    vp.main()
+                except SystemExit:
+                    pass
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        blob = json.dumps(audit)
+        self.assertNotIn("SECRETVAL", blob)
+        self.assertNotIn("ALSOSECRET", blob)   # argparse prefix abbreviation
+        self.assertTrue(audit["tool"]["options"]["ncbi_api_key_configured"])
+        self.assertIn("verdict_ladder", audit["tool"])
 
 
 class TestRetraction(_Reset):
