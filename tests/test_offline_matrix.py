@@ -303,7 +303,7 @@ class TestCli(_Reset):
         script = Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"
         out = subprocess.run([sys.executable, str(script), "--version"],
                              capture_output=True, text=True)
-        self.assertIn("2.6.0", out.stdout + out.stderr)
+        self.assertIn("2.7.0", out.stdout + out.stderr)
 
     def test_host_key_granularity(self):
         self.assertEqual(vp._host_key("https://eutils.ncbi.nlm.nih.gov/a?b=c"),
@@ -600,6 +600,129 @@ class TestReliability(_Reset):
         self.assertNotIn("ALSOSECRET", blob)   # argparse prefix abbreviation
         self.assertTrue(audit["tool"]["options"]["ncbi_api_key_configured"])
         self.assertIn("verdict_ladder", audit["tool"])
+
+
+class TestRetractionCoverage(_Reset):
+    """v2.7.0 retraction for every PMID (pubtype signal, cache-confirmed)."""
+
+    def test_ncbi_pubtype_flags_retracted(self):
+        payload = {"result": {"24476887": {
+            "title": "STAP", "source": "Nature",
+            "pubtype": ["Journal Article", "Retracted Publication"],
+            "articleids": [{"idtype": "doi", "value": "10.1038/nature12968"}]}}}
+        out = vp._parse_esummary(["24476887"], payload)
+        self.assertTrue(out["24476887"]["retracted"])
+
+    def test_expression_of_concern_not_flagged(self):
+        # EoC is an editorial note, NOT a retraction (medical-review P2)
+        payload = {"result": {"555": {
+            "title": "Concerned paper", "source": "X",
+            "pubtype": ["Journal Article", "Expression of Concern"], "articleids": []}}}
+        out = vp._parse_esummary(["555"], payload)
+        self.assertFalse(out["555"]["retracted"])
+
+    def test_retraction_notice_itself_not_flagged(self):
+        payload = {"result": {"999": {
+            "title": "Retraction of: X", "source": "Nature",
+            "pubtype": ["Retraction of Publication"], "articleids": []}}}
+        out = vp._parse_esummary(["999"], payload)
+        self.assertFalse(out["999"]["retracted"])
+
+    def test_epmc_pubtype_flags_retracted(self):
+        payload = {"resultList": {"result": [{
+            "id": "24476887", "title": "STAP", "authorString": "Obokata K",
+            "journalTitle": "Nature", "pubYear": "2014",
+            "pubType": "retracted publication; journal article"}]}}
+        with mock.patch.object(vp.urllib.request, "urlopen",
+                               return_value=_ok(json.dumps(payload).encode())):
+            out = vp.fetch_summaries_europepmc(["24476887"])
+        self.assertTrue(out["24476887"]["retracted"])
+
+    def test_pubtype_signal_survives_cache(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "cache.db"
+            vp._cache_init(db)
+            vp._cache_save(db, "24476887", {
+                "valid": True, "title": "STAP", "authors": [], "journal": "Nature",
+                "pubdate": "2014", "doi": "10.1038/nature12968",
+                "retracted": True, "source": "ncbi"})
+            cached = vp._cache_load(db, ["24476887"])
+        self.assertTrue(cached["24476887"]["retracted"])
+
+    def test_schema_v3_adds_retracted_column(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "cache.db"
+            conn = sqlite3.connect(str(db))
+            with conn:
+                conn.execute("CREATE TABLE pmid_cache (pmid TEXT PRIMARY KEY, title TEXT, authors TEXT,"
+                             " journal TEXT, pubdate TEXT, doi TEXT, valid INTEGER, error TEXT,"
+                             " cached_at REAL, source TEXT DEFAULT 'pubmed')")
+                conn.execute("PRAGMA user_version = 2")   # v2-era DB, no retracted column
+            conn.close()
+            vp._cache_init(db)
+            conn = sqlite3.connect(str(db))
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(pmid_cache)").fetchall()]
+            ver = conn.execute("PRAGMA user_version").fetchone()[0]
+            conn.close()
+            self.assertIn("retracted", cols)
+            self.assertEqual(ver, vp.CACHE_SCHEMA_VERSION)
+
+    def test_schema_v3_reinit_idempotent(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "cache.db"
+            vp._cache_init(db)
+            vp._cache_init(db)   # second run: no-op, must not raise
+            import sqlite3
+            conn = sqlite3.connect(str(db))
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(pmid_cache)").fetchall()]
+            conn.close()
+        self.assertIn("retracted", cols)
+
+
+class TestExportsAndReadiness(_Reset):
+    """v2.7.0 BibTeX export + submission-readiness summary."""
+
+    def _results(self):
+        return [
+            {"pmid": "123", "valid": True, "verdict": "correct", "title": "A study",
+             "authors": "Smith J, Doe A", "journal": "J Test", "pubdate": "2020 Jan",
+             "retracted": False},
+            {"pmid": "456", "valid": True, "verdict": "partial", "title": "B study",
+             "authors": "Lee M", "journal": "J T2", "pubdate": "2021",
+             "retracted": False, "details": "title differs"},
+            {"pmid": "789", "valid": True, "verdict": "partial", "title": "C",
+             "authors": "X Y", "journal": "J", "pubdate": "2019", "retracted": True},
+            {"pmid": "000", "valid": False, "verdict": "invalid", "retracted": False},
+        ]
+
+    def test_bibtex_includes_correct_only_uncommented(self):
+        bib = vp.generate_bibtex(self._results())
+        uncommented = [l for l in bib.splitlines() if l.startswith("@article{")]
+        self.assertEqual(len(uncommented), 1)
+        self.assertIn("author = {Smith, J and Doe, A}", bib)
+        self.assertIn("% PARTIAL MATCH", bib)
+        self.assertIn("% EXCLUDED (RETRACTED): PMID 789", bib)
+        self.assertIn("1 included, 1 partial (commented), 2 excluded", bib)
+
+    def test_readiness_ready_and_not(self):
+        ready, line = vp.readiness_summary({"invalid": 0, "mismatch": 0, "retracted": 0,
+                                            "doi_splice": 0, "network_errors": 0})
+        self.assertTrue(ready and line.startswith("SUBMISSION READY"))
+        ready, line = vp.readiness_summary({"invalid": 1, "mismatch": 0, "retracted": 1,
+                                            "doi_splice": 2, "network_errors": 3})
+        self.assertFalse(ready)
+        for token in ("1 invalid", "1 retracted", "2 DOI-spliced", "3 unverified"):
+            self.assertIn(token, line)
+
+    def test_readiness_unknown_only_discloses_existence_check(self):
+        # medical-review P1: --pmids without claims -> unknown (existence-only);
+        # READY must disclose that, never dress it up as full verification
+        ready, line = vp.readiness_summary({"invalid": 0, "mismatch": 0, "retracted": 0,
+                                            "doi_splice": 0, "network_errors": 0, "unknown": 4})
+        self.assertTrue(ready)
+        self.assertIn("4 citation(s) existence-checked only", line)
+        self.assertIn("--claims-file", line)
 
 
 class TestRetraction(_Reset):

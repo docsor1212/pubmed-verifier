@@ -48,7 +48,7 @@ def fetch_real(pmid):
     return vp.fetch_summaries([pmid], batch_size=1)[pmid]
 
 
-print("== pubmed-verifier v2.6.0 real-network acceptance ==")
+print("== pubmed-verifier v2.7.0 real-network acceptance ==")
 
 # ── T0: ground truth reachable ──
 truth = {}
@@ -163,11 +163,32 @@ rc, so, data = run_cli(["--claims", json.dumps(claims[:1]), "--no-cache",
 audit = json.loads(Path(audit_path).read_text(encoding="utf-8"))
 c0 = audit["citations"][0]
 record("T11 audit working-paper e2e",
-       rc in (0, 1) and audit["tool"]["version"] == "2.6.0"
+       rc in (0, 1) and audit["tool"]["version"] == "2.7.0"
        and "evidence" in c0 and c0["evidence"].get("title_match") is not None
        and c0["registered"]["title"] == truth[GOOD_PMIDS[0]]["title"][:len(c0["registered"]["title"])],
        f"citations={len(audit['citations'])} evidence_keys={sorted(k for k in c0.get('evidence', {}))[:3]}")
 Path(audit_path).unlink(missing_ok=True)
+
+# ── T12: retraction for every PMID (no --verify-doi, no DOI needed) ──
+rc, so, data = run_cli(["--claims", json.dumps([
+    {"pmid": "24476887", "title": "Stimulus-triggered fate conversion of somatic cells into pluripotency",
+     "authors": ["Obokata"], "journal": "Nature", "year": "2014"}]), "--no-cache"])
+r = ((data or {}).get("results") or [{}])[0]
+record("T12 pubtype retraction (DOI-less path, capped at partial)",
+       r.get("retracted") is True and r.get("verdict") == "partial",
+       f"retracted={r.get('retracted')} verdict={r.get('verdict')} note={str(r.get('retraction_note',''))[:50]}")
+
+# ── T13: BibTeX export e2e ──
+import tempfile
+with tempfile.NamedTemporaryFile(suffix=".bib", delete=False) as tf:
+    bib_path = tf.name
+rc, so, data = run_cli(["--claims", json.dumps(claims[:1]), "--no-cache",
+                        "--export-bibtex", bib_path])
+bib = Path(bib_path).read_text(encoding="utf-8")
+record("T13 BibTeX export e2e",
+       rc in (0, 1) and "@article{" in bib and "pmid = {" in bib and "verified by pubmed-verifier" in bib,
+       f"entries={bib.count('@article{')}")
+Path(bib_path).unlink(missing_ok=True)
 
 # ── 汇总 ──
 passed = sum(1 for r in RESULTS if r["ok"])

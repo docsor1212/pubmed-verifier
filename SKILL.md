@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 2.6.0
+version: 2.7.0
 description: >-
   Batch-verify PMID citations against PubMed and catch the hallucination that
   existence checks miss — a REAL PMID pointing to a DIFFERENT paper (the most
@@ -20,7 +20,7 @@ description: >-
   validate citations, PubMed citation verifier.
 ---
 
-# PubMed Citation Verifier v2.6.0
+# PubMed Citation Verifier v2.7.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -67,8 +67,8 @@ python3 scripts/verify_pmids.py --claims '[{"pmid":"34078778","title":"JIA patho
 # Claims from a CSV file + suggest correct PMIDs for mismatches
 python3 scripts/verify_pmids.py --claims-file claims.csv --suggest --output report.html
 
-# Crossref DOI cross-verification + audit working-paper + full pipeline
-python3 scripts/verify_pmids.py --source /path/to/files --verify-doi --suggest --output report.html --export-audit audit.json
+# Crossref DOI cross-verification + audit working-paper + BibTeX + full pipeline
+python3 scripts/verify_pmids.py --source /path/to/files --verify-doi --suggest --output report.html --export-audit audit.json --export-bibtex refs.bib
 
 # Institutional niceties (recommended): NCBI API key + contact email
 python3 scripts/verify_pmids.py --source . --verify-doi --ncbi-api-key $NCBI_API_KEY --mailto you@lab.org
@@ -168,6 +168,22 @@ otherwise-unverifiable citation (the DOI mismatch is an independent fact).
   for a month), and the circuit breaker self-heals: after a 30 s cooldown it
   admits one probe call and resets on success.
 
+## v2.7.0 — retraction for every PMID, BibTeX export, readiness verdict
+
+- **Retraction detection, source-independent** — the registry's own
+  publication type ("Retracted Publication"; present in both NCBI esummary
+  and Europe PMC) now flags retracted papers for EVERY citation: no DOI
+  required, no `--verify-doi` required, and the flag survives the cache
+  (schema v3). Crossref `updated-by` remains the detail source (the
+  retraction-notice DOI) when `--verify-doi` is on. A retraction *notice*
+  itself is never flagged.
+- **`--export-bibtex refs.bib`** — export the verified bibliography: correct
+  entries as `@article`, partial entries commented out with their divergence
+  note, mismatched/invalid/unknown/retracted entries excluded and counted.
+- **Submission-readiness verdict** — every report now leads with one line:
+  `SUBMISSION READY` or `NOT SUBMISSION-READY — <per-problem counts>`.
+- Cache schema v3 (adds a `retracted` column, auto-migrated).
+
 ## How it works
 
 1. **Extract + parse context** — finds `PMID: 12345678` / PubMed URLs in
@@ -262,9 +278,14 @@ are reused for 30 days.
 reported as not-found and never cached.
 
 **What does RETRACTED mean in a report?**
-Crossref records a retraction for the paper. The verdict is capped at
+The registry itself lists the paper's publication type as "Retracted
+Publication" (checked for every citation since v2.7.0 — no DOI or flags
+needed), and/or Crossref records a retraction. The verdict is capped at
 partial and a human review note is attached — citing it would propagate
-withdrawn science. Corrections do not trigger this.
+withdrawn science. A retraction *notice* is never flagged; papers under
+*Expression of Concern* (an editorial note, not a retraction) are not
+flagged either. Retraction status reflects the registry at cache time — for
+a final pre-submission check, run with `--no-cache`.
 
 **Mismatch reported but the title looks similar?**
 Check `details` for which field diverged; thresholds are strict on purpose.
@@ -274,7 +295,7 @@ Feed the full citation via `--claims-file` for a precise verdict.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v2.6.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v2.7.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref API notes |
 | `tests/` | Offline matrix + real-network acceptance (repo only, not in the package) |
 

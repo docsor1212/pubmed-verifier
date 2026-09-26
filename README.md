@@ -14,6 +14,10 @@ Academic projects routinely contain hundreds of PMID citations. Manual verificat
 - **Dual sources** — NCBI E-utilities primary, Europe PMC automatic fallback when NCBI is unreachable
 - **Network hardening** — Optional NCBI API key (3x faster batches), Crossref polite pool, 429 Retry-After backoff, UA rotation, per-host circuit breaker
 - **Content matching** — Keyword overlap scoring flags potentially irrelevant citations
+- **Retraction detection for every citation** — the registry publication type ("Retracted Publication") flags retracted papers with no DOI or extra flags needed; Crossref `updated-by` adds the retraction-notice DOI
+- **Verified-bibliography export** — `--export-bibtex` writes correct entries as BibTeX, comments partial ones, excludes and counts the rest
+- **Submission-readiness verdict** — every report leads with `SUBMISSION READY` / `NOT SUBMISSION-READY` and per-problem counts
+- **Audit working-paper** — `--export-audit` writes a self-contained JSON trail (tool identity, redacted invocation, evidence chain, verdict trace) a third party can replay
 - **Replacement search** — Find correct PMIDs for broken citations via PubMed search
 - **Multiple output formats** — HTML report, JSON (with per-entry metadata origin), or terminal summary
 

@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v2.6.0
+PMID Citation Verifier -- PubMed E-utilities API v2.7.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
-Audit working-paper (v2.6.0): --export-audit writes a self-contained JSON
-trail -- tool identity, redacted invocation, per-citation evidence chain
-(claimed vs registered fields, match scores, verdict-ladder trace) -- so a
-third party can replay the verification.
-HTML report v2 (v2.6.0): verdict filter tabs, severity sort, field-level
-evidence column, retraction/splice highlighting, reproducibility footer.
-Reliability (v2.6.0): negative cache entries expire in 3 days (a legitimately
-new, ahead-of-print PMID is no longer reported "not found" for a month), and
-the circuit breaker self-heals -- after a 30 s cooldown it admits one probe
-call and resets on success.
+Retraction detection for EVERY PMID (v2.7.0): the registry's own publication
+type ("Retracted Publication", present in both NCBI esummary and Europe PMC)
+flags retracted papers with no DOI and no --verify-doi needed -- and the flag
+survives the cache (schema v3). Crossref updated-by remains the detail source
+(retraction-notice DOI) when --verify-doi is on.
+Verified-bibliography export (v2.7.0): --export-bibtex writes correct
+entries as @article, partial entries commented out with their divergence
+note, everything else excluded and counted.
+Submission-readiness summary (v2.7.0): every report leads with one line --
+SUBMISSION READY, or NOT READY with per-problem counts.
 Retraction detection (v2.3.0): with --verify-doi, papers Crossref lists as
 RETRACTED are flagged and their verdict capped at partial (human review required).
 DOI↔PMID cross-check (v2.4.0): a claimed DOI that differs from the DOI
@@ -68,7 +68,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_UA_TOOL = "pubmed-verifier/2.6 (+PMID citation verifier; stdlib-only)"
+_TOOL_VERSION = "2.7.0"
+_UA_TOOL = "pubmed-verifier/2.7 (+PMID citation verifier; stdlib-only)"
 _UA_BROWSER = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 _CIRCUIT_THRESHOLD = 2  # call-level consecutive transport failures per host
@@ -180,6 +181,11 @@ def _parse_esummary(batch: list, data: dict) -> dict:
         if pmid in data.get("result", {}):
             article = data["result"][pmid]
             if "error" not in article:
+                # Retraction signal from the registry itself (v2.7.0):
+                # "Retracted Publication" marks the retracted paper;
+                # "Retraction of Publication" (the notice) does NOT flag.
+                pubtypes = [" ".join(str(p).split()).lower() for p in article.get("pubtype", []) or []]
+                retracted = "retracted publication" in pubtypes
                 # Registered DOI: articleids[] is authoritative. elocationid
                 # can be a composite string (e.g. eLife "pii: X. doi: Y")
                 # that is NOT a bare DOI -- parsing it whole caused false
@@ -201,6 +207,9 @@ def _parse_esummary(batch: list, data: dict) -> dict:
                     "volume": article.get("volume", ""),
                     "pages": article.get("pages", ""),
                     "doi": doi,
+                    "retracted": retracted,
+                    "retraction_note": ("PubMed publication type: Retracted Publication"
+                                        if retracted else ""),
                     "valid": True,
                     "source": "ncbi",
                 }
@@ -274,6 +283,7 @@ def fetch_summaries_europepmc(pmids: list, batch_size: int = 25,
                 pmid = str(h.get("id", "")).strip()
                 if not pmid.isdigit():
                     continue
+                epmc_retracted = "retracted publication" in str(h.get("pubType", "") or "").lower()
                 got[pmid] = {
                     "title": h.get("title", ""),
                     "authors": [a.strip() for a in (h.get("authorString") or "").split(",") if a.strip()],
@@ -282,6 +292,9 @@ def fetch_summaries_europepmc(pmids: list, batch_size: int = 25,
                     "volume": h.get("journalVolume", ""),
                     "pages": h.get("pageInfo", ""),
                     "doi": h.get("doi", "") or "",
+                    "retracted": epmc_retracted,
+                    "retraction_note": ("Europe PMC publication type: retracted publication"
+                                        if epmc_retracted else ""),
                     "valid": True,
                     "source": "europepmc",
                 }
@@ -876,8 +889,9 @@ def _cache_path() -> Path:
     return p / "cache.db"
 
 
-CACHE_SCHEMA_VERSION = 2  # v2: clears pre-v2.2.0 rows that mislabeled network
-                          # failures as valid=0 (30-day "invalid" poisoning)
+CACHE_SCHEMA_VERSION = 3  # v2: clears pre-v2.2.0 rows that mislabeled network
+                          # failures as valid=0; v3: + retracted column so the
+                          # pubtype retraction signal survives caching (v2.7.0)
 NEG_CACHE_TTL_DAYS = 3    # negatives expire faster: an ahead-of-print PMID
                           # must not read "not found" for a month (v2.6.0)
 
@@ -897,9 +911,13 @@ def _cache_init(db_path: Path) -> None:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cached_at ON pmid_cache(cached_at)")
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             if version < CACHE_SCHEMA_VERSION:
-                # Legacy negatives may be transport failures mislabeled by
-                # older versions -- drop them so they get re-queried honestly.
-                conn.execute("DELETE FROM pmid_cache WHERE valid = 0")
+                if version < 2:
+                    # Legacy negatives may be transport failures mislabeled by
+                    # older versions -- drop them so they get re-queried honestly.
+                    conn.execute("DELETE FROM pmid_cache WHERE valid = 0")
+                cols = [r[1] for r in conn.execute("PRAGMA table_info(pmid_cache)").fetchall()]
+                if "retracted" not in cols:
+                    conn.execute("ALTER TABLE pmid_cache ADD COLUMN retracted INTEGER DEFAULT 0")
                 conn.execute(f"PRAGMA user_version = {CACHE_SCHEMA_VERSION}")
     finally:
         conn.close()
@@ -915,13 +933,13 @@ def _cache_load(db_path: Path, pmids: list[str], max_age_days: int = 30) -> dict
         with conn:
             placeholders = ",".join("?" * len(pmids))
             rows = conn.execute(
-                f"SELECT pmid,title,authors,journal,pubdate,doi,valid,error,cached_at,source "
+                f"SELECT pmid,title,authors,journal,pubdate,doi,valid,error,cached_at,source,retracted "
                 f"FROM pmid_cache WHERE pmid IN ({placeholders}) "
                 f"AND ((valid = 1 AND cached_at > ?) OR (valid = 0 AND cached_at > ?))",
                 pmids + [cutoff, neg_cutoff]
             ).fetchall()
         for row in rows:
-            pmid, title, authors_json, journal, pubdate, doi, valid, error, cached_at, source = row
+            pmid, title, authors_json, journal, pubdate, doi, valid, error, cached_at, source, retracted = row
             if valid:
                 results[pmid] = {
                     "title": title or "",
@@ -929,6 +947,11 @@ def _cache_load(db_path: Path, pmids: list[str], max_age_days: int = 30) -> dict
                     "journal": journal or "",
                     "pubdate": pubdate or "",
                     "doi": doi or "",
+                    "retracted": bool(retracted),
+                    "retraction_note": ("Europe PMC publication type: retracted publication"
+                                        if retracted and source == "europepmc" else
+                                        ("PubMed publication type: Retracted Publication"
+                                         if retracted else "")),
                     "valid": True,
                     "source": source,
                 }
@@ -948,16 +971,16 @@ def _cache_save(db_path: Path, pmid: str, info: dict) -> None:
         with conn:
             if info.get("valid"):
                 conn.execute(
-                    "INSERT OR REPLACE INTO pmid_cache (pmid,title,authors,journal,pubdate,doi,valid,error,cached_at,source) "
-                    "VALUES (?,?,?,?,?,?,1,'',?,?)",
+                    "INSERT OR REPLACE INTO pmid_cache (pmid,title,authors,journal,pubdate,doi,valid,error,cached_at,source,retracted) "
+                    "VALUES (?,?,?,?,?,?,1,'',?,?,?)",
                     (pmid, info.get("title", ""), json.dumps(info.get("authors", []), ensure_ascii=False),
                      info.get("journal", ""), info.get("pubdate", ""), info.get("doi", ""),
-                     time.time(), info.get("source", "pubmed"))
+                     time.time(), info.get("source", "pubmed"), int(bool(info.get("retracted"))))
                 )
             else:
                 conn.execute(
-                    "INSERT OR REPLACE INTO pmid_cache (pmid,title,authors,journal,pubdate,doi,valid,error,cached_at,source) "
-                    "VALUES (?,'','','','','',0,?,?,?)",
+                    "INSERT OR REPLACE INTO pmid_cache (pmid,title,authors,journal,pubdate,doi,valid,error,cached_at,source,retracted) "
+                    "VALUES (?,'','','','','',0,?,?,?,0)",
                     (pmid, info.get("error", "Unknown"), time.time(), info.get("source", "pubmed"))
                 )
     except Exception:
@@ -1136,6 +1159,118 @@ def _redacted_argv() -> list:
     return redacted
 
 
+def _bib_escape(s: str) -> str:
+    s = str(s).replace("{", "(").replace("}", ")").strip()
+    for ch, rep in (("\\", "\\textbackslash{}"), ("&", "\\&"), ("%", "\\%"),
+                    ("#", "\\#"), ("_", "\\_")):
+        s = s.replace(ch, rep)
+    return s
+
+
+def _bib_authors(joined: str) -> str:
+    """'Smith J, Doe A' -> 'Smith, J and Doe, A' (BibTeX Family, Given)."""
+    out = []
+    for a in (joined or "").split(","):
+        parts = a.strip().rsplit(" ", 1)
+        out.append(f"{parts[0]}, {parts[1]}" if len(parts) == 2 else a.strip())
+    return " and ".join(o for o in out if o)
+
+
+def generate_bibtex(results: list) -> str:
+    """Verified-bibliography export (v2.7.0): correct entries as @article,
+    partial entries commented out with their divergence note, everything else
+    excluded and counted -- the audit-to-fix-to-reuse loop for systematic
+    review workflows."""
+    included, partial, excluded = 0, 0, 0
+    lines = [
+        f"% Verified bibliography generated by pubmed-verifier v{_TOOL_VERSION}",
+        "% correct = included; partial = commented out (verify manually);",
+        "% mismatch/invalid/unknown/retracted = excluded.",
+        "%",
+    ]
+    key_counts = {}
+    seen_pmids = set()
+    for r in results:
+        if r["pmid"] in seen_pmids:
+            continue          # same paper cited several times: one @article
+        seen_pmids.add(r["pmid"])
+        if r.get("retracted"):
+            excluded += 1
+            lines.append(f"% EXCLUDED (RETRACTED): PMID {r['pmid']} — do not cite.")
+            continue
+        v = r.get("verdict")
+        if v not in ("correct", "partial") or not r.get("valid"):
+            excluded += 1
+            continue
+        year_m = re.search(r"((?:19|20)\d{2})", str(r.get("pubdate", "")))
+        year = year_m.group(1) if year_m else "n.d."
+        first = (r.get("authors", "") or "Anonymous").split(",")[0].split()
+        key = f"{first[0] if first else 'anon'}{year}pmid{r['pmid']}".lower()
+        key_counts[key] = key_counts.get(key, 0) + 1
+        if key_counts[key] > 1:
+            key = f"{key}{key_counts[key]}"   # same PMID cited twice: unique key
+        author_field = _bib_authors(r.get("authors", ""))
+        if r.get("authors_truncated"):
+            author_field += " and others"
+        entry_lines = [
+            f"@article{{{key},",
+            f"  pmid = {{{r['pmid']}}},",
+            f"  title = {{{_bib_escape(r.get('title', ''))}}},",
+            f"  author = {{{author_field}}},",
+            f"  journal = {{{_bib_escape(r.get('journal', ''))}}},",
+            f"  year = {{{year}}},",
+        ]
+        if r.get("volume"):
+            entry_lines.append(f"  volume = {{{_bib_escape(r['volume'])}}},")
+        if r.get("pages"):
+            entry_lines.append(f"  pages = {{{_bib_escape(r['pages'])}}},")
+        if r.get("doi"):
+            entry_lines.append(f"  doi = {{{_bib_escape(r['doi'])}}},")
+        entry_lines.append(f"  note = {{verified by pubmed-verifier ({v}; PMID {r['pmid']})}}")
+        entry_lines.append("}")
+        if v == "partial":
+            partial += 1
+            lines.append(f"% PARTIAL MATCH — verify manually: {r.get('details', '')}")
+            lines.extend("% " + l for l in entry_lines)
+        else:
+            included += 1
+            lines.extend(entry_lines)
+        lines.append("")
+    lines.append(f"% total: {included} included, {partial} partial (commented), {excluded} excluded")
+    return "\n".join(lines) + "\n"
+
+
+def readiness_summary(stats: dict) -> tuple:
+    """(ready, one-line verdict) for the report header (v2.7.0)."""
+    problems = (stats.get("invalid", 0) + stats.get("mismatch", 0)
+                + stats.get("retracted", 0) + stats.get("doi_splice", 0))
+    unverified = stats.get("network_errors", 0)
+    unknown_meta = max(0, stats.get("unknown", 0) - unverified)
+    if problems == 0 and unverified == 0:
+        line = "SUBMISSION READY — no invalid, mismatched, retracted or DOI-spliced citations found"
+        # Existence-only checks (--pmids without claims) cannot cross-verify:
+        # saying nothing about that would dress existence checks up as a
+        # full verification (v2.7.0 medical-review P1).
+        if unknown_meta > 0:
+            line += (f"; {unknown_meta} citation(s) existence-checked only "
+                     f"(no claims to cross-verify — feed --claims-file for full verification)")
+        return True, line
+    parts = []
+    if stats.get("invalid"):
+        parts.append(f"{stats['invalid']} invalid")
+    if stats.get("mismatch"):
+        parts.append(f"{stats['mismatch']} mismatched")
+    if stats.get("retracted"):
+        parts.append(f"{stats['retracted']} retracted")
+    if stats.get("doi_splice"):
+        parts.append(f"{stats['doi_splice']} DOI-spliced")
+    if unverified:
+        parts.append(f"{unverified} unverified (network)")
+    if unknown_meta:
+        parts.append(f"{unknown_meta} existence-checked only")
+    return False, "NOT SUBMISSION-READY — " + ", ".join(parts)
+
+
 def generate_audit_report(entries: list, stats: dict, args) -> str:
     """Self-contained audit working-paper (v2.6.0): tool identity, redacted
     invocation, per-citation evidence chain and verdict-ladder trace. A third
@@ -1143,7 +1278,7 @@ def generate_audit_report(entries: list, stats: dict, args) -> str:
     audit = {
         "tool": {
             "name": "pubmed-verifier",
-            "version": "2.6.0",
+            "version": _TOOL_VERSION,
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "argv": _redacted_argv(),
             "options": {
@@ -1166,6 +1301,10 @@ def generate_audit_report(entries: list, stats: dict, args) -> str:
             "Network failures are reported as unknown, never as not-found, and are not cached.",
             "A missing retraction record is not evidence of no retraction (source outages skip the check).",
             f"Negative cache entries expire after {NEG_CACHE_TTL_DAYS} days.",
+            "Retraction status reflects the registry at cache time; a paper retracted "
+            "after caching surfaces when the cache entry expires (positive entries: "
+            "--cache-days, default 30) — for a final pre-submission check run with --no-cache.",
+            "Papers under Expression of Concern (editorial note, not a retraction) are not flagged.",
         ],
     }
     return json.dumps(audit, ensure_ascii=False, indent=2)
@@ -1270,6 +1409,10 @@ def generate_html_report(results: list[dict], stats: dict, source: str, repro: d
                       f'sources: {html.escape(repro["sources"])} · '
                       f'generated: {html.escape(repro["generated_at"])}</div>')
 
+    ready, ready_line = readiness_summary(stats)
+    banner = (f'<div class="ready ok">{ready_line}</div>' if ready
+              else f'<div class="ready notok">{ready_line}</div>')
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1295,12 +1438,16 @@ tr.splice{{background:#fdecea;box-shadow:inset 3px 0 0 #c0392b;}}
 .claimed{{color:#6b6560;font-style:italic;}}
 .evidence{{font-size:.72rem;white-space:nowrap;}}
 .flag{{color:#c0392b;font-weight:700;font-size:.7rem;}}
+.ready{{border-radius:8px;padding:10px 14px;margin:10px 0;font-weight:600;}}
+.ready.ok{{background:#e8f5e9;color:#2e7d32;border:1px solid #a5d6a7;}}
+.ready.notok{{background:#fdecea;color:#c0392b;border:1px solid #f5c6cb;}}
 .details{{font-size:.72rem;color:#8a8580;}}
 .repro{{background:#f4f1ec;border-radius:8px;padding:10px 14px;font-size:.72rem;color:#6b6560;margin-top:16px;word-break:break-all;}}
 .footer{{text-align:center;padding:16px;color:#9e9893;font-size:.75rem;border-top:1px solid #e5e0d8;margin-top:20px;}}
 .legend{{margin:10px 0;font-size:.82rem;color:#6b6560;}}
 </style></head><body>
 <h1>📋 PMID Citation Verification Report</h1>
+{banner}
 <p>Source: <code>{html.escape(source)}</code></p>
 <div class="filters">
 <button onclick="flt('all')">All ({total})</button>
@@ -1347,14 +1494,14 @@ function flt(c) {{
 }}
 </script>
 {repro_html}
-<div class="footer">Generated by pubmed-verifier skill (v2.6) · {time.strftime("%Y-%m-%d %H:%M")}</div>
+<div class="footer">Generated by pubmed-verifier skill (v2.7) · {time.strftime("%Y-%m-%d %H:%M")}</div>
 </body></html>"""
 
 
 # ── Main ──
 
 def main():
-    parser = argparse.ArgumentParser(description="PMID Citation Verifier v2.6.0 -- Five-state verification with caching, CSV, DOI support, retraction detection, DOI-splice cross-check, author/journal matching, audit working-paper export, and dual-source network hardening")
+    parser = argparse.ArgumentParser(description="PMID Citation Verifier v2.7.0 -- Five-state verification with retraction detection for every PMID, caching, CSV, DOI support, DOI-splice cross-check, author/journal matching, audit + BibTeX export, and dual-source network hardening")
     parser.add_argument("--source", help="File or directory to scan for PMIDs")
     parser.add_argument("--pmids", help="Comma-separated PMIDs to verify directly")
     parser.add_argument("--claims", help="JSON string with claimed metadata: [{pmid,title,authors,journal,year},...]")
@@ -1378,7 +1525,9 @@ def main():
     parser.add_argument("--timeout", type=float, default=20, help="Per-request timeout seconds (default: 20)")
     parser.add_argument("--export-audit", metavar="PATH",
                         help="Write a self-contained JSON audit working-paper: tool identity, redacted invocation, per-citation evidence chain and verdict trace")
-    parser.add_argument("--version", action="version", version="pubmed-verifier 2.6.0")
+    parser.add_argument("--export-bibtex", metavar="PATH",
+                        help="Export verified references as BibTeX (correct included; partial commented; retracted/excluded counted)")
+    parser.add_argument("--version", action="version", version="pubmed-verifier 2.7.0")
     args = parser.parse_args()
 
     _OPTS["ncbi_key"] = args.ncbi_api_key or os.environ.get("NCBI_API_KEY", "")
@@ -1526,7 +1675,10 @@ def main():
                 entry["journal"] = info["journal"]
                 entry["pubdate"] = info["pubdate"]
                 entry["authors"] = ", ".join(info["authors"][:3])
+                entry["authors_truncated"] = len(info.get("authors", [])) > 3
                 entry["doi"] = info.get("doi", "")
+                entry["volume"] = info.get("volume", "")
+                entry["pages"] = info.get("pages", "")
                 entry["meta_source"] = info.get("source", "ncbi")
 
                 # DOI cross-verification (optional, via Crossref)
@@ -1546,6 +1698,7 @@ def main():
                         if doi_meta.get("retracted"):
                             entry["retracted"] = True
                             entry["retraction_note"] = doi_meta.get("retraction_note", "")
+                            entry["retraction_source"] = "crossref updated-by"
                     else:
                         entry["doi_verified"] = False
                         entry["doi_note"] = "crossref unreachable (network) — not a verdict"
@@ -1559,6 +1712,15 @@ def main():
                     entry["doi_cross_match"] = dois_match(claimed["claimed_doi"], info["doi"])
                     if not entry["doi_cross_match"]:
                         entry["doi_splice_suspect"] = True
+
+                # Retraction signal, source-independent (v2.7.0): the
+                # registry pubtype flags every PMID with no DOI and no
+                # --verify-doi needed (survives the cache); Crossref
+                # updated-by (checked above) remains the detail source.
+                if info.get("retracted") and not entry.get("retracted"):
+                    entry["retracted"] = True
+                    entry["retraction_note"] = info.get("retraction_note", "")
+                    entry["retraction_source"] = "registry pubtype"
 
                 # Cross-check claimed vs actual
                 cross = cross_check_citation(claimed, {
@@ -1653,7 +1815,8 @@ def main():
                     "retraction": {
                         "flagged": entry.get("retracted", False),
                         "note": entry.get("retraction_note", ""),
-                        "source": "crossref updated-by" if entry.get("retracted") else ""},
+                        "source": entry.get("retraction_source",
+                                            "crossref updated-by" if entry.get("retracted") else "")},
                     "verdict": {"final": entry["verdict"], "details": entry["details"],
                                 "confidence": entry.get("confidence")},
                 })
@@ -1669,9 +1832,12 @@ def main():
                 })
             results.append(entry)
 
+    stats["submission_readiness"] = {}
+    ready, ready_line = readiness_summary(stats)
+    stats["submission_readiness"] = {"ready": ready, "summary": ready_line}
     repro = {
         "command": "verify_pmids.py " + " ".join(_redacted_argv()),
-        "version": "2.6.0",
+        "version": _TOOL_VERSION,
         "sources": "eutils.ncbi.nlm.nih.gov · www.ebi.ac.uk (Europe PMC) · api.crossref.org — all HTTPS",
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -1697,13 +1863,21 @@ def main():
         Path(args.export_audit).write_text(
             generate_audit_report(audit_entries, stats, args), encoding="utf-8")
         print(f"Audit trail written to {args.export_audit}")
-    else:
+
+    if args.export_bibtex:
+        Path(args.export_bibtex).write_text(
+            generate_bibtex(results), encoding="utf-8")
+        print(f"BibTeX written to {args.export_bibtex} "
+              f"(correct included; partial commented; others excluded)")
+
+    if not args.output:
         # Text output
         correct = stats.get("correct", 0)
         mismatch = stats.get("mismatch", 0)
         partial = stats.get("partial", 0)
         unknown = stats.get("unknown", 0)
         print(f"\n{'='*60}")
+        print(f"Readiness: {ready_line}")
         print(f"Results: {correct}/{stats['total']} correct, {mismatch} mismatch, "
               f"{stats['invalid']} invalid, {partial} partial, {unknown} unknown")
         if stats.get("unmatched"):
