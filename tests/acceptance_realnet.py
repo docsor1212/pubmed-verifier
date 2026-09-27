@@ -48,7 +48,7 @@ def fetch_real(pmid):
     return vp.fetch_summaries([pmid], batch_size=1)[pmid]
 
 
-print("== pubmed-verifier v2.7.0 real-network acceptance ==")
+print("== pubmed-verifier v2.8.0 real-network acceptance ==")
 
 # ── T0: ground truth reachable ──
 truth = {}
@@ -139,7 +139,7 @@ splice_claims = [{"pmid": a0,
                   "authors": [truth[a0]["authors"][0].split()[0]],
                   "journal": truth[a0]["journal"],
                   "year": truth[a0]["pubdate"][:4],
-                  "doi": "10.1186/s12969-021-00611-9"}]   # real DOI, wrong paper
+                  "doi": "10.1038/nature12968"}]   # real, LIVE DOI of a different paper
 rc, so, data = run_cli(["--claims", json.dumps(splice_claims), "--no-cache"])
 r = ((data or {}).get("results") or [{}])[0]
 record("T9 DOI splice detection (capped at partial)",
@@ -163,7 +163,7 @@ rc, so, data = run_cli(["--claims", json.dumps(claims[:1]), "--no-cache",
 audit = json.loads(Path(audit_path).read_text(encoding="utf-8"))
 c0 = audit["citations"][0]
 record("T11 audit working-paper e2e",
-       rc in (0, 1) and audit["tool"]["version"] == "2.7.0"
+       rc in (0, 1) and audit["tool"]["version"] == vp._TOOL_VERSION
        and "evidence" in c0 and c0["evidence"].get("title_match") is not None
        and c0["registered"]["title"] == truth[GOOD_PMIDS[0]]["title"][:len(c0["registered"]["title"])],
        f"citations={len(audit['citations'])} evidence_keys={sorted(k for k in c0.get('evidence', {}))[:3]}")
@@ -189,6 +189,28 @@ record("T13 BibTeX export e2e",
        rc in (0, 1) and "@article{" in bib and "pmid = {" in bib and "verified by pubmed-verifier" in bib,
        f"entries={bib.count('@article{')}")
 Path(bib_path).unlink(missing_ok=True)
+
+# ── T14: DOI-native verification (real DOI resolves, fake DOI = invalid) ──
+rc, so, data = run_cli(["--dois", "10.1038/nature12968,10.9999/fake.123456", "--no-cache"])
+res = {r.get("doi"): r for r in (data or {}).get("results", [])}
+ok1 = res.get("10.1038/nature12968", {}).get("resolved") is True
+ok2 = res.get("10.9999/fake.123456", {}).get("verdict") == "invalid"
+record("T14 DOI-native (resolve + fabrication signal)", rc == 1 and ok1 and ok2,
+       f"resolved={ok1} fake-invalid={ok2} rc={rc}")
+
+# ── T15: delta audit e2e (run, then diff against the exported baseline) ──
+import tempfile
+with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+    base_path = tf.name
+rc1, _, _ = run_cli(["--claims", json.dumps(claims[:1]), "--no-cache",
+                     "--export-audit", base_path])
+rc2, so2, data2 = run_cli(["--claims", json.dumps(claims[:1]), "--no-cache",
+                           "--diff", base_path])
+d2 = (data2 or {}).get("stats", {}).get("deltas")
+Path(base_path).unlink(missing_ok=True)
+record("T15 delta audit e2e",
+       rc1 in (0, 1) and rc2 in (0, 1) and d2 is not None and "newly_retracted" in d2,
+       f"rc1={rc1} rc2={rc2} deltas={d2}")
 
 # ── 汇总 ──
 passed = sum(1 for r in RESULTS if r["ok"])

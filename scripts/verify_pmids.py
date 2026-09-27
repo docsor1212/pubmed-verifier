@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v2.7.0
+PMID Citation Verifier -- PubMed E-utilities API v2.8.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Retraction detection for EVERY PMID (v2.7.0): the registry's own publication
 type ("Retracted Publication", present in both NCBI esummary and Europe PMC)
@@ -68,8 +68,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "2.7.0"
-_UA_TOOL = "pubmed-verifier/2.7 (+PMID citation verifier; stdlib-only)"
+_TOOL_VERSION = "2.8.0"
+_UA_TOOL = "pubmed-verifier/2.8 (+PMID citation verifier; stdlib-only)"
 _UA_BROWSER = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 _CIRCUIT_THRESHOLD = 2  # call-level consecutive transport failures per host
@@ -377,6 +377,148 @@ def search_pubmed(query: str, max_results: int = 5) -> list:
     return []
 
 
+# ── DOI-native verification (v2.8.0) ──
+
+DOI_PATTERNS = [
+    # anchored forms (url / doi:) — most reliable; ? cuts tracking params
+    # (utm_source etc. on real-world doi.org links — v2.8.0 attacker P1)
+    re.compile(r'(?:https?://(?:dx\.)?doi\.org/|doi:\s*)(10\.\d{4,9}/[^\s"\'<>),;\]?&=]+)', re.IGNORECASE),
+    # bare 10.x/y — requires the 4-9-digit registrant segment, still noisy-prone:
+    # strip trailing punctuation after match
+    re.compile(r'\b(10\.\d{4,9}/[^\s"\'<>),;\]?&=]+)', re.IGNORECASE),
+]
+
+
+def extract_dois_from_file(filepath: str) -> list:
+    """Extract (doi, context) pairs from a file (v2.8.0). Returns cleaned DOIs."""
+    results = []
+    try:
+        text = Path(filepath).read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return results
+    seen = set()
+    for pattern in DOI_PATTERNS:
+        for m in pattern.finditer(text):
+            doi = _clean_doi(m.group(1))
+            if not doi or doi in seen or "/" not in doi:
+                continue
+            seen.add(doi)
+            start = max(0, m.start() - 200)
+            end = min(len(text), m.end() + 40)
+            context = text[start:end].replace("\n", " ").strip()
+            results.append((doi, context))
+    return results
+
+
+def resolve_doi(doi: str, timeout=None) -> dict:
+    """Resolve a DOI against the Crossref works API (v2.8.0).
+
+    Returns {'status': 'resolved'|'not_found'|'error', 'meta': dict|None,
+    'error': str}. A 404 is an authoritative not-found (fabrication signal);
+    any transport/other failure is an 'error' and never counts against the DOI.
+    """
+    url = f"https://api.crossref.org/works/{urllib.parse.quote(_clean_doi(doi), safe='')}"
+    if _OPTS["mailto"]:
+        url += f"?mailto={urllib.parse.quote(_OPTS['mailto'])}"
+    try:
+        data = json.loads(_api_get(url, timeout=timeout if timeout is not None else _OPTS["timeout"]))
+        msg = data.get("message", {})
+        year = ""
+        pub_date = msg.get("published-print") or msg.get("published-online") or msg.get("created", {})
+        parts = pub_date.get("date-parts", [[]])
+        if parts and parts[0]:
+            year = str(parts[0][0])
+        # Retraction signal rides the same response (updated-by) — without it
+        # the --dois pipeline would be blind to retractions (v2.8.0 review P1)
+        retracted, retraction_note = False, ""
+        for u in msg.get("updated-by", []) or []:
+            if not isinstance(u, dict):
+                continue
+            utype = str(u.get("type") or u.get("update-type") or "").lower()
+            if utype == "retraction":
+                retracted = True
+                retraction_note = f"retracted by DOI {u.get('DOI', '?')}"
+                break
+        meta = {
+            "title": msg.get("title", [""])[0] if msg.get("title") else "",
+            "journal": msg.get("container-title", [""])[0] if msg.get("container-title") else "",
+            "year": year,
+            "authors": [f"{a.get('family', '')} {a.get('given', '')}".strip()
+                        for a in msg.get("author", [])],
+            "type": msg.get("type", ""),
+            "retracted": retracted,
+            "retraction_note": retraction_note,
+        }
+        return {"status": "resolved", "meta": meta, "error": ""}
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return {"status": "not_found", "meta": None,
+                    "error": "DOI not found in Crossref (404)"}
+        return {"status": "error", "meta": None, "error": f"crossref HTTP {e.code}"}
+    except (urllib.error.URLError, OSError, TimeoutError, http.client.HTTPException,
+            json.JSONDecodeError, ValueError, CircuitOpenError) as e:
+        return {"status": "error", "meta": None, "error": str(e)}
+
+
+def verify_doi_entry(doi: str, src: str) -> tuple:
+    """Verify one standalone DOI (v2.8.0). Returns (entry, audit_item).
+
+    Semantics are honest by construction: a resolving DOI proves existence,
+    never correctness — without claimed metadata the verdict stays unknown
+    with the registered metadata attached for human comparison. A Crossref
+    404 on an EXPLICITLY provided DOI counts as invalid (fabrication
+    signal); on one auto-extracted from scanned text it stays a suspect
+    (unknown) — the user never endorsed that string, and DataCite/repository
+    DOIs do not live in Crossref."""
+    entry = {"pmid": "", "doi": doi, "source_file": os.path.basename(src),
+             "claimed_title": "", "valid": False}
+    res = resolve_doi(doi)
+    if res["status"] == "resolved":
+        meta = res["meta"]
+        entry["resolved"] = True
+        entry["valid"] = True
+        entry["title"] = meta["title"]
+        entry["journal"] = meta["journal"]
+        entry["pubdate"] = meta["year"]
+        entry["authors"] = ", ".join(meta["authors"][:3])
+        entry["meta_source"] = "crossref"
+        entry["verdict"] = "unknown"
+        entry["details"] = (f"DOI resolves — registered: {meta['title'][:100]} "
+                            f"({meta['journal']}, {meta['year']}). No claimed "
+                            f"metadata to cross-verify.")
+        if meta.get("retracted"):
+            entry["retracted"] = True
+            entry["retraction_note"] = meta.get("retraction_note", "")
+            entry["retraction_source"] = "crossref updated-by"
+        audit = {"doi": doi, "pmid": "", "source_file": entry["source_file"],
+                 "registered": meta, "resolve": "resolved", "error": ""}
+    elif res["status"] == "not_found":
+        explicit = src == "cli"
+        entry["verdict"] = "invalid" if explicit else "unknown"
+        if explicit:
+            entry["details"] = ("DOI not found in Crossref — fabrication signal "
+                                "（DOI 查无——伪造信号；DataCite/仓储 DOI 不经 "
+                                "Crossref，处置前请经 doi.org 复核）")
+        else:
+            entry["details"] = ("DOI auto-extracted from scanned text, not found in "
+                                "Crossref（自动抽取的 DOI 在 Crossref 查无——疑似但"
+                                "不判伪造：DataCite/仓储 DOI 不经 Crossref，请人工经 "
+                                "doi.org 复核）")
+        entry["suspect"] = not explicit
+        entry["error"] = res["error"]
+        audit = {"doi": doi, "pmid": "", "source_file": entry["source_file"],
+                 "registered": None, "resolve": "not_found", "error": res["error"]}
+    else:
+        entry["verdict"] = "unknown"
+        entry["network_error"] = True
+        entry["error"] = res["error"]
+        entry["details"] = "Crossref unreachable — DOI could not be resolved (network), never counted as invalid"
+        audit = {"doi": doi, "pmid": "", "source_file": entry["source_file"],
+                 "registered": None, "resolve": "error", "error": res["error"]}
+    audit["verdict"] = {"final": entry["verdict"], "details": entry["details"]}
+    return entry, audit
+
+
 # ── Citation context parsing ──
 
 def parse_citation_context(context: str) -> dict:
@@ -609,7 +751,7 @@ def cross_check_citation(claimed: dict, actual: dict) -> dict:
                 surname = parts[-1]   # initials-first "A Zaripova" / "J.-P. Martin"
             else:
                 surname = parts[0]    # esummary format "Zaripova A" → Zaripova
-            return surname.lower().rstrip(".")
+            return surname.lower().rstrip(".,")
 
         actual_surnames = []
         for a in actual["authors"][:10]:
@@ -702,6 +844,36 @@ def cross_check_citation(claimed: dict, actual: dict) -> dict:
         result["verdict"] = "correct"
         result["details"] = ("author skipped (cross-language); all comparable "
                              "fields match")
+        return result
+
+    author_skipped = bool(result.get("author_check"))
+
+    # Title not claimed (v2.8.0 attacker P0): judge ONLY on comparable
+    # fields. Unanimous match = correct; any miss = partial. Falling through
+    # to the mismatch ladder accused perfectly-cited references of being
+    # hallucinations when the user simply omitted the title column.
+    if not claimed.get("claimed_title") and checks_run > 0:
+        matched_count = sum([result["title_match"], result["author_match"],
+                             result["journal_match"], result["year_match"]])
+        if matched_count == checks_run and not author_skipped:
+            result["verdict"] = "correct"
+            result["details"] = "title not claimed; all comparable fields match"
+            return result
+        if author_skipped and matched_count == checks_run:
+            result["verdict"] = "correct"
+            result["details"] = ("author skipped (cross-language); all comparable "
+                                 "fields match")
+            return result
+        miss = []
+        if claimed.get("claimed_authors") and not author_skipped and not result["author_match"]:
+            miss.append("author differs")
+        if claimed.get("claimed_journal") and not result["journal_match"]:
+            miss.append("journal differs")
+        if claimed.get("claimed_year") and not result["year_match"]:
+            miss.append("year differs")
+        result["verdict"] = "partial"
+        result["details"] = ("title not claimed; " +
+                             ("; ".join(miss) if miss else "comparable fields partially match"))
         return result
 
     if result["title_match"] and (result["author_match"] or result["journal_match"]):
@@ -1026,7 +1198,8 @@ def apply_retraction_cap(verdict: str, details: str) -> tuple:
 def _clean_doi(doi: str) -> str:
     """Normalize a DOI for identity comparison: strip url/doi: prefixes
     (repeatedly -- composite prefixes happen), bare-host forms and trailing
-    punctuation, lowercase."""
+    punctuation (including CJK sentence marks and closing brackets/quotes —
+    scanned text routinely ends a DOI with them), lowercase."""
     s = str(doi or "").strip().lower()
     changed = True
     while changed:
@@ -1036,8 +1209,12 @@ def _clean_doi(doi: str) -> str:
             if s.startswith(pref):
                 s = s[len(pref):].strip()
                 changed = True
-        if s.endswith((".", ",", ";", ":")):
+        if s.endswith((".", ",", ";", ":", "。", "，", "；", "）", "」", "】",
+                      ")", "]", "}", "!", "?", "!", "?", '"', "”", "’", "'")):
             s = s[:-1].rstrip()
+            changed = True
+        if "?" in s:
+            s = s.split("?", 1)[0].strip()   # tracking params on doi.org links
             changed = True
     return s
 
@@ -1191,9 +1368,10 @@ def generate_bibtex(results: list) -> str:
     key_counts = {}
     seen_pmids = set()
     for r in results:
-        if r["pmid"] in seen_pmids:
-            continue          # same paper cited several times: one @article
-        seen_pmids.add(r["pmid"])
+        if r.get("pmid"):
+            if r["pmid"] in seen_pmids:
+                continue          # same paper cited several times: one @article
+            seen_pmids.add(r["pmid"])
         if r.get("retracted"):
             excluded += 1
             lines.append(f"% EXCLUDED (RETRACTED): PMID {r['pmid']} — do not cite.")
@@ -1271,7 +1449,61 @@ def readiness_summary(stats: dict) -> tuple:
     return False, "NOT SUBMISSION-READY — " + ", ".join(parts)
 
 
-def generate_audit_report(entries: list, stats: dict, args) -> str:
+def diff_against_baseline(results: list, baseline_path: str) -> dict:
+    """Compare a current run to a previous audit working-paper (v2.8.0):
+    newly_retracted (the safety signal), degraded, improved, new, dropped."""
+    deltas = {"newly_retracted": [], "degraded": [], "improved": [],
+              "new": [], "dropped": []}
+    try:
+        old = json.loads(Path(baseline_path).read_text(encoding="utf-8"))
+    except Exception as e:
+        deltas["error"] = f"baseline unreadable: {e}"
+        return deltas
+    old_citations = old.get("citations", old if isinstance(old, list) else [])
+    old_by_key = {}
+    for c in old_citations:
+        if not isinstance(c, dict):
+            continue
+        key = str(c.get("pmid") or c.get("doi") or "")
+        if key:
+            old_by_key[key] = c
+    new_keys = set()
+    bad_now = {"mismatch", "invalid", "unknown"}
+    for r in results:
+        key = str(r.get("pmid") or r.get("doi") or "")
+        if not key:
+            continue
+        new_keys.add(key)
+        o = old_by_key.get(key)
+        old_verdict = ""
+        if o:
+            v_obj = o.get("verdict")
+            old_verdict = v_obj.get("final", "") if isinstance(v_obj, dict) else str(v_obj or "")
+        old_retracted = bool((o.get("retraction") or {}).get("flagged")) if o else False
+        new_retracted = bool(r.get("retracted"))
+        if new_retracted and not old_retracted:
+            # a retraction is a safety signal even for newly scanned citations
+            deltas["newly_retracted"].append({
+                "key": key, "title": str(r.get("title", ""))[:80],
+                "note": r.get("retraction_note", "")})
+        if o is None:
+            deltas["new"].append({"key": key, "verdict": r.get("verdict")})
+            continue
+        if old_verdict == "correct" and r.get("verdict") in bad_now \
+                and not new_retracted and not r.get("network_error"):
+            deltas["degraded"].append({"key": key, "was": old_verdict,
+                                       "now": r.get("verdict"),
+                                       "details": str(r.get("details", ""))[:80]})
+        elif old_verdict in bad_now and r.get("verdict") == "correct":
+            deltas["improved"].append({"key": key, "was": old_verdict})
+    for key in old_by_key:
+        if key not in new_keys:
+            deltas["dropped"].append({"key": key})
+    deltas["counts"] = {k: len(v) for k, v in deltas.items() if isinstance(v, list)}
+    return deltas
+
+
+def generate_audit_report(entries: list, stats: dict, args, deltas: dict = None) -> str:
     """Self-contained audit working-paper (v2.6.0): tool identity, redacted
     invocation, per-citation evidence chain and verdict-ladder trace. A third
     party can replay the whole verification from this file alone."""
@@ -1287,8 +1519,12 @@ def generate_audit_report(entries: list, stats: dict, args) -> str:
                 "suggest": args.suggest,
                 "timeout_s": args.timeout,
                 "cache_days": args.cache_days,
-                "cache_used": not args.no_cache,
-                "ncbi_api_key_configured": bool(_OPTS["ncbi_key"]),
+            "cache_used": not args.no_cache,
+            "matching": ("title: word-jaccard>=0.5 OR char-similarity>=0.9; "
+                         "author: surname substring, initials excluded, "
+                         "CJK/Latin cross-language skipped; journal: containment "
+                         "or NLM abbreviation; year: exact"),
+            "ncbi_api_key_configured": bool(_OPTS["ncbi_key"]),
                 "mailto_configured": bool(_OPTS["mailto"]),
             },
             "data_sources": ["eutils.ncbi.nlm.nih.gov", "www.ebi.ac.uk/europepmc",
@@ -1297,6 +1533,7 @@ def generate_audit_report(entries: list, stats: dict, args) -> str:
         },
         "summary": stats,
         "citations": entries,
+        "delta_vs_baseline": deltas,
         "honesty_notes": [
             "Network failures are reported as unknown, never as not-found, and are not cached.",
             "A missing retraction record is not evidence of no retraction (source outages skip the check).",
@@ -1314,7 +1551,8 @@ def generate_json_report(results: list[dict], stats: dict) -> str:
     return json.dumps({"stats": stats, "results": results}, ensure_ascii=False, indent=2)
 
 
-def generate_html_report(results: list[dict], stats: dict, source: str, repro: dict = None) -> str:
+def generate_html_report(results: list[dict], stats: dict, source: str, repro: dict = None,
+                         deltas: dict = None) -> str:
     total = stats["total"]
     correct = stats.get("correct", 0)
     mismatch = stats.get("mismatch", 0)
@@ -1365,6 +1603,7 @@ def generate_html_report(results: list[dict], stats: dict, source: str, repro: d
         date = html.escape(r.get("pubdate", ""))
         source_file = html.escape(r.get("source_file", ""))
         details = html.escape(r.get("details", ""))
+        key_display = html.escape(r.get("pmid") or r.get("doi", ""))
         suggested = r.get("suggested_pmids", [])
         suggested_str = ""
         if suggested:
@@ -1378,7 +1617,7 @@ def generate_html_report(results: list[dict], stats: dict, source: str, repro: d
         rows += (
             f'<tr class="{row_class}">'
             f'<td>{status_icon}</td>'
-            f'<td>{pmid}{flag_html}</td>'
+            f'<td>{key_display}{flag_html}</td>'
             f'<td>{source_file}</td>'
             f'<td class="claimed">{claimed_title}</td>'
             f'<td>{actual_title}</td>'
@@ -1412,6 +1651,20 @@ def generate_html_report(results: list[dict], stats: dict, source: str, repro: d
     ready, ready_line = readiness_summary(stats)
     banner = (f'<div class="ready ok">{ready_line}</div>' if ready
               else f'<div class="ready notok">{ready_line}</div>')
+
+    delta_html = ""
+    if deltas and "error" not in deltas:
+        cnt = deltas["counts"]
+        nr_items = "".join(
+            f'<div>⚠ <b>{html.escape(str(d["key"]))}</b> — {html.escape(d.get("title", ""))}</div>'
+            for d in deltas["newly_retracted"])
+        delta_html = (f'<div class="repro"><b>Delta vs baseline:</b> '
+                      f'{cnt.get("newly_retracted", 0)} newly retracted · '
+                      f'{cnt.get("degraded", 0)} degraded · '
+                      f'{cnt.get("improved", 0)} improved · '
+                      f'{cnt.get("new", 0)} new · '
+                      f'{cnt.get("dropped", 0)} dropped'
+                      f'{("<br>" + nr_items) if nr_items else ""}</div>')
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -1449,6 +1702,7 @@ tr.splice{{background:#fdecea;box-shadow:inset 3px 0 0 #c0392b;}}
 <h1>📋 PMID Citation Verification Report</h1>
 {banner}
 <p>Source: <code>{html.escape(source)}</code></p>
+{delta_html}
 <div class="filters">
 <button onclick="flt('all')">All ({total})</button>
 <button onclick="flt('retracted')">Retracted</button>
@@ -1494,14 +1748,14 @@ function flt(c) {{
 }}
 </script>
 {repro_html}
-<div class="footer">Generated by pubmed-verifier skill (v2.7) · {time.strftime("%Y-%m-%d %H:%M")}</div>
+<div class="footer">Generated by pubmed-verifier skill (v{_TOOL_VERSION}) · {time.strftime("%Y-%m-%d %H:%M")}</div>
 </body></html>"""
 
 
 # ── Main ──
 
 def main():
-    parser = argparse.ArgumentParser(description="PMID Citation Verifier v2.7.0 -- Five-state verification with retraction detection for every PMID, caching, CSV, DOI support, DOI-splice cross-check, author/journal matching, audit + BibTeX export, and dual-source network hardening")
+    parser = argparse.ArgumentParser(description="PMID Citation Verifier v2.8.0 -- Five-state verification of PMIDs and DOIs with retraction detection for every citation, DOI-native verification, delta audits against a baseline, audit/BibTeX export, and dual-source network hardening")
     parser.add_argument("--source", help="File or directory to scan for PMIDs")
     parser.add_argument("--pmids", help="Comma-separated PMIDs to verify directly")
     parser.add_argument("--claims", help="JSON string with claimed metadata: [{pmid,title,authors,journal,year},...]")
@@ -1527,7 +1781,11 @@ def main():
                         help="Write a self-contained JSON audit working-paper: tool identity, redacted invocation, per-citation evidence chain and verdict trace")
     parser.add_argument("--export-bibtex", metavar="PATH",
                         help="Export verified references as BibTeX (correct included; partial commented; retracted/excluded counted)")
-    parser.add_argument("--version", action="version", version="pubmed-verifier 2.7.0")
+    parser.add_argument("--dois", metavar="DOI_LIST",
+                        help="Comma-separated DOIs to verify natively via Crossref (existence + registered metadata; 404 = fabrication signal)")
+    parser.add_argument("--diff", metavar="BASELINE_JSON",
+                        help="Compare this run to a previous audit working-paper: newly retracted, degraded, improved, new, dropped")
+    parser.add_argument("--version", action="version", version=f"pubmed-verifier {_TOOL_VERSION}")
     args = parser.parse_args()
 
     _OPTS["ncbi_key"] = args.ncbi_api_key or os.environ.get("NCBI_API_KEY", "")
@@ -1551,37 +1809,56 @@ def main():
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     claims_data = json.load(f)
+                if not isinstance(claims_data, list):
+                    raise ValueError("claims file must be a JSON array of objects")
                 for item in claims_data:
+                    if not isinstance(item, dict):
+                        continue
                     pmid = str(item.get("pmid", "")).strip()
                     if pmid.isdigit():
                         explicit_claims[pmid] = {
-                            "claimed_title": item.get("title", ""),
-                            "claimed_authors": item.get("authors", []) if isinstance(item.get("authors"), list) else [],
-                            "claimed_journal": item.get("journal", ""),
-                            "claimed_year": str(item.get("year", "")),
+                            "claimed_title": str(item.get("title", "") or ""),
+                            "claimed_authors": [str(a) for a in item["authors"]]
+                                               if isinstance(item.get("authors"), list) else [],
+                            "claimed_journal": str(item.get("journal", "") or ""),
+                            "claimed_year": str(item.get("year", "") or ""),
                             "claimed_doi": str(item.get("doi", "") or ""),
                         }
-            except Exception as e:
+            except (json.JSONDecodeError, ValueError, OSError) as e:
                 print(f"Error reading claims file: {e}", file=sys.stderr)
                 sys.exit(1)
     elif args.claims:
         try:
             claims_data = json.loads(args.claims)
+            if not isinstance(claims_data, list):
+                raise ValueError("--claims must be a JSON array of objects")
             for item in claims_data:
+                if not isinstance(item, dict):
+                    continue
                 pmid = str(item.get("pmid", "")).strip()
                 if pmid.isdigit():
                     explicit_claims[pmid] = {
-                        "claimed_title": item.get("title", ""),
-                        "claimed_authors": item.get("authors", []) if isinstance(item.get("authors"), list) else [],
-                        "claimed_journal": item.get("journal", ""),
-                        "claimed_year": str(item.get("year", "")),
+                        "claimed_title": str(item.get("title", "") or ""),
+                        "claimed_authors": [str(a) for a in item["authors"]]
+                                           if isinstance(item.get("authors"), list) else [],
+                        "claimed_journal": str(item.get("journal", "") or ""),
+                        "claimed_year": str(item.get("year", "") or ""),
                         "claimed_doi": str(item.get("doi", "") or ""),
                     }
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, ValueError) as e:
             print(f"Error parsing --claims JSON: {e}", file=sys.stderr)
             sys.exit(1)
 
     # Collect PMIDs from sources
+    doi_inputs = []   # (clean_doi, source_label) — v2.8.0
+    if args.dois:
+        for d in args.dois.split(","):
+            cd = _clean_doi(d)
+            if cd:
+                doi_inputs.append((cd, "cli"))
+    if args.pmids and args.source:
+        print("WARN: both --pmids and --source given; --source is ignored "
+              "entirely (its PMIDs and DOIs are NOT scanned).", file=sys.stderr)
     if args.pmids:
         for p in args.pmids.split(","):
             p = p.strip()
@@ -1595,12 +1872,19 @@ def main():
             for pmid, ctx in found:
                 claimed = explicit_claims.get(pmid, parse_citation_context(ctx))
                 pmid_entries.append((pmid, source, ctx, claimed))
+            for doi, dctx in extract_dois_from_file(source):
+                doi_inputs.append((_clean_doi(doi), source))
         elif os.path.isdir(source):
             file_map = extract_pmids_from_directory(source)
             for fpath, items in file_map.items():
                 for pmid, ctx in items:
                     claimed = explicit_claims.get(pmid, parse_citation_context(ctx))
                     pmid_entries.append((pmid, fpath, ctx, claimed))
+            for root, dirs, files in os.walk(source):
+                for fname in files:
+                    if fname.lower().endswith((".html", ".md", ".txt", ".htm", ".json")):
+                        for doi, dctx in extract_dois_from_file(os.path.join(root, fname)):
+                            doi_inputs.append((_clean_doi(doi), os.path.join(root, fname)))
         else:
             print(f"Error: {source} not found", file=sys.stderr)
             sys.exit(1)
@@ -1608,12 +1892,12 @@ def main():
         # Only --claims provided, no --source or --pmids
         for pmid, claimed in explicit_claims.items():
             pmid_entries.append((pmid, "claims", "", claimed))
-    else:
+    elif not doi_inputs:
         parser.print_help()
         sys.exit(1)
 
-    if not pmid_entries:
-        print("No PMIDs found.")
+    if not pmid_entries and not doi_inputs:
+        print("No PMIDs or DOIs found.")
         sys.exit(0)
 
     # Deduplicate, preserving all source contexts and claims
@@ -1624,7 +1908,10 @@ def main():
         seen[pmid].append((src, ctx, claimed))
 
     unique_pmids = list(seen.keys())
-    print(f"Found {len(pmid_entries)} PMID citations ({len(unique_pmids)} unique). Verifying...")
+    if unique_pmids:
+        print(f"Found {len(pmid_entries)} PMID citations ({len(unique_pmids)} unique). Verifying...")
+    if doi_inputs:
+        print(f"Found {len(doi_inputs)} DOI citations to verify via Crossref...")
 
     # Initialize cache
     use_cache = not args.no_cache
@@ -1832,6 +2119,45 @@ def main():
                 })
             results.append(entry)
 
+    # Standalone DOI verification pipeline (v2.8.0)
+    doi_seen = set(r.get("doi") for r in results if r.get("doi"))
+    doi_processed = 0
+    for doi_idx, (doi, src) in enumerate(doi_inputs, 1):
+        if doi in doi_seen:
+            continue
+        doi_seen.add(doi)
+        doi_processed += 1
+        if doi_idx % 25 == 0 or doi_idx == len(doi_inputs):
+            print(f"  DOI progress: {doi_idx}/{len(doi_inputs)} resolved...",
+                  flush=True)
+        entry, audit_item = verify_doi_entry(doi, src)
+        if entry["verdict"] == "invalid":
+            stats["invalid"] += 1
+        elif entry.get("network_error"):
+            stats["unknown"] += 1
+            stats["network_errors"] = stats.get("network_errors", 0) + 1
+        elif entry.get("resolved"):
+            stats["unknown"] += 1
+            stats["doi_resolved"] = stats.get("doi_resolved", 0) + 1
+        else:
+            stats["unknown"] += 1   # scanned-404 suspect: existence unknown
+        if entry.get("retracted"):
+            stats["retracted"] = stats.get("retracted", 0) + 1
+        results.append(entry)
+        audit_entries.append(audit_item)
+    if doi_processed:
+        stats["total"] = stats.get("total", 0) + doi_processed
+
+    # Delta audit against a previous working-paper (v2.8.0)
+    deltas = None
+    if args.diff:
+        deltas = diff_against_baseline(results, args.diff)
+        if deltas.get("error"):
+            print(f"Diff error: {deltas['error']}", file=sys.stderr)
+            deltas = None
+        else:
+            stats["deltas"] = deltas["counts"]
+
     stats["submission_readiness"] = {}
     ready, ready_line = readiness_summary(stats)
     stats["submission_readiness"] = {"ready": ready, "summary": ready_line}
@@ -1851,7 +2177,8 @@ def main():
         if args.format == "json" or ext == ".json":
             output_text = generate_json_report(results, stats)
         elif args.format == "html" or ext in (".html", ".htm"):
-            output_text = generate_html_report(results, stats, args.source or args.pmids or "claims", repro)
+            output_text = generate_html_report(results, stats, args.source or args.pmids or "claims", repro,
+                                               deltas)
         else:
             print("Unsupported --output extension (use .json or .html); "
                   "omit --output for terminal text output.", file=sys.stderr)
@@ -1861,7 +2188,7 @@ def main():
 
     if args.export_audit:
         Path(args.export_audit).write_text(
-            generate_audit_report(audit_entries, stats, args), encoding="utf-8")
+            generate_audit_report(audit_entries, stats, args, deltas), encoding="utf-8")
         print(f"Audit trail written to {args.export_audit}")
 
     if args.export_bibtex:
@@ -1878,6 +2205,13 @@ def main():
         unknown = stats.get("unknown", 0)
         print(f"\n{'='*60}")
         print(f"Readiness: {ready_line}")
+        if deltas and "error" not in deltas:
+            cnt = deltas["counts"]
+            print(f"Delta vs baseline: {cnt.get('newly_retracted', 0)} newly retracted, "
+                  f"{cnt.get('degraded', 0)} degraded, {cnt.get('improved', 0)} improved, "
+                  f"{cnt.get('new', 0)} new, {cnt.get('dropped', 0)} dropped")
+            for item in deltas["newly_retracted"]:
+                print(f"  ⚠ NEWLY RETRACTED: {item['key']} — {item['title']}")
         print(f"Results: {correct}/{stats['total']} correct, {mismatch} mismatch, "
               f"{stats['invalid']} invalid, {partial} partial, {unknown} unknown")
         if stats.get("unmatched"):
@@ -1906,7 +2240,8 @@ def main():
             else:
                 icon = "❓"
             
-            line = f"{icon} PMID {r['pmid']} ({r['source_file']}) [{verdict}]"
+            key_label = f"DOI {r['doi']}" if r.get("doi") and not r.get("pmid") else f"PMID {r['pmid']}"
+            line = f"{icon} {key_label} ({r['source_file']}) [{verdict}]"
             if r.get("valid"):
                 line += f"\n   Actual: {r.get('title', '')[:90]}"
                 if r.get("claimed_title"):

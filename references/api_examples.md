@@ -90,7 +90,7 @@ Useful fields: `id` (PMID), `title`, `authorString` (comma-separated),
 
 ```bash
 # ?mailto= joins the polite pool — more generous rate limits
-curl -s "https://api.crossref.org/works/10.1186/s12969-021-00611-9?mailto=you@lab.org"
+curl -s "https://api.crossref.org/works/10.1038/nature12968?mailto=you@lab.org"
 ```
 
 - 429 responses carry `Retry-After` — back off accordingly (v2.2.0 clamps 1–5 s)

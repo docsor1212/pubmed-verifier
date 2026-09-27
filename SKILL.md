@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 2.7.0
+version: 2.8.0
 description: >-
   Batch-verify PMID citations against PubMed and catch the hallucination that
   existence checks miss — a REAL PMID pointing to a DIFFERENT paper (the most
@@ -20,7 +20,7 @@ description: >-
   validate citations, PubMed citation verifier.
 ---
 
-# PubMed Citation Verifier v2.7.0
+# PubMed Citation Verifier v2.8.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -69,6 +69,10 @@ python3 scripts/verify_pmids.py --claims-file claims.csv --suggest --output repo
 
 # Crossref DOI cross-verification + audit working-paper + BibTeX + full pipeline
 python3 scripts/verify_pmids.py --source /path/to/files --verify-doi --suggest --output report.html --export-audit audit.json --export-bibtex refs.bib
+
+# Verify DOIs directly (no PMIDs) + delta audit vs a previous run
+python3 scripts/verify_pmids.py --dois "10.1038/nature12968,10.4012/dmj.2020-408" --export-audit audit.json
+python3 scripts/verify_pmids.py --source /path/to/project --diff audit.json --output report.html
 
 # Institutional niceties (recommended): NCBI API key + contact email
 python3 scripts/verify_pmids.py --source . --verify-doi --ncbi-api-key $NCBI_API_KEY --mailto you@lab.org
@@ -184,6 +188,24 @@ otherwise-unverifiable citation (the DOI mismatch is an independent fact).
   `SUBMISSION READY` or `NOT SUBMISSION-READY — <per-problem counts>`.
 - Cache schema v3 (adds a `retracted` column, auto-migrated).
 
+## v2.8.0 — DOI-native verification & delta audits
+
+- **`--dois "10.x/a, 10.y/b"`** — verify DOIs natively, no PMID required.
+  `--source` scans now also extract DOIs from your files automatically.
+  Each DOI is resolved via the Crossref works API: not-found on an explicitly
+  provided DOI = fabrication signal (invalid, exit 1); on one auto-extracted
+  from scanned text it stays a suspect (unknown) — scanned strings are never
+  user-endorsed, and DataCite/repository DOIs do not live in Crossref, so
+  always double-check at doi.org. Resolved = existence confirmed with the
+  registered metadata attached for manual comparison — *existence is never
+  dressed up as a match*.
+- **`--diff previous-audit.json`** — delta audit against a previous working
+  paper: **newly retracted** (the safety signal — a paper retracted after
+  your last audit; act on it: swap or drop the citation, cite the retraction
+  notice instead, and re-check any conclusion that relied on it), degraded,
+  improved, new and dropped citations, with counts in every report format.
+  Built for periodic knowledge-base audits: "what changed since last time?"
+
 ## How it works
 
 1. **Extract + parse context** — finds `PMID: 12345678` / PubMed URLs in
@@ -295,7 +317,7 @@ Feed the full citation via `--claims-file` for a precise verdict.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v2.7.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v2.8.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref API notes |
 | `tests/` | Offline matrix + real-network acceptance (repo only, not in the package) |
 

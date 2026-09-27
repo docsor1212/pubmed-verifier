@@ -303,7 +303,7 @@ class TestCli(_Reset):
         script = Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"
         out = subprocess.run([sys.executable, str(script), "--version"],
                              capture_output=True, text=True)
-        self.assertIn("2.7.0", out.stdout + out.stderr)
+        self.assertIn("2.8.0", out.stdout + out.stderr)
 
     def test_host_key_granularity(self):
         self.assertEqual(vp._host_key("https://eutils.ncbi.nlm.nih.gov/a?b=c"),
@@ -512,12 +512,14 @@ class TestAuthorVerification(_Reset):
         self.assertIn("partial skip", r.get("author_check", ""))
 
     def test_mismatch_details_not_fabricated(self):
-        # title never claimed -> details must not say "title differs"
+        # title never claimed -> details must not say "title differs"; and
+        # with only the author field comparable (and wrong), the honest
+        # verdict is partial, not mismatch (v2.8.0 title-not-claimed ladder)
         claimed = {"claimed_title": "", "claimed_authors": ["Ravelli"],
                    "claimed_journal": "", "claimed_year": ""}
         actual = {"title": "", "authors": ["Smith J"], "journal": "", "pubdate": ""}
         r = vp.cross_check_citation(claimed, actual)
-        self.assertEqual(r["verdict"], "mismatch")
+        self.assertEqual(r["verdict"], "partial")
         self.assertNotIn("title differs", r["details"])
         self.assertIn("author differs", r["details"])
 
@@ -715,6 +717,57 @@ class TestExportsAndReadiness(_Reset):
         for token in ("1 invalid", "1 retracted", "2 DOI-spliced", "3 unverified"):
             self.assertIn(token, line)
 
+    def test_scanned_404_is_suspect_not_invalid(self):
+        # compliance P1: auto-extracted DOIs are not user-endorsed — a
+        # Crossref 404 stays a suspect (unknown), never "fabrication"
+        with mock.patch.object(vp, "resolve_doi",
+                               return_value={"status": "not_found", "meta": None,
+                                             "error": "404"}):
+            entry, _ = vp.verify_doi_entry("10.5281/zenodo.12146", "scanned.html")
+        self.assertEqual(entry["verdict"], "unknown")
+        self.assertTrue(entry.get("suspect"))
+
+    def test_resolved_retracted_propagates(self):
+        with mock.patch.object(vp, "resolve_doi",
+                               return_value={"status": "resolved",
+                                             "meta": {"title": "T", "journal": "J",
+                                                      "year": "2020", "authors": [],
+                                                      "retracted": True,
+                                                      "retraction_note": "r by 10.1/x"},
+                                             "error": ""}):
+            entry, _ = vp.verify_doi_entry("10.1/retr", "cli")
+        self.assertTrue(entry["retracted"])
+        self.assertEqual(entry.get("retraction_source"), "crossref updated-by")
+
+
+class TestHtmlRender(_Reset):
+    """P0 escape-root-cause guard: HTML must render for every shape."""
+
+    def _render(self, results, deltas=None):
+        stats = {"total": len(results), "correct": 0, "mismatch": 0, "partial": 0,
+                 "invalid": 0, "unknown": 0, "unmatched": 0, "retracted": 0,
+                 "doi_splice": 0}
+        return vp.generate_html_report(results, stats, "test",
+                                       {"command": "x", "version": vp._TOOL_VERSION,
+                                        "sources": "s", "generated_at": "t"},
+                                       deltas)
+
+    def test_html_renders_with_and_without_deltas(self):
+        results = [{"pmid": "123", "verdict": "correct", "title": "T", "retracted": False,
+                    "fields": {"title": True, "author": None, "journal": None, "year": None}}]
+        for deltas in (None, {"counts": {"newly_retracted": 1}, "newly_retracted": [
+                {"key": "1", "title": "T"}]}):
+            html = self._render(results, deltas)
+            self.assertIn("flt(", html)
+            self.assertIn("Delta vs baseline" if deltas else "PMID", html)
+
+    def test_html_doi_entries_render(self):
+        results = [{"pmid": "", "doi": "10.1/x", "verdict": "unknown", "resolved": True,
+                    "title": "Registered T", "retracted": False,
+                    "fields": None}]
+        html = self._render(results, None)
+        self.assertIn("10.1/x", html)
+
     def test_readiness_unknown_only_discloses_existence_check(self):
         # medical-review P1: --pmids without claims -> unknown (existence-only);
         # READY must disclose that, never dress it up as full verification
@@ -723,6 +776,154 @@ class TestExportsAndReadiness(_Reset):
         self.assertTrue(ready)
         self.assertIn("4 citation(s) existence-checked only", line)
         self.assertIn("--claims-file", line)
+
+
+class TestDoiNative(_Reset):
+    """v2.8.0 DOI-native verification."""
+
+    def test_extract_patterns(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "t.html"
+            p.write_text('<a href="https://doi.org/10.1186/s12969-021-00611-9">x</a> '
+                         'doi:10.4012/dmj.2020-408 and bare 10.1038/nature12968. end',
+                         encoding="utf-8")
+            dois = [d for d, _ in vp.extract_dois_from_file(str(p))]
+        self.assertEqual(dois, ["10.1186/s12969-021-00611-9",
+                                "10.4012/dmj.2020-408", "10.1038/nature12968"])
+
+    def test_resolve_resolved(self):
+        payload = {"message": {"title": ["Registered Title"], "type": "journal-article",
+                               "container-title": ["J"], "author": [{"family": "S", "given": "G"}],
+                               "issued": {"date-parts": [[2020]]}}}
+        with mock.patch.object(vp.urllib.request, "urlopen",
+                               return_value=_ok(json.dumps(payload).encode())):
+            res = vp.resolve_doi("10.1/x")
+        self.assertEqual(res["status"], "resolved")
+        self.assertEqual(res["meta"]["title"], "Registered Title")
+
+    def test_resolve_404_is_not_found(self):
+        with mock.patch.object(vp.urllib.request, "urlopen",
+                               side_effect=urllib.error.HTTPError("u", 404, "nf", {}, None)):
+            res = vp.resolve_doi("10.1/fake")
+        self.assertEqual(res["status"], "not_found")
+
+    def test_resolve_network_error_never_invalid(self):
+        with mock.patch.object(vp.urllib.request, "urlopen",
+                               side_effect=urllib.error.URLError("down")), \
+             mock.patch.object(vp.time, "sleep"):
+            res = vp.resolve_doi("10.1/x")
+        self.assertEqual(res["status"], "error")
+
+    def test_verify_entry_semantics(self):
+        with mock.patch.object(vp, "resolve_doi",
+                               return_value={"status": "not_found", "meta": None,
+                                             "error": "404"}):
+            entry, _ = vp.verify_doi_entry("10.1/fake", "cli")
+        self.assertEqual(entry["verdict"], "invalid")
+        with mock.patch.object(vp, "resolve_doi",
+                               return_value={"status": "resolved",
+                                             "meta": {"title": "T", "journal": "J",
+                                                      "year": "2020", "authors": []},
+                                             "error": ""}):
+            entry, _ = vp.verify_doi_entry("10.1/ok", "cli")
+        # existence without claims is unknown, never dressed as correct
+        self.assertEqual(entry["verdict"], "unknown")
+        self.assertTrue(entry["resolved"])
+        self.assertIn("No claimed metadata", entry["details"])
+
+
+class TestDeltaAudit(_Reset):
+    """v2.8.0 delta audit against a baseline working-paper."""
+
+    def _baseline(self, path):
+        path.write_text(json.dumps({"citations": [
+            {"pmid": "123", "verdict": {"final": "correct"}, "retraction": {"flagged": False}},
+            {"pmid": "999", "verdict": {"final": "invalid"}, "retraction": {"flagged": False}},
+        ]}), encoding="utf-8")
+
+    def test_newly_retracted_including_new_entries(self):
+        with tempfile.TemporaryDirectory() as td:
+            bp = Path(td) / "b.json"
+            self._baseline(bp)
+            results = [{"pmid": "123", "verdict": "correct", "retracted": False},
+                       {"pmid": "24476887", "verdict": "partial", "retracted": True,
+                        "title": "STAP", "retraction_note": "n"}]
+            d = vp.diff_against_baseline(results, str(bp))
+        self.assertEqual(d["counts"]["newly_retracted"], 1)
+        self.assertEqual(d["newly_retracted"][0]["key"], "24476887")
+
+    def test_dropped_and_counts(self):
+        with tempfile.TemporaryDirectory() as td:
+            bp = Path(td) / "b.json"
+            self._baseline(bp)
+            results = [{"pmid": "123", "verdict": "correct", "retracted": False}]
+            d = vp.diff_against_baseline(results, str(bp))
+        self.assertEqual(d["dropped"], [{"key": "999"}])
+        self.assertEqual(d["counts"]["dropped"], 1)
+
+    def test_degraded_and_improved(self):
+        with tempfile.TemporaryDirectory() as td:
+            bp = Path(td) / "b.json"
+            bp.write_text(json.dumps({"citations": [
+                {"pmid": "1", "verdict": {"final": "correct"}, "retraction": {"flagged": False}},
+                {"pmid": "2", "verdict": {"final": "invalid"}, "retraction": {"flagged": False}},
+            ]}), encoding="utf-8")
+            results = [{"pmid": "1", "verdict": "mismatch", "retracted": False},
+                       {"pmid": "2", "verdict": "correct", "retracted": False}]
+            d = vp.diff_against_baseline(results, str(bp))
+        self.assertEqual(d["counts"]["degraded"], 1)
+        self.assertEqual(d["counts"]["improved"], 1)
+
+
+class TestAttackRegressions(_Reset):
+    """v2.8.0 strict-round attacker findings — locked as regressions."""
+
+    def test_authors_only_correct_claim_not_mismatch(self):
+        # attacker P0: title omitted, authors correct -> was accused "mismatch"
+        claimed = {"claimed_title": "", "claimed_authors": ["Gattorno", "Hofer"],
+                   "claimed_journal": "", "claimed_year": ""}
+        actual = {"title": "", "authors": ["Gattorno M", "Hofer M"],
+                  "journal": "", "pubdate": ""}
+        r = vp.cross_check_citation(claimed, actual)
+        self.assertEqual(r["verdict"], "correct")
+        self.assertIn("all comparable fields match", r["details"])
+
+    def test_authors_only_wrong_journal_partial_not_mismatch(self):
+        claimed = {"claimed_title": "", "claimed_authors": ["Gattorno"],
+                   "claimed_journal": "Wrong Journal", "claimed_year": ""}
+        actual = {"title": "", "authors": ["Gattorno M"], "journal": "Right J",
+                  "pubdate": ""}
+        r = vp.cross_check_citation(claimed, actual)
+        self.assertEqual(r["verdict"], "partial")
+        self.assertIn("journal differs", r["details"])
+
+    def test_family_given_comma_authors_match(self):
+        # attacker P2: "Gattorno, Marco" claims never matched
+        claimed = {"claimed_title": "", "claimed_authors": ["Gattorno, Marco"],
+                   "claimed_journal": "", "claimed_year": ""}
+        actual = {"title": "", "authors": ["Gattorno M"], "journal": "", "pubdate": ""}
+        r = vp.cross_check_citation(claimed, actual)
+        self.assertTrue(r["author_match"])
+
+    def test_doi_query_string_stripped(self):
+        # attacker P1: utm params on doi.org links framed real DOIs as fake
+        self.assertEqual(vp._clean_doi("10.1038/nature12968?utm_source=twitter"),
+                         "10.1038/nature12968")
+
+    def test_cjk_trailing_punctuation_stripped(self):
+        self.assertEqual(vp._clean_doi("10.1038/abc。"), "10.1038/abc")
+        self.assertEqual(vp._clean_doi("10.1038/abc]"), "10.1038/abc")
+
+    def test_malformed_claims_shapes(self):
+        # attacker P2: dict/int top-level and items must not traceback
+        import subprocess
+        script = Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"
+        for bad in ('{"pmid":"1","title":"x"}', "[1,2,3]",
+                    '[{"pmid":"31018962","title":123}]'):
+            out = subprocess.run([sys.executable, str(script), "--claims", bad,
+                                  "--no-cache"], capture_output=True, text=True,
+                                 timeout=60)
+            self.assertNotIn("Traceback", out.stderr, bad)
 
 
 class TestRetraction(_Reset):
