@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 2.8.0
+version: 2.9.0
 description: >-
   Batch-verify PMID citations against PubMed and catch the hallucination that
   existence checks miss — a REAL PMID pointing to a DIFFERENT paper (the most
@@ -20,7 +20,7 @@ description: >-
   validate citations, PubMed citation verifier.
 ---
 
-# PubMed Citation Verifier v2.8.0
+# PubMed Citation Verifier v2.9.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -71,7 +71,7 @@ python3 scripts/verify_pmids.py --claims-file claims.csv --suggest --output repo
 python3 scripts/verify_pmids.py --source /path/to/files --verify-doi --suggest --output report.html --export-audit audit.json --export-bibtex refs.bib
 
 # Verify DOIs directly (no PMIDs) + delta audit vs a previous run
-python3 scripts/verify_pmids.py --dois "10.1038/nature12968,10.4012/dmj.2020-408" --export-audit audit.json
+python3 scripts/verify_pmids.py --dois "10.1038/nature12968,10.4012/dmj.2020-408" --workers 4 --export-audit audit.json --export-csv table.csv
 python3 scripts/verify_pmids.py --source /path/to/project --diff audit.json --output report.html
 
 # Institutional niceties (recommended): NCBI API key + contact email
@@ -206,6 +206,21 @@ otherwise-unverifiable citation (the DOI mismatch is an independent fact).
   improved, new and dropped citations, with counts in every report format.
   Built for periodic knowledge-base audits: "what changed since last time?"
 
+## v2.9.0 — DOI entries become first-class
+
+- **DOI→PMID linking** — a resolved DOI is linked back to its PMID via the
+  Europe PMC DOI field query, pulling the full PubMed record: complete
+  metadata, retraction pubtype signal, and cache coverage. A DOI citation
+  now gets the same five-state record as a PMID citation (existence
+  confirmation only — the verdict remains unknown until claims are
+  provided).
+- **Parallel DOI resolution** — `--workers N` (default 4, max 8) resolves
+  DOI batches on a thread pool (roughly 3x faster on large lists), with
+  live progress output. For large `--dois` batches, set `--mailto` to stay
+  in Crossref's polite pool.
+- **`--export-csv table.csv`** — spreadsheet-friendly audit table
+  (key/verdict/flags/fields/details; formula-injection hardened).
+
 ## How it works
 
 1. **Extract + parse context** — finds `PMID: 12345678` / PubMed URLs in
@@ -267,12 +282,12 @@ They share the same five-state philosophy and are safe to use together.
 
 - **cn-med-oa** — free Chinese medical literature full-text download & metadata
 - **cite-holmes** — deep research with machine-verified citations
-- **paper-polisher** — academic polishing, terminology & journal precheck
+- **paper-polisher-pro** — academic polishing, terminology & journal precheck
 - **academic-figures** — publication-ready scientific figures in one command
 - **doc-holmes** — layout-preserving PDF translation (in testing)
 
 Workflow: cn-med-oa (get papers) → pubmed-verifier / cite-holmes (verify
-citations) → paper-polisher (polish) → academic-figures (figures) →
+citations) → paper-polisher-pro (polish) → academic-figures (figures) →
 doc-holmes (translate PDFs).
 
 ## FAQ & common mistakes
@@ -317,7 +332,7 @@ Feed the full citation via `--claims-file` for a precise verdict.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v2.8.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v2.9.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref API notes |
 | `tests/` | Offline matrix + real-network acceptance (repo only, not in the package) |
 

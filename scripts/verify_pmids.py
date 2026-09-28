@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v2.8.0
+PMID Citation Verifier -- PubMed E-utilities API v2.9.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
+DOI entries are first-class (v2.9.0): a resolved DOI is linked back to its
+PMID via the Europe PMC DOI field query, attaching the full PubMed record
+(metadata, retraction pubtype, cache coverage). Linking upgrades the record,
+never the verdict — it stays unknown until claimed metadata is supplied.
+DOI resolution runs in a thread pool (--workers, default 4).
 Retraction detection for EVERY PMID (v2.7.0): the registry's own publication
 type ("Retracted Publication", present in both NCBI esummary and Europe PMC)
 flags retracted papers with no DOI and no --verify-doi needed -- and the flag
@@ -48,7 +53,9 @@ Exit codes: 0 = no problems found; 1 = invalid/mismatch citations found;
 """
 
 import argparse
+import concurrent.futures
 import csv
+import io
 import hashlib
 import html
 import http.client
@@ -68,8 +75,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "2.8.0"
-_UA_TOOL = "pubmed-verifier/2.8 (+PMID citation verifier; stdlib-only)"
+_TOOL_VERSION = "2.9.0"
+_UA_TOOL = "pubmed-verifier/2.9 (+PMID citation verifier; stdlib-only)"
 _UA_BROWSER = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 _CIRCUIT_THRESHOLD = 2  # call-level consecutive transport failures per host
@@ -460,7 +467,25 @@ def resolve_doi(doi: str, timeout=None) -> dict:
         return {"status": "error", "meta": None, "error": str(e)}
 
 
-def verify_doi_entry(doi: str, src: str) -> tuple:
+def find_pmid_by_doi(doi: str) -> str:
+    """Europe PMC DOI field query (v2.9.0): link a DOI back to its PMID.
+    Returns the PMID string, or "" when unlinked/failed (never a verdict)."""
+    q = urllib.parse.quote(f'DOI:"{_clean_doi(doi)}" AND SRC:MED')
+    url = (f"https://www.ebi.ac.uk/europepmc/webservices/rest/search?"
+           f"query={q}&format=json&resultType=lite")
+    try:
+        data = json.loads(_api_get(url, timeout=15))
+        for h in data.get("resultList", {}).get("result", []):
+            pmid = str(h.get("id", "")).strip()
+            if h.get("source") == "MED" and pmid.isdigit():
+                return pmid
+    except Exception:
+        pass
+    return ""
+
+
+def verify_doi_entry(doi: str, src: str, resolution: dict = None,
+                     linked_pmid: str = None, linked_info: dict = None) -> tuple:
     """Verify one standalone DOI (v2.8.0). Returns (entry, audit_item).
 
     Semantics are honest by construction: a resolving DOI proves existence,
@@ -471,8 +496,8 @@ def verify_doi_entry(doi: str, src: str) -> tuple:
     (unknown) — the user never endorsed that string, and DataCite/repository
     DOIs do not live in Crossref."""
     entry = {"pmid": "", "doi": doi, "source_file": os.path.basename(src),
-             "claimed_title": "", "valid": False}
-    res = resolve_doi(doi)
+             "claimed_title": "", "valid": False, "entry_kind": "doi"}
+    res = resolution if resolution is not None else resolve_doi(doi)
     if res["status"] == "resolved":
         meta = res["meta"]
         entry["resolved"] = True
@@ -490,8 +515,38 @@ def verify_doi_entry(doi: str, src: str) -> tuple:
             entry["retracted"] = True
             entry["retraction_note"] = meta.get("retraction_note", "")
             entry["retraction_source"] = "crossref updated-by"
-        audit = {"doi": doi, "pmid": "", "source_file": entry["source_file"],
-                 "registered": meta, "resolve": "resolved", "error": ""}
+        # v2.9.0: link the DOI back to its PMID (Europe PMC DOI query) and
+        # attach the full PubMed record. The linked record's registered DOI
+        # is cross-checked against the input — an ambiguous link keeps
+        # Crossref-only metadata instead of risking wrong metadata.
+        if linked_pmid is None:
+            pmid = find_pmid_by_doi(doi)
+            info = fetch_summaries([pmid], batch_size=1).get(pmid, {}) if pmid else {}
+        else:
+            pmid, info = linked_pmid, linked_info
+        if pmid and info.get("valid"):
+            if info.get("doi") and not dois_match(info["doi"], doi):
+                entry["link_note"] = ("linked PubMed record registers a different DOI — "
+                                      "link ambiguous, keeping Crossref-only metadata")
+            else:
+                entry["pmid"] = pmid
+                entry["title"] = info["title"]
+                entry["journal"] = info["journal"]
+                entry["pubdate"] = info["pubdate"]
+                entry["meta_source"] = "pubmed"
+                entry["details"] = (f"DOI resolves and links to PMID {pmid} — full "
+                                    f"PubMed record attached. No claimed metadata "
+                                    f"to cross-verify.")
+                if info.get("retracted"):
+                    entry["retracted"] = True
+                    if not entry.get("retraction_note"):
+                        entry["retraction_note"] = info.get("retraction_note", "")
+                    entry["retraction_source"] = entry.get("retraction_source", "") or \
+                        "PubMed publication type"
+        audit = {"doi": doi, "pmid": entry.get("pmid", ""),
+                 "source_file": entry["source_file"],
+                 "registered": meta, "resolve": "resolved",
+                 "link_note": entry.get("link_note", ""), "error": ""}
     elif res["status"] == "not_found":
         explicit = src == "cli"
         entry["verdict"] = "invalid" if explicit else "unknown"
@@ -1470,7 +1525,12 @@ def diff_against_baseline(results: list, baseline_path: str) -> dict:
     new_keys = set()
     bad_now = {"mismatch", "invalid", "unknown"}
     for r in results:
-        key = str(r.get("pmid") or r.get("doi") or "")
+        # DOI-pipeline entries keep their DOI as the stable diff key even
+        # after linking (a v2.8.0 baseline keys them by DOI too)
+        if r.get("entry_kind") == "doi" or (r.get("doi") and not r.get("pmid")):
+            key = str(r.get("doi") or "")
+        else:
+            key = str(r.get("pmid") or r.get("doi") or "")
         if not key:
             continue
         new_keys.add(key)
@@ -1501,6 +1561,37 @@ def diff_against_baseline(results: list, baseline_path: str) -> dict:
             deltas["dropped"].append({"key": key})
     deltas["counts"] = {k: len(v) for k, v in deltas.items() if isinstance(v, list)}
     return deltas
+
+
+def _csv_safe(cell) -> str:
+    """Neutralize spreadsheet formula injection (= + - @ tab CR prefixes) —
+    the tool audits untrusted citations, exported tables get opened in
+    Excel/LibreOffice by analysts."""
+    s = str(cell if cell is not None else "")
+    if s and s[0] in "=+-@\t\r":
+        return "'" + s
+    return s
+
+
+def generate_csv_report(results: list) -> str:
+    """Spreadsheet-friendly audit table (v2.9.0)."""
+    buf = io.StringIO()
+    buf.write("\ufeff")   # BOM so Excel renders CJK correctly
+    w = csv.writer(buf)
+    w.writerow(["key", "kind", "verdict", "valid", "retracted", "doi_splice_suspect",
+                "claimed_title", "registered_title", "registered_journal",
+                "registered_year", "meta_source", "source_file", "confidence",
+                "details"])
+    for r in results:
+        kind = "doi" if (r.get("doi") and not r.get("pmid")) else "pmid"
+        w.writerow([_csv_safe(r.get("pmid") or r.get("doi", "")), kind,
+                    _csv_safe(r.get("verdict", "")), r.get("valid", ""),
+                    r.get("retracted", ""), _csv_safe(r.get("doi_splice_suspect", "")),
+                    _csv_safe(r.get("claimed_title", "")), _csv_safe(r.get("title", "")),
+                    _csv_safe(r.get("journal", "")), _csv_safe(r.get("pubdate", "")),
+                    _csv_safe(r.get("meta_source", "")), _csv_safe(r.get("source_file", "")),
+                    r.get("confidence", ""), _csv_safe(r.get("details", ""))])
+    return buf.getvalue()
 
 
 def generate_audit_report(entries: list, stats: dict, args, deltas: dict = None) -> str:
@@ -1755,7 +1846,8 @@ function flt(c) {{
 # ── Main ──
 
 def main():
-    parser = argparse.ArgumentParser(description="PMID Citation Verifier v2.8.0 -- Five-state verification of PMIDs and DOIs with retraction detection for every citation, DOI-native verification, delta audits against a baseline, audit/BibTeX export, and dual-source network hardening")
+    parser = argparse.ArgumentParser(
+        description=f"PMID Citation Verifier v{_TOOL_VERSION} -- Five-state verification of PMIDs and DOIs with retraction detection for every citation, DOI-native verification, delta audits against a baseline, audit/BibTeX/CSV export, and dual-source network hardening")
     parser.add_argument("--source", help="File or directory to scan for PMIDs")
     parser.add_argument("--pmids", help="Comma-separated PMIDs to verify directly")
     parser.add_argument("--claims", help="JSON string with claimed metadata: [{pmid,title,authors,journal,year},...]")
@@ -1781,6 +1873,10 @@ def main():
                         help="Write a self-contained JSON audit working-paper: tool identity, redacted invocation, per-citation evidence chain and verdict trace")
     parser.add_argument("--export-bibtex", metavar="PATH",
                         help="Export verified references as BibTeX (correct included; partial commented; retracted/excluded counted)")
+    parser.add_argument("--export-csv", metavar="PATH",
+                        help="Export a spreadsheet-friendly audit table (key, verdict, flags, fields, details)")
+    parser.add_argument("--workers", type=int, default=4, metavar="N",
+                        help="Parallel Crossref resolutions for --dois batches (default 4, max 8)")
     parser.add_argument("--dois", metavar="DOI_LIST",
                         help="Comma-separated DOIs to verify natively via Crossref (existence + registered metadata; 404 = fabrication signal)")
     parser.add_argument("--diff", metavar="BASELINE_JSON",
@@ -2119,18 +2215,58 @@ def main():
                 })
             results.append(entry)
 
-    # Standalone DOI verification pipeline (v2.8.0)
+    # Standalone DOI verification pipeline (v2.8.0/v2.9.0)
     doi_seen = set(r.get("doi") for r in results if r.get("doi"))
-    doi_processed = 0
-    for doi_idx, (doi, src) in enumerate(doi_inputs, 1):
-        if doi in doi_seen:
+    unique_dois = []
+    seen_d = set()
+    for d, src in doi_inputs:
+        if d in doi_seen or d in seen_d:
             continue
-        doi_seen.add(doi)
-        doi_processed += 1
-        if doi_idx % 25 == 0 or doi_idx == len(doi_inputs):
-            print(f"  DOI progress: {doi_idx}/{len(doi_inputs)} resolved...",
-                  flush=True)
-        entry, audit_item = verify_doi_entry(doi, src)
+        seen_d.add(d)
+        unique_dois.append((d, src))
+    doi_processed = len(unique_dois)
+    resolutions = {}
+    workers = max(1, min(args.workers, 8))
+    if unique_dois and workers > 1 and len(unique_dois) > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {ex.submit(resolve_doi, d): d for d, _ in unique_dois}
+            done = 0
+            for fut in concurrent.futures.as_completed(futs):
+                d = futs[fut]
+                try:
+                    resolutions[d] = fut.result()
+                except Exception as e:
+                    resolutions[d] = {"status": "error", "meta": None, "error": str(e)}
+                done += 1
+                if done % 25 == 0 or done == len(unique_dois):
+                    print(f"  DOI progress: {done}/{len(unique_dois)} resolved...",
+                          flush=True)
+    elif unique_dois:
+        for d, _ in unique_dois:
+            resolutions[d] = resolve_doi(d)
+    # Phase 2 (v2.9.0): link resolved DOIs back to PMIDs — parallel EPMC queries
+    resolved_dois = [d for d, _ in unique_dois
+                     if resolutions.get(d, {}).get("status") == "resolved"]
+    pmid_map = {}
+    if resolved_dois:
+        if workers > 1 and len(resolved_dois) > 1:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+                pmid_map = dict(zip(resolved_dois, ex.map(find_pmid_by_doi, resolved_dois)))
+        else:
+            for d in resolved_dois:
+                pmid_map[d] = find_pmid_by_doi(d)
+    # Phase 3: batch-fetch full PubMed records for linked PMIDs (cache-aware,
+    # 50/batch) — the linking stage never pays per-PMID serial costs
+    linked_pmids = sorted({p for p in pmid_map.values() if p})
+    pmid_info_map = fetch_summaries(linked_pmids) if linked_pmids else {}
+    # Phase 4: build entries serially (stats stay main-thread)
+    for doi, src in unique_dois:
+        entry, audit_item = verify_doi_entry(
+            doi, src, resolution=resolutions.get(doi),
+            linked_pmid=pmid_map.get(doi, ""), linked_info=pmid_info_map.get(pmid_map.get(doi, ""), {}))
+        entry, audit_item = verify_doi_entry(
+            doi, src, resolution=resolutions.get(doi),
+            linked_pmid=pmid_map.get(doi, ""), linked_info=pmid_info_map.get(pmid_map.get(doi, ""), {}))
         if entry["verdict"] == "invalid":
             stats["invalid"] += 1
         elif entry.get("network_error"):
@@ -2196,6 +2332,11 @@ def main():
             generate_bibtex(results), encoding="utf-8")
         print(f"BibTeX written to {args.export_bibtex} "
               f"(correct included; partial commented; others excluded)")
+
+    if args.export_csv:
+        Path(args.export_csv).write_text(
+            generate_csv_report(results), encoding="utf-8")
+        print(f"CSV audit table written to {args.export_csv}")
 
     if not args.output:
         # Text output

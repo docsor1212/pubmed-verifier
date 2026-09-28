@@ -8,6 +8,7 @@ breaker, polite pool, API-key injection, Europe PMC parsing, honest-unknown
 classification, cache protection) plus regression of the five-state core.
 """
 
+import csv
 import json
 import os
 import sys
@@ -303,7 +304,7 @@ class TestCli(_Reset):
         script = Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"
         out = subprocess.run([sys.executable, str(script), "--version"],
                              capture_output=True, text=True)
-        self.assertIn("2.8.0", out.stdout + out.stderr)
+        self.assertIn("2.9.0", out.stdout + out.stderr)
 
     def test_host_key_granularity(self):
         self.assertEqual(vp._host_key("https://eutils.ncbi.nlm.nih.gov/a?b=c"),
@@ -990,6 +991,81 @@ class TestRetraction(_Reset):
                                return_value=_ok(json.dumps(payload).encode())):
             meta = vp.fetch_doi_metadata("10.1/orig")
         self.assertTrue(meta["retracted"])
+
+
+class TestV290FirstClassDoi(_Reset):
+    """v2.9.0 DOI→PMID linking, parallel workers, CSV export."""
+
+    def test_resolved_doi_links_to_pmid(self):
+        with mock.patch.object(vp, "resolve_doi",
+                               return_value={"status": "resolved",
+                                             "meta": {"title": "CR T", "journal": "CR J",
+                                                      "year": "2020", "authors": [],
+                                                      "retracted": False,
+                                                      "retraction_note": ""},
+                                             "error": ""}), \
+             mock.patch.object(vp, "find_pmid_by_doi", return_value="24476887"), \
+             mock.patch.object(vp, "fetch_summaries",
+                               return_value={"24476887": {
+                                   "valid": True, "title": "PubMed T", "authors": [],
+                                   "journal": "Nature", "pubdate": "2014",
+                                   "doi": "10.1038/nature12968", "retracted": True,
+                                   "retraction_note": "pubtype", "source": "ncbi"}}):
+            entry, _ = vp.verify_doi_entry("10.1038/nature12968", "cli")
+        self.assertEqual(entry["pmid"], "24476887")
+        self.assertEqual(entry["title"], "PubMed T")
+        self.assertEqual(entry["meta_source"], "pubmed")
+        self.assertTrue(entry["retracted"])
+
+    def test_unlinked_doi_stays_existence_only(self):
+        with mock.patch.object(vp, "resolve_doi",
+                               return_value={"status": "resolved",
+                                             "meta": {"title": "T", "journal": "J",
+                                                      "year": "2020", "authors": [],
+                                                      "retracted": False,
+                                                      "retraction_note": ""},
+                                             "error": ""}), \
+             mock.patch.object(vp, "find_pmid_by_doi", return_value=""):
+            entry, _ = vp.verify_doi_entry("10.1/unlinked", "cli")
+        self.assertEqual(entry["pmid"], "")
+        self.assertEqual(entry["verdict"], "unknown")
+
+    def test_find_pmid_by_doi_failure_returns_empty(self):
+        with mock.patch.object(vp.urllib.request, "urlopen",
+                               side_effect=urllib.error.URLError("down")), \
+             mock.patch.object(vp.time, "sleep"):
+            self.assertEqual(vp.find_pmid_by_doi("10.1/x"), "")
+
+    def test_csv_export_content(self):
+        results = [
+            {"pmid": "123", "verdict": "correct", "valid": True, "retracted": False,
+             "doi_splice_suspect": False, "claimed_title": "c", "title": "T",
+             "journal": "J", "pubdate": "2020", "meta_source": "ncbi",
+             "source_file": "f", "confidence": 1.0, "details": "ok"},
+            {"pmid": "", "doi": "10.1/x", "verdict": "unknown", "valid": True,
+             "retracted": False, "doi_splice_suspect": False, "claimed_title": "",
+             "title": "R", "journal": "", "pubdate": "2021", "meta_source": "crossref",
+             "source_file": "cli", "details": "resolves"},
+        ]
+        csv_text = vp.generate_csv_report(results)
+        rows = list(csv.reader(csv_text.lstrip("\ufeff").splitlines()))
+        self.assertEqual(rows[0][:3], ["key", "kind", "verdict"])
+        self.assertEqual(rows[1][0], "123")
+        self.assertEqual(rows[2][0], "10.1/x")
+        self.assertEqual(rows[2][1], "doi")
+
+    def test_workers_doi_pipeline_smoke(self):
+        import subprocess
+        script = Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"
+        with tempfile.TemporaryDirectory() as td:
+            out = subprocess.run(
+                [sys.executable, str(script), "--dois",
+                 "10.9999/fake.1,10.9999/fake.2", "--workers", "2", "--no-cache",
+                 "--export-csv", str(Path(td) / "t.csv")],
+                capture_output=True, text=True, timeout=180)
+            csv_text = (Path(td) / "t.csv").read_text(encoding="utf-8")
+        self.assertEqual(out.returncode, 1)
+        self.assertEqual(csv_text.count("10.9999/fake"), 2)
 
 
 if __name__ == "__main__":
