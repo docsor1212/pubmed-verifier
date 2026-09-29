@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v2.9.0
+PMID Citation Verifier -- PubMed E-utilities API v3.0.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
+Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
+arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
+official arXiv API — a nonexistent ID is a fabrication signal; a resolving
+one attaches the registered title/year (verdict stays unknown until claims
+are supplied). Timely because arXiv penalizes submissions containing
+hallucinated or unverified references.
 DOI entries are first-class (v2.9.0): a resolved DOI is linked back to its
 PMID via the Europe PMC DOI field query, attaching the full PubMed record
 (metadata, retraction pubtype, cache coverage). Linking upgrades the record,
@@ -56,6 +62,7 @@ import argparse
 import concurrent.futures
 import csv
 import io
+import xml.etree.ElementTree as ET
 import hashlib
 import html
 import http.client
@@ -75,8 +82,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "2.9.0"
-_UA_TOOL = "pubmed-verifier/2.9 (+PMID citation verifier; stdlib-only)"
+_TOOL_VERSION = "3.0.0"
+_UA_TOOL = "pubmed-verifier/3.0 (+citation verifier; stdlib-only)"
 _UA_BROWSER = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 _CIRCUIT_THRESHOLD = 2  # call-level consecutive transport failures per host
@@ -572,6 +579,148 @@ def verify_doi_entry(doi: str, src: str, resolution: dict = None,
                  "registered": None, "resolve": "error", "error": res["error"]}
     audit["verdict"] = {"final": entry["verdict"], "details": entry["details"]}
     return entry, audit
+
+
+# ── arXiv ID verification (v3.0.0) ──
+
+ARXIV_NEW_RE = re.compile(r'^(\d{2})(0[1-9]|1[0-2])\.(\d{4,5})(v\d+)?$', re.IGNORECASE)
+ARXIV_OLD_RE = re.compile(r'^[a-z-]+(?:\.[A-Z]{2})?/\d{7}(v\d+)?$', re.IGNORECASE)
+ARXIV_PATTERNS = [
+    re.compile(r'arxiv\.org/(?:abs|pdf|format)/([^\s"\'<>),;\]]+)', re.IGNORECASE),
+    re.compile(r'arxiv:\s*([^\s"\'<>),;\]]+)', re.IGNORECASE),
+]
+
+
+def _arxiv_id_valid_shape(arxiv_id: str) -> bool:
+    """Shape check first: malformed months (13xx) made the official API hang
+    in the past (cite-holmes lesson), and garbage IDs waste calls."""
+    s = arxiv_id.strip()
+    m = ARXIV_NEW_RE.match(s.upper().replace("ARXIV:", ""))
+    if m and 1 <= int(m.group(2)) <= 12:
+        return True
+    return bool(ARXIV_OLD_RE.match(s))
+
+
+def extract_arxivs_from_file(filepath: str) -> list:
+    """Extract arXiv IDs (with shape validation) from a file. Returns
+    (arxiv_id, context) pairs."""
+    results = []
+    try:
+        text = Path(filepath).read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return results
+    seen = set()
+    for pattern in ARXIV_PATTERNS:
+        for m in pattern.finditer(text):
+            raw = m.group(1).strip()
+            if raw.lower().startswith("arxiv:"):
+                raw = raw[6:]
+            # A sentence-final period is the single most common character
+            # after a reference — strip trailing dots but KEEP internal dots
+            # (old-style math.GT/0309136). Shape validation happens in
+            # verify_arxiv_entry — a malformed ID found in a scanned document
+            # is exactly the kind of fabrication/mistake to surface, not skip.
+            raw = raw.rstrip(".")
+            if raw.lower() in seen:
+                continue
+            seen.add(raw.lower())
+            start = max(0, m.start() - 150)
+            end = min(len(text), m.end() + 40)
+            results.append((raw, text[start:end].replace("\n", " ").strip()))
+    return results
+
+
+def verify_arxiv_entry(arxiv_id: str, src: str) -> tuple:
+    """Verify one arXiv ID against the official API (v3.0.0).
+
+    Returns (entry, audit_item). No entry in the Atom feed = fabrication
+    signal (invalid); a resolving ID attaches the registered title/year and
+    stays unknown (existence is never dressed up as a match)."""
+    arxiv_id = arxiv_id.strip()
+    # normalize the arXiv: prefix (CLI paste form) before shape/URL
+    if arxiv_id.lower().startswith("arxiv:"):
+        arxiv_id = arxiv_id[6:].strip()
+    entry = {"pmid": "", "doi": "", "arxiv_id": arxiv_id,
+             "source_file": os.path.basename(src),
+             "claimed_title": "", "valid": False, "entry_kind": "arxiv"}
+    audit = {"arxiv_id": arxiv_id, "pmid": "", "doi": "",
+             "source_file": entry["source_file"], "registered": None}
+    if not _arxiv_id_valid_shape(arxiv_id):
+        entry["verdict"] = "invalid"
+        entry["error"] = "not a valid arXiv ID shape (new YYMM.NNNNN or old category/NNNNNNN)"
+        entry["details"] = ("Not a valid arXiv ID shape — 疑似笔误，请核对"
+                            "（新式 YYMM.NNNNN 或旧式 category/NNNNNNN）；"
+                            "未计入伪造信号")
+        audit["verdict"] = {"final": entry["verdict"], "details": entry["details"]}
+        audit["error"] = entry["error"]
+        return entry, audit
+    url = (f"https://export.arxiv.org/api/query?id_list="
+           f"{urllib.parse.quote(arxiv_id, safe='./')}&max_results=1")
+    try:
+        body = _api_get(url, timeout=20)
+        root = ET.fromstring(body)
+        # A 200 response that is not an Atom feed (captive portal, proxy
+        # notice page, arXiv maintenance HTML) is NOT an answer — treating
+        # it as "no entry" would accuse every real ID of being fabricated
+        # (v3.0.0 review P0, deterministic offline repro).
+        if root.tag != "{http://www.w3.org/2005/Atom}feed":
+            raise ValueError("arXiv API returned non-Atom content")
+        ns = {"a": "http://www.w3.org/2005/Atom"}
+        entries = root.findall("a:entry", ns)
+        if not entries:
+            entry["verdict"] = "invalid"
+            entry["error"] = "arXiv ID not found in official API (totalResults=0)"
+            entry["details"] = ("arXiv ID not found in the official API — fabrication "
+                                "signal（arXiv 官方 API 查无——伪造信号；极少数被官方"
+                                "移除的论文亦会查无）")
+            audit["verdict"] = {"final": entry["verdict"], "details": entry["details"]}
+            audit["error"] = entry["error"]
+            return entry, audit
+        e0 = entries[0]
+        title = " ".join((e0.find("a:title", ns).text or "").split()) if e0.find("a:title", ns) is not None and e0.find("a:title", ns).text else ""
+        pub_el = e0.find("a:published", ns)
+        pub = (pub_el.text or "")[:4] if pub_el is not None and pub_el.text else ""
+        authors = [" ".join(((a.find("a:name", ns).text or "") if a.find("a:name", ns) is not None else "").split())
+                   for a in e0.findall("a:author", ns)]
+        # arXiv documents an "Error entry" reply (200 + <title>Error</title>,
+        # no published date) for IDs it refuses to parse — not an answer.
+        if not title or title.lower() == "error" or not pub:
+            entry["verdict"] = "unknown"
+            entry["error"] = f"arXiv API error entry (title={title[:40]!r})"
+            entry["details"] = ("arXiv API returned an error entry — verdict stays "
+                                "unknown（官方 API 返回错误条目，保持未判定）")
+            audit["verdict"] = {"final": entry["verdict"], "details": entry["details"]}
+            audit["error"] = entry["error"]
+            return entry, audit
+        entry["resolved"] = True
+        entry["valid"] = True
+        entry["title"] = title
+        entry["pubdate"] = pub
+        entry["authors"] = ", ".join(authors[:3])
+        entry["meta_source"] = "arxiv"
+        entry["verdict"] = "unknown"
+        entry["details"] = (f"arXiv ID resolves — registered: {title[:100]} ({pub}). "
+                            f"No claimed metadata to cross-verify.")
+        audit["registered"] = {"title": title, "year": pub, "authors": authors}
+        audit["verdict"] = {"final": entry["verdict"], "details": entry["details"]}
+        return entry, audit
+    except (urllib.error.URLError, OSError, TimeoutError, http.client.HTTPException,
+            ET.ParseError, ValueError, CircuitOpenError) as e:
+        entry["verdict"] = "unknown"
+        entry["network_error"] = True   # 未验证——readiness/exit 2 口径依赖此标志
+        msg = str(e)
+        # HTTPError is a URLError subclass: a 4xx means the source is
+        # REACHABLE and refused the ID — honest wording, never "unreachable"
+        if "HTTP Error 4" in msg:
+            entry["error"] = msg
+            entry["details"] = ("arXiv API refused the ID (HTTP 4xx) — verdict stays "
+                                "unknown（官方 API 拒绝该 ID，按未判定处理）")
+        else:
+            entry["error"] = msg
+            entry["details"] = "arXiv API unreachable — could not verify (network), never counted as invalid"
+        audit["verdict"] = {"final": entry["verdict"], "details": entry["details"]}
+        audit["error"] = msg
+        return entry, audit
 
 
 # ── Citation context parsing ──
@@ -1583,7 +1732,7 @@ def generate_csv_report(results: list) -> str:
                 "registered_year", "meta_source", "source_file", "confidence",
                 "details"])
     for r in results:
-        kind = "doi" if (r.get("doi") and not r.get("pmid")) else "pmid"
+        kind = r.get("entry_kind") or ("doi" if (r.get("doi") and not r.get("pmid")) else "pmid")
         w.writerow([_csv_safe(r.get("pmid") or r.get("doi", "")), kind,
                     _csv_safe(r.get("verdict", "")), r.get("valid", ""),
                     r.get("retracted", ""), _csv_safe(r.get("doi_splice_suspect", "")),
@@ -1694,7 +1843,7 @@ def generate_html_report(results: list[dict], stats: dict, source: str, repro: d
         date = html.escape(r.get("pubdate", ""))
         source_file = html.escape(r.get("source_file", ""))
         details = html.escape(r.get("details", ""))
-        key_display = html.escape(r.get("pmid") or r.get("doi", ""))
+        key_display = html.escape(r.get("arxiv_id") or r.get("pmid") or r.get("doi", ""))
         suggested = r.get("suggested_pmids", [])
         suggested_str = ""
         if suggested:
@@ -1847,7 +1996,7 @@ function flt(c) {{
 
 def main():
     parser = argparse.ArgumentParser(
-        description=f"PMID Citation Verifier v{_TOOL_VERSION} -- Five-state verification of PMIDs and DOIs with retraction detection for every citation, DOI-native verification, delta audits against a baseline, audit/BibTeX/CSV export, and dual-source network hardening")
+        description=f"PMID Citation Verifier v{_TOOL_VERSION} -- Five-state verification of PMIDs, DOIs and arXiv IDs with retraction detection for every citation, DOI-native verification, delta audits against a baseline, audit/BibTeX/CSV export, and dual-source network hardening")
     parser.add_argument("--source", help="File or directory to scan for PMIDs")
     parser.add_argument("--pmids", help="Comma-separated PMIDs to verify directly")
     parser.add_argument("--claims", help="JSON string with claimed metadata: [{pmid,title,authors,journal,year},...]")
@@ -1879,6 +2028,8 @@ def main():
                         help="Parallel Crossref resolutions for --dois batches (default 4, max 8)")
     parser.add_argument("--dois", metavar="DOI_LIST",
                         help="Comma-separated DOIs to verify natively via Crossref (existence + registered metadata; 404 = fabrication signal)")
+    parser.add_argument("--arxivs", metavar="ARXIV_LIST",
+                        help="Comma-separated arXiv IDs to verify against the official arXiv API (nonexistent = fabrication signal)")
     parser.add_argument("--diff", metavar="BASELINE_JSON",
                         help="Compare this run to a previous audit working-paper: newly retracted, degraded, improved, new, dropped")
     parser.add_argument("--version", action="version", version=f"pubmed-verifier {_TOOL_VERSION}")
@@ -1955,6 +2106,13 @@ def main():
     if args.pmids and args.source:
         print("WARN: both --pmids and --source given; --source is ignored "
               "entirely (its PMIDs and DOIs are NOT scanned).", file=sys.stderr)
+    # Standalone arXiv inputs (v3.0.0)
+    arxiv_inputs = []   # (arxiv_id, source_label)
+    if args.arxivs:
+        for a in args.arxivs.split(","):
+            a = a.strip()
+            if a:
+                arxiv_inputs.append((a, "cli"))
     if args.pmids:
         for p in args.pmids.split(","):
             p = p.strip()
@@ -1970,6 +2128,8 @@ def main():
                 pmid_entries.append((pmid, source, ctx, claimed))
             for doi, dctx in extract_dois_from_file(source):
                 doi_inputs.append((_clean_doi(doi), source))
+            for aid, actx in extract_arxivs_from_file(source):
+                arxiv_inputs.append((aid, source))
         elif os.path.isdir(source):
             file_map = extract_pmids_from_directory(source)
             for fpath, items in file_map.items():
@@ -1981,6 +2141,8 @@ def main():
                     if fname.lower().endswith((".html", ".md", ".txt", ".htm", ".json")):
                         for doi, dctx in extract_dois_from_file(os.path.join(root, fname)):
                             doi_inputs.append((_clean_doi(doi), os.path.join(root, fname)))
+                        for aid, actx in extract_arxivs_from_file(os.path.join(root, fname)):
+                            arxiv_inputs.append((aid, os.path.join(root, fname)))
         else:
             print(f"Error: {source} not found", file=sys.stderr)
             sys.exit(1)
@@ -1988,12 +2150,12 @@ def main():
         # Only --claims provided, no --source or --pmids
         for pmid, claimed in explicit_claims.items():
             pmid_entries.append((pmid, "claims", "", claimed))
-    elif not doi_inputs:
+    elif not doi_inputs and not arxiv_inputs:
         parser.print_help()
         sys.exit(1)
 
-    if not pmid_entries and not doi_inputs:
-        print("No PMIDs or DOIs found.")
+    if not pmid_entries and not doi_inputs and not arxiv_inputs:
+        print("No PMIDs, DOIs or arXiv IDs found.")
         sys.exit(0)
 
     # Deduplicate, preserving all source contexts and claims
@@ -2281,6 +2443,40 @@ def main():
             stats["retracted"] = stats.get("retracted", 0) + 1
         results.append(entry)
         audit_entries.append(audit_item)
+
+    # arXiv verification pipeline (v3.0.0) — serial with 3s politeness
+    # (official arXiv etiquette: same client >= 3s between calls)
+    arxiv_seen = set(r.get("arxiv_id", "").lower() for r in results if r.get("arxiv_id"))
+    arxiv_processed = 0
+    last_call = 0.0
+    for aid, src in arxiv_inputs:
+        if aid.lower() in arxiv_seen:
+            continue
+        arxiv_seen.add(aid.lower())
+        arxiv_processed += 1
+        wait = 3.0 - (time.time() - last_call)
+        if wait > 0:
+            time.sleep(wait)
+        last_call = time.time()
+        entry, audit_item = verify_arxiv_entry(aid, src)
+        if entry["verdict"] == "invalid":
+            stats["invalid"] += 1
+            stats["arxiv_invalid"] = stats.get("arxiv_invalid", 0) + 1
+            stats.setdefault("arxiv_invalid_list", []).append(entry.get("arxiv_id", ""))
+        elif entry.get("network_error"):
+            stats["unknown"] += 1
+            stats["network_errors"] = stats.get("network_errors", 0) + 1
+        else:
+            stats["unknown"] += 1
+        if arxiv_processed % 5 == 0:
+            print(f"  arXiv progress: {arxiv_processed} verified...", flush=True)
+        if entry["verdict"] == "invalid":
+            print(f"  ⚠ INVALID arXiv ID: {entry.get('arxiv_id')} — fabrication signal",
+                  flush=True)
+        results.append(entry)
+        audit_entries.append(audit_item)
+    if arxiv_processed:
+        stats["total"] = stats.get("total", 0) + arxiv_processed
     if doi_processed:
         stats["total"] = stats.get("total", 0) + doi_processed
 
@@ -2381,7 +2577,12 @@ def main():
             else:
                 icon = "❓"
             
-            key_label = f"DOI {r['doi']}" if r.get("doi") and not r.get("pmid") else f"PMID {r['pmid']}"
+            if r.get("arxiv_id"):
+                key_label = f"arXiv {r['arxiv_id']}"
+            elif r.get("doi") and not r.get("pmid"):
+                key_label = f"DOI {r['doi']}"
+            else:
+                key_label = f"PMID {r['pmid']}"
             line = f"{icon} {key_label} ({r['source_file']}) [{verdict}]"
             if r.get("valid"):
                 line += f"\n   Actual: {r.get('title', '')[:90]}"

@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 2.9.0
+version: 3.0.0
 description: >-
   Batch-verify PMID citations against PubMed and catch the hallucination that
   existence checks miss — a REAL PMID pointing to a DIFFERENT paper (the most
@@ -20,7 +20,7 @@ description: >-
   validate citations, PubMed citation verifier.
 ---
 
-# PubMed Citation Verifier v2.9.0
+# PubMed Citation Verifier v3.0.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -73,6 +73,9 @@ python3 scripts/verify_pmids.py --source /path/to/files --verify-doi --suggest -
 # Verify DOIs directly (no PMIDs) + delta audit vs a previous run
 python3 scripts/verify_pmids.py --dois "10.1038/nature12968,10.4012/dmj.2020-408" --workers 4 --export-audit audit.json --export-csv table.csv
 python3 scripts/verify_pmids.py --source /path/to/project --diff audit.json --output report.html
+
+# Verify arXiv IDs (preprints) — mixed audits supported
+python3 scripts/verify_pmids.py --arxivs "2401.12345,cs/0211004" --no-cache
 
 # Institutional niceties (recommended): NCBI API key + contact email
 python3 scripts/verify_pmids.py --source . --verify-doi --ncbi-api-key $NCBI_API_KEY --mailto you@lab.org
@@ -142,7 +145,7 @@ otherwise-unverifiable citation (the DOI mismatch is an independent fact).
   library, zero dependencies).
 - Network access is limited to these official academic registries, always
   over HTTPS: `eutils.ncbi.nlm.nih.gov`, `www.ebi.ac.uk` (Europe PMC),
-  `api.crossref.org`. No other hosts are contacted; no telemetry, no
+  `api.crossref.org`, `export.arxiv.org`. No other hosts are contacted; no telemetry, no
   analytics, no data collection — the only outbound payloads are the PMIDs,
   DOIs and titles you asked to verify.
 - Your files and reports stay on your machine. Writes are limited to the
@@ -221,6 +224,17 @@ otherwise-unverifiable citation (the DOI mismatch is an independent fact).
 - **`--export-csv table.csv`** — spreadsheet-friendly audit table
   (key/verdict/flags/fields/details; formula-injection hardened).
 
+## v3.0.0 — arXiv ID verification (three citation types, one audit)
+
+Reference lists carry preprints. v3.0.0 verifies **arXiv IDs** alongside
+PMIDs and DOIs: `arXiv:2401.12345` and `arxiv.org/abs/...` patterns are
+extracted from scans (or passed via `--arxivs`), checked against the
+official arXiv API, and judged — nonexistent ID = fabrication signal
+(invalid, exit 1); resolving ID = registered title/year attached, verdict
+stays unknown. Malformed IDs (bad YYMM month) are flagged by shape.
+Timely: arXiv penalizes submissions containing hallucinated or unverified
+references (2026-05 policy) — audit before you submit.
+
 ## How it works
 
 1. **Extract + parse context** — finds `PMID: 12345678` / PubMed URLs in
@@ -278,7 +292,9 @@ They share the same five-state philosophy and are safe to use together.
 - Medical knowledge base / teaching material QA
 - Pharmacovigilance literature verification
 
-## Related skills (Paper Toolbox family)
+## Related tools
+
+Each tool solves one step of reference work; use whichever fits the task.
 
 - **cn-med-oa** — free Chinese medical literature full-text download & metadata
 - **cite-holmes** — deep research with machine-verified citations
@@ -286,9 +302,9 @@ They share the same five-state philosophy and are safe to use together.
 - **academic-figures** — publication-ready scientific figures in one command
 - **doc-holmes** — layout-preserving PDF translation (in testing)
 
-Workflow: cn-med-oa (get papers) → pubmed-verifier / cite-holmes (verify
-citations) → paper-polisher-pro (polish) → academic-figures (figures) →
-doc-holmes (translate PDFs).
+Typical order: get papers (cn-med-oa), verify citations (this tool or
+cite-holmes), polish (paper-polisher-pro), make figures (academic-figures),
+translate PDFs (doc-holmes) — pick whichever step you need.
 
 ## FAQ & common mistakes
 
@@ -332,7 +348,7 @@ Feed the full citation via `--claims-file` for a precise verdict.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v2.9.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v3.0.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref API notes |
 | `tests/` | Offline matrix + real-network acceptance (repo only, not in the package) |
 

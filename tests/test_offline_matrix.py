@@ -304,7 +304,7 @@ class TestCli(_Reset):
         script = Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"
         out = subprocess.run([sys.executable, str(script), "--version"],
                              capture_output=True, text=True)
-        self.assertIn("2.9.0", out.stdout + out.stderr)
+        self.assertIn("3.0.0", out.stdout + out.stderr)
 
     def test_host_key_granularity(self):
         self.assertEqual(vp._host_key("https://eutils.ncbi.nlm.nih.gov/a?b=c"),
@@ -1066,6 +1066,87 @@ class TestV290FirstClassDoi(_Reset):
             csv_text = (Path(td) / "t.csv").read_text(encoding="utf-8")
         self.assertEqual(out.returncode, 1)
         self.assertEqual(csv_text.count("10.9999/fake"), 2)
+
+
+class TestArxiv(_Reset):
+    """v3.0.0 arXiv ID verification."""
+
+    def test_extract_patterns_and_bad_month_kept(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "t.md"
+            p.write_text("arXiv:2401.12345 and https://arxiv.org/abs/cs/0211004 "
+                         "and arXiv:2413.99999 (bad month kept for flagging)",
+                         encoding="utf-8")
+            ids = [a for a, _ in vp.extract_arxivs_from_file(str(p))]
+        # order follows pattern groups (anchored url/prefix first, bare second)
+        self.assertEqual(sorted(ids), ["2401.12345", "2413.99999", "cs/0211004"])
+
+    def test_shape_rejects_bad_month(self):
+        e, _ = vp.verify_arxiv_entry("2413.99999", "cli")
+        self.assertEqual(e["verdict"], "invalid")
+        self.assertIn("shape", e["details"])
+
+    def test_not_found_is_invalid(self):
+        import io
+        empty_feed = b"""<?xml version='1.0'?><feed xmlns="http://www.w3.org/2005/Atom"><title>arXiv Query</title><opensearch:totalResults xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">0</opensearch:totalResults></feed>"""
+        r = mock.mock_open(read_data=empty_feed).return_value
+        with mock.patch.object(vp.urllib.request, "urlopen", return_value=r), \
+             mock.patch.object(vp.time, "sleep"):
+            e, _ = vp.verify_arxiv_entry("2401.99999", "cli")
+        self.assertEqual(e["verdict"], "invalid")
+        self.assertIn("fabrication", e["details"])
+
+    def test_resolved_attaches_registered_metadata(self):
+        atom = b"""<?xml version='1.0'?><feed xmlns="http://www.w3.org/2005/Atom"><title>q</title><entry><title>Distributionally Robust Combining</title><published>2024-01-05T00:00:00Z</published><author><name>A Author</name></author></entry></feed>"""
+        with mock.patch.object(vp.urllib.request, "urlopen", return_value=_ok(atom)):
+            e, a = vp.verify_arxiv_entry("2401.12345", "cli")
+        self.assertEqual(e["verdict"], "unknown")   # existence, never a match
+        self.assertTrue(e["resolved"])
+        self.assertEqual(e["title"], "Distributionally Robust Combining")
+        self.assertEqual(e["pubdate"], "2024")
+
+    def test_non_atom_200_is_unknown_never_fabricated(self):
+        # review P0: captive-portal/proxy HTML 200 would accuse every real ID
+        html = b"<html><body>login</body></html>"
+        r = mock.mock_open(read_data=html).return_value
+        with mock.patch.object(vp.urllib.request, "urlopen", return_value=r), \
+             mock.patch.object(vp.time, "sleep"):
+            e, _ = vp.verify_arxiv_entry("2402.00002", "cli")
+        self.assertEqual(e["verdict"], "unknown")
+        self.assertNotIn("fabrication", e["details"])
+
+    def test_error_entry_is_unknown_never_crash(self):
+        # review P1: real API returns 200 + <title>Error</title> (no published)
+        atom = b"""<?xml version='1.0'?><feed xmlns="http://www.w3.org/2005/Atom"><title>q</title><entry><title>Error</title><summary>bad id</summary><author><name>api</name></author></entry></feed>"""
+        r = mock.mock_open(read_data=atom).return_value
+        with mock.patch.object(vp.urllib.request, "urlopen", return_value=r), \
+             mock.patch.object(vp.time, "sleep"):
+            e, _ = vp.verify_arxiv_entry("a/0309136", "cli")
+        self.assertEqual(e["verdict"], "unknown")
+
+    def test_trailing_dot_extraction_stripped(self):
+        # review P1: sentence-final period framed real papers as fabricated
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "t.md"
+            p.write_text("see https://arxiv.org/abs/1706.03762. and arXiv:1706.03762v2.",
+                         encoding="utf-8")
+            ids = [a for a, _ in vp.extract_arxivs_from_file(str(p))]
+        self.assertIn("1706.03762", ids)
+        self.assertIn("1706.03762v2", ids)
+        self.assertFalse(any(i.endswith(".") for i in ids))
+
+    def test_arxiv_prefix_normalized(self):
+        # review P1: CLI paste form arXiv:... must reach the API without prefix
+        e, _ = vp.verify_arxiv_entry("arXiv:1706.03762", "cli")
+        self.assertEqual(e["arxiv_id"], "1706.03762")
+
+    def test_network_error_never_invalid(self):
+        with mock.patch.object(vp.urllib.request, "urlopen",
+                               side_effect=urllib.error.URLError("down")), \
+             mock.patch.object(vp.time, "sleep"):
+            e, _ = vp.verify_arxiv_entry("2401.12345", "cli")
+        self.assertEqual(e["verdict"], "unknown")
+        self.assertTrue(e.get("network_error"))
 
 
 if __name__ == "__main__":

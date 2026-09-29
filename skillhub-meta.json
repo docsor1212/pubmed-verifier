@@ -1,6 +1,6 @@
 {
   "name": "pubmed-verifier",
-  "version": "2.9.0",
+  "version": "3.0.0",
   "description": "PubMed文献引用批量验证：不只查PMID是否存在，还能判断它是否指向正确的论文——AI幻觉引用最常见的形态就是「真PMID指向别的论文」。五态判定系统，自动解析引用上下文并交叉比对，不匹配时推荐正确PMID。撤稿检测（Crossref登记的RETRACTED论文封顶为部分匹配并提示人工复核）。双数据源（NCBI + Europe PMC自动兜底）、NCBI API key提速、Crossref polite pool、429退避、断路器；网络故障诚实标注「未判定」，绝不误报「不存在」。零依赖，纯本地运行。触发词：验证PMID、检查引用、核查文献、引用验证、文献验证、验证DOI、DOI核查、撤稿检查、PMID检查、verify PMIDs、check citations、validate references、citation audit、batch verify references、AI幻觉检测、参考文献核查。",
   "author": "docsor1212",
   "tags": [
