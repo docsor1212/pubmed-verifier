@@ -304,7 +304,7 @@ class TestCli(_Reset):
         script = Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"
         out = subprocess.run([sys.executable, str(script), "--version"],
                              capture_output=True, text=True)
-        self.assertIn("3.0.0", out.stdout + out.stderr)
+        self.assertIn("3.1.0", out.stdout + out.stderr)
 
     def test_host_key_granularity(self):
         self.assertEqual(vp._host_key("https://eutils.ncbi.nlm.nih.gov/a?b=c"),
@@ -1147,6 +1147,88 @@ class TestArxiv(_Reset):
             e, _ = vp.verify_arxiv_entry("2401.12345", "cli")
         self.assertEqual(e["verdict"], "unknown")
         self.assertTrue(e.get("network_error"))
+
+
+class TestArxivClaims(_Reset):
+    """v3.1.0 arXiv claims verification e2e (unit-level)."""
+
+    def _atom(self):
+        return mock.mock_open(read_data=b"""<?xml version='1.0'?><feed xmlns="http://www.w3.org/2005/Atom"><title>q</title><entry><title>Attention Is All You Need</title><published>2017-06-12T00:00:00Z</published></entry></feed>""").return_value
+
+    def test_correct_match(self):
+        with mock.patch.object(vp.urllib.request, "urlopen", return_value=self._atom()), \
+             mock.patch.object(vp.time, "sleep"):
+            e, _ = vp.verify_arxiv_entry("1706.03762", "cli",
+                claimed={"claimed_title": "Attention Is All You Need", "claimed_year": "2017"})
+        self.assertEqual(e["verdict"], "correct")
+        self.assertEqual(e.get("claimed_title"), "Attention Is All You Need")
+        self.assertEqual(e["fields"]["year"], True)
+
+    def test_mismatch_detected(self):
+        with mock.patch.object(vp.urllib.request, "urlopen", return_value=self._atom()), \
+             mock.patch.object(vp.time, "sleep"):
+            e, _ = vp.verify_arxiv_entry("1706.03762", "cli",
+                claimed={"claimed_title": "Completely Different Paper About CNN", "claimed_year": "2017"})
+        self.assertEqual(e["verdict"], "mismatch")
+
+    def test_year_mismatch_shown_not_verdict_breaking(self):
+        with mock.patch.object(vp.urllib.request, "urlopen", return_value=self._atom()), \
+             mock.patch.object(vp.time, "sleep"):
+            e, _ = vp.verify_arxiv_entry("1706.03762", "cli",
+                claimed={"claimed_title": "Attention Is All You Need", "claimed_year": "1999"})
+        self.assertEqual(e["verdict"], "correct")
+        self.assertEqual(e["fields"]["year"], False)
+
+    def test_csv_arxiv_only_row_collected(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "c.csv"
+            p.write_text("arxiv_id,title,year\n1706.03762,Attention Is All You Need,2017\n",
+                         encoding="utf-8")
+            claims = vp._load_csv_claims(str(p))
+            rows = getattr(vp._load_csv_claims, "arxiv_rows", {})
+        self.assertEqual(rows.get("1706.03762", {}).get("claimed_title"),
+                         "Attention Is All You Need")
+
+
+class TestArxivClaims(_Reset):
+    """v3.1.0 arXiv claims verification e2e (unit-level)."""
+
+    def _atom(self):
+        return mock.mock_open(read_data=b"""<?xml version='1.0'?><feed xmlns="http://www.w3.org/2005/Atom"><title>q</title><entry><title>Attention Is All You Need</title><published>2017-06-12T00:00:00Z</published></entry></feed>""").return_value
+
+    def test_correct_match(self):
+        with mock.patch.object(vp.urllib.request, "urlopen", return_value=self._atom()), \
+             mock.patch.object(vp.time, "sleep"):
+            e, _ = vp.verify_arxiv_entry("1706.03762", "cli",
+                claimed={"claimed_title": "Attention Is All You Need", "claimed_year": "2017"})
+        self.assertEqual(e["verdict"], "correct")
+        self.assertEqual(e.get("claimed_title"), "Attention Is All You Need")
+        self.assertEqual(e["fields"]["year"], True)
+
+    def test_mismatch_detected(self):
+        with mock.patch.object(vp.urllib.request, "urlopen", return_value=self._atom()), \
+             mock.patch.object(vp.time, "sleep"):
+            e, _ = vp.verify_arxiv_entry("1706.03762", "cli",
+                claimed={"claimed_title": "Completely Different Paper About CNN", "claimed_year": "2017"})
+        self.assertEqual(e["verdict"], "mismatch")
+
+    def test_year_mismatch_shown_not_verdict_breaking(self):
+        with mock.patch.object(vp.urllib.request, "urlopen", return_value=self._atom()), \
+             mock.patch.object(vp.time, "sleep"):
+            e, _ = vp.verify_arxiv_entry("1706.03762", "cli",
+                claimed={"claimed_title": "Attention Is All You Need", "claimed_year": "1999"})
+        self.assertEqual(e["verdict"], "correct")
+        self.assertEqual(e["fields"]["year"], False)
+
+    def test_csv_arxiv_only_row_collected(self):
+        with tempfile.TemporaryDirectory() as td:
+            fp = Path(td) / "c.csv"
+            fp.write_text("arxiv_id,title,year\n1706.03762,Attention Is All You Need,2017\n",
+                          encoding="utf-8")
+            claims = vp._load_csv_claims(str(fp))
+            rows = getattr(vp._load_csv_claims, "arxiv_rows", {})
+        self.assertEqual(rows.get("1706.03762", {}).get("claimed_title"),
+                         "Attention Is All You Need")
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 3.0.0
+version: 3.1.0
 description: >-
   Batch-verify PMID citations against PubMed and catch the hallucination that
   existence checks miss — a REAL PMID pointing to a DIFFERENT paper (the most
@@ -20,7 +20,7 @@ description: >-
   validate citations, PubMed citation verifier.
 ---
 
-# PubMed Citation Verifier v3.0.0
+# PubMed Citation Verifier v3.1.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -35,6 +35,14 @@ Invoke it whenever citation truth matters:
 - Spot-checking a systematic review's bibliography
 - "Does PMID 12345678 really say X?" — point-of-doubt verification
 - Batch QA of a knowledge base's PMID/DOI citations
+- Automatic invocation: trigger this skill whenever the user asks to
+  "verify/check/audit" citations, PMIDs, DOIs or references — no flags
+  needed for a first pass; add `--claims-file` when they supply the
+  expected titles.
+- Automatic invocation: trigger this skill whenever the user asks to
+  "verify/check/audit" citations, PMIDs, DOIs or references — no flags
+  needed for a first pass; add `--claims-file` when they supply the
+  expected titles.
 
 ## The five-state verdict
 
@@ -344,11 +352,33 @@ a final pre-submission check, run with `--no-cache`.
 Check `details` for which field diverged; thresholds are strict on purpose.
 Feed the full citation via `--claims-file` for a precise verdict.
 
+## Anti-patterns — things done WRONG
+
+Each entry: the mistake → why it fails → the right way.
+
+1. **Treating `--pmids` output as "fully verified"** — existence-only.
+   → Wrong: "all 5 PMIDs exist, so the citations are correct."
+   → Right: existence-checked only; feed `--claims-file` with titles for
+   real verification (the READY line says so explicitly).
+2. **Claims without `title`** — author/journal/year alone can never reach
+   `correct`; the report caps at `partial`. → Always include titles.
+3. **Trusting a cached verdict right after publication day** — a brand-new
+   PMID may have been cached as not-found by an earlier run, and retraction
+   status is as of cache time. → Final pre-submission check: `--no-cache`.
+4. **Assuming "not found" always means fabricated** — auto-extracted DOIs
+   that 404 stay *suspects* (DataCite DOIs don't live in Crossref); arXiv
+   IDs removed by moderators also return empty. → Check doi.org / arxiv.org
+   by hand before accusing.
+5. **Copying the leading `'` from CSV cells** — that apostrophe is the
+   formula-injection guard, not data corruption. → Strip it after import.
+6. **Reading the READY line as a quality score** — it only means "no
+   problems found among the checks that ran", not "this paper is good".
+
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v3.0.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v3.1.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref API notes |
 | `tests/` | Offline matrix + real-network acceptance (repo only, not in the package) |
 

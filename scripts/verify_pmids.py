@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v3.0.0
+PMID Citation Verifier -- PubMed E-utilities API v3.1.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -82,8 +82,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "3.0.0"
-_UA_TOOL = "pubmed-verifier/3.0 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "3.1.0"
+_UA_TOOL = "pubmed-verifier/3.1 (+citation verifier; stdlib-only)"
 _UA_BROWSER = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 _CIRCUIT_THRESHOLD = 2  # call-level consecutive transport failures per host
@@ -630,7 +630,7 @@ def extract_arxivs_from_file(filepath: str) -> list:
     return results
 
 
-def verify_arxiv_entry(arxiv_id: str, src: str) -> tuple:
+def verify_arxiv_entry(arxiv_id: str, src: str, claimed: dict = None) -> tuple:
     """Verify one arXiv ID against the official API (v3.0.0).
 
     Returns (entry, audit_item). No entry in the Atom feed = fabrication
@@ -699,8 +699,33 @@ def verify_arxiv_entry(arxiv_id: str, src: str) -> tuple:
         entry["authors"] = ", ".join(authors[:3])
         entry["meta_source"] = "arxiv"
         entry["verdict"] = "unknown"
-        entry["details"] = (f"arXiv ID resolves — registered: {title[:100]} ({pub}). "
-                            f"No claimed metadata to cross-verify.")
+        # v3.1.0: claimed title comparison (claims keyed by arxiv_id) —
+        # existence upgrades to a real verdict only when the user supplied
+        # what the paper SHOULD be titled.
+        claimed_title = str((claimed or {}).get("claimed_title", "") or "").strip()
+        if claimed_title:
+            claimed_words = _normalize_text(claimed_title)
+            reg_words = _normalize_text(title)
+            word_ratio = (len(claimed_words & reg_words) / len(claimed_words | reg_words)
+                          if claimed_words and reg_words else 0)
+            seq_ratio = _sequence_similarity(claimed_title, title)
+            title_match = word_ratio >= 0.5 or seq_ratio >= 0.90
+            entry["claimed_title"] = claimed_title
+            claimed_year = str((claimed or {}).get("claimed_year", "") or "").strip()
+            entry["fields"] = {"title": title_match, "author": None, "journal": None,
+                               "year": (pub == claimed_year) if claimed_year else None}
+            if title_match:
+                entry["verdict"] = "correct"
+                entry["details"] = (f"arXiv ID resolves and registered title matches the "
+                                    f"claim (title similarity {max(word_ratio, seq_ratio):.2f}).")
+            else:
+                entry["verdict"] = "mismatch"
+                entry["details"] = (f"arXiv ID resolves but the registered title differs "
+                                    f"from the claim — registered: {title[:80]} "
+                                    f"（arXiv ID 存在但登记标题与声称不符——疑似张冠李戴）")
+        else:
+            entry["details"] = (f"arXiv ID resolves — registered: {title[:100]} ({pub}). "
+                                f"No claimed metadata to cross-verify.")
         audit["registered"] = {"title": title, "year": pub, "authors": authors}
         audit["verdict"] = {"final": entry["verdict"], "details": entry["details"]}
         return entry, audit
@@ -1471,7 +1496,11 @@ def _journal_abbrev_match(claimed: str, actual: str) -> bool:
 
 # ── CSV claims loader ──
 
+
+
 def _load_csv_claims(filepath: str) -> dict:
+    if not hasattr(_load_csv_claims, "arxiv_rows"):
+        _load_csv_claims.arxiv_rows = {}
     """Load claimed metadata from CSV file. Returns {pmid: claimed_dict}.
     
     Expected columns: pmid, title, authors, journal, year
@@ -1483,7 +1512,17 @@ def _load_csv_claims(filepath: str) -> dict:
             reader = csv.DictReader(f)
             for row in reader:
                 pmid = str(row.get("pmid", "") or row.get("PMID", "")).strip()
-                if not pmid.isdigit():
+                arxiv_col = str(row.get("arxiv_id", "") or row.get("arxiv", "") or "").strip()
+                if not pmid and not arxiv_col:
+                    continue
+                if pmid and not pmid.isdigit():
+                    continue
+                if not pmid and arxiv_col:
+                    # pure-arXiv row: collected into the arXiv claims map
+                    _load_csv_claims.arxiv_rows.setdefault(arxiv_col.lower(), {
+                        "claimed_title": row.get("title", "") or row.get("Title", "") or "",
+                        "claimed_year": str(row.get("year", "") or row.get("Year", "") or ""),
+                    })
                     continue
                 authors_raw = row.get("authors", "") or row.get("Authors", "") or ""
                 # Support semicolon, pipe, or comma separation (but comma conflicts with CSV)
@@ -1499,9 +1538,11 @@ def _load_csv_claims(filepath: str) -> dict:
                     "claimed_journal": row.get("journal", "") or row.get("Journal", "") or "",
                     "claimed_year": str(row.get("year", "") or row.get("Year", "") or ""),
                     "claimed_doi": str(row.get("doi", "") or row.get("DOI", "") or ""),
+                    "claimed_arxiv": str(row.get("arxiv_id", "") or row.get("arxiv", "") or "").strip(),
                 }
     except Exception as e:
         print(f"Error reading CSV claims file: {e}", file=sys.stderr)
+    _load_csv_claims.arxiv_rows = getattr(_load_csv_claims, "arxiv_rows", {})
     return claims
 
 
@@ -2043,13 +2084,15 @@ def main():
     # Collect PMIDs with optional claimed metadata
     pmid_entries = []  # list of (pmid, source_file, context, claimed_dict)
     explicit_claims = {}
+    explicit_arxiv = {}   # claims keyed by arxiv_id (v3.1.0)
 
     # Load explicit claims from --claims or --claims-file
     if args.claims_file:
         filepath = args.claims_file
         if filepath.lower().endswith(".csv"):
             explicit_claims = _load_csv_claims(filepath)
-            if not explicit_claims:
+            explicit_arxiv.update(getattr(_load_csv_claims, "arxiv_rows", {}))
+            if not explicit_claims and not explicit_arxiv:
                 print(f"No valid PMIDs found in CSV file: {filepath}", file=sys.stderr)
                 sys.exit(1)
         else:
@@ -2070,6 +2113,14 @@ def main():
                             "claimed_journal": str(item.get("journal", "") or ""),
                             "claimed_year": str(item.get("year", "") or ""),
                             "claimed_doi": str(item.get("doi", "") or ""),
+                        }
+                    elif str(item.get("arxiv_id", "") or "").strip():
+                        aid = str(item["arxiv_id"]).strip()
+                        if aid.lower().startswith("arxiv:"):
+                            aid = aid[6:].strip()
+                        explicit_arxiv[aid.lower()] = {
+                            "claimed_title": str(item.get("title", "") or ""),
+                            "claimed_year": str(item.get("year", "") or ""),
                         }
             except (json.JSONDecodeError, ValueError, OSError) as e:
                 print(f"Error reading claims file: {e}", file=sys.stderr)
@@ -2092,6 +2143,12 @@ def main():
                         "claimed_year": str(item.get("year", "") or ""),
                         "claimed_doi": str(item.get("doi", "") or ""),
                     }
+                elif str(item.get("arxiv_id", "") or "").strip():
+                    aid = str(item["arxiv_id"]).strip()
+                    explicit_arxiv[aid.lower()] = {
+                        "claimed_title": str(item.get("title", "") or ""),
+                        "claimed_year": str(item.get("year", "") or ""),
+                    }
         except (json.JSONDecodeError, ValueError) as e:
             print(f"Error parsing --claims JSON: {e}", file=sys.stderr)
             sys.exit(1)
@@ -2106,13 +2163,13 @@ def main():
     if args.pmids and args.source:
         print("WARN: both --pmids and --source given; --source is ignored "
               "entirely (its PMIDs and DOIs are NOT scanned).", file=sys.stderr)
-    # Standalone arXiv inputs (v3.0.0)
-    arxiv_inputs = []   # (arxiv_id, source_label)
+    # Standalone arXiv inputs (v3.0.0) + claims keyed by arxiv_id (v3.1.0)
+    arxiv_inputs = []   # (arxiv_id, source_label, claimed_dict|None)
     if args.arxivs:
         for a in args.arxivs.split(","):
             a = a.strip()
             if a:
-                arxiv_inputs.append((a, "cli"))
+                arxiv_inputs.append((a, "cli", explicit_arxiv.get(a.lower())))
     if args.pmids:
         for p in args.pmids.split(","):
             p = p.strip()
@@ -2129,7 +2186,7 @@ def main():
             for doi, dctx in extract_dois_from_file(source):
                 doi_inputs.append((_clean_doi(doi), source))
             for aid, actx in extract_arxivs_from_file(source):
-                arxiv_inputs.append((aid, source))
+                arxiv_inputs.append((aid, source, explicit_arxiv.get(aid.lower())))
         elif os.path.isdir(source):
             file_map = extract_pmids_from_directory(source)
             for fpath, items in file_map.items():
@@ -2142,14 +2199,17 @@ def main():
                         for doi, dctx in extract_dois_from_file(os.path.join(root, fname)):
                             doi_inputs.append((_clean_doi(doi), os.path.join(root, fname)))
                         for aid, actx in extract_arxivs_from_file(os.path.join(root, fname)):
-                            arxiv_inputs.append((aid, os.path.join(root, fname)))
+                            arxiv_inputs.append((aid, os.path.join(root, fname),
+                                                 explicit_arxiv.get(aid.lower())))
         else:
             print(f"Error: {source} not found", file=sys.stderr)
             sys.exit(1)
-    elif explicit_claims:
+    elif explicit_claims or explicit_arxiv:
         # Only --claims provided, no --source or --pmids
         for pmid, claimed in explicit_claims.items():
             pmid_entries.append((pmid, "claims", "", claimed))
+        for aid, claimed in explicit_arxiv.items():
+            arxiv_inputs.append((aid, "claims", claimed))
     elif not doi_inputs and not arxiv_inputs:
         parser.print_help()
         sys.exit(1)
@@ -2449,7 +2509,7 @@ def main():
     arxiv_seen = set(r.get("arxiv_id", "").lower() for r in results if r.get("arxiv_id"))
     arxiv_processed = 0
     last_call = 0.0
-    for aid, src in arxiv_inputs:
+    for aid, src, claimed_aid in arxiv_inputs:
         if aid.lower() in arxiv_seen:
             continue
         arxiv_seen.add(aid.lower())
@@ -2458,7 +2518,11 @@ def main():
         if wait > 0:
             time.sleep(wait)
         last_call = time.time()
-        entry, audit_item = verify_arxiv_entry(aid, src)
+        entry, audit_item = verify_arxiv_entry(aid, src, claimed=claimed_aid)
+        if entry["verdict"] == "correct":
+            stats["correct"] = stats.get("correct", 0) + 1
+        elif entry["verdict"] == "mismatch":
+            stats["mismatch"] = stats.get("mismatch", 0) + 1
         if entry["verdict"] == "invalid":
             stats["invalid"] += 1
             stats["arxiv_invalid"] = stats.get("arxiv_invalid", 0) + 1
