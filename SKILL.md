@@ -2,25 +2,25 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 3.1.0
+version: 3.2.0
 description: >-
-  Batch-verify PMID citations against PubMed and catch the hallucination that
-  existence checks miss — a REAL PMID pointing to a DIFFERENT paper (the most
-  common AI-fabricated citation). Five-state citation verification (correct /
+  Reference checker for AI-fabricated citations: batch-verify PMIDs against
+  PubMed and catch the hallucination existence checks miss — a REAL PMID
+  pointing to a DIFFERENT paper. Five-state citation verification (correct /
   mismatch / partial / invalid / unknown), citation-context parsing, dual
-  fuzzy matching, Crossref DOI cross-check, retraction detection (RETRACTED
-  papers capped at partial), correct-PMID suggestion, SQLite cache, CSV/JSON
-  claims, HTML/JSON/text reports. Dual data sources with automatic Europe PMC
-  fallback, optional NCBI API key (faster batches), Crossref polite pool,
-  Retry-After backoff, UA rotation, host circuit breaker. Network failures are
-  honestly reported as unverified, never as "not found". Zero dependencies,
-  runs fully local. Triggers — verify PMIDs, check citations, validate
-  references, citation audit, reference check, PMID check, audit references,
-  batch verify references, AI hallucination detection, verify DOI, DOI check,
-  validate citations, PubMed citation verifier.
+  fuzzy matching, Crossref DOI cross-check, retraction detection (capped at
+  partial), correct-PMID suggestion, arXiv ID verification, SQLite cache,
+  CSV/JSON claims, HTML/JSON/text reports. Dual data sources with automatic
+  Europe PMC fallback, optional NCBI API key, Crossref polite pool,
+  Retry-After backoff, UA rotation, host circuit breaker. Network failures
+  are honestly reported as unverified, never as "not found". Zero
+  dependencies, runs fully local. Triggers: verify PMIDs, check citations,
+  validate references, citation audit, reference check, PMID check, audit
+  references, batch verify references, AI hallucination detection, verify
+  DOI, DOI check, validate citations, PubMed citation verifier.
 ---
 
-# PubMed Citation Verifier v3.1.0
+# PubMed Citation Verifier v3.2.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -378,7 +378,7 @@ Each entry: the mistake → why it fails → the right way.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v3.1.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v3.2.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref API notes |
 | `tests/` | Offline matrix + real-network acceptance (repo only, not in the package) |
 

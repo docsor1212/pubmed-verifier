@@ -304,7 +304,7 @@ class TestCli(_Reset):
         script = Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"
         out = subprocess.run([sys.executable, str(script), "--version"],
                              capture_output=True, text=True)
-        self.assertIn("3.1.0", out.stdout + out.stderr)
+        self.assertIn("3.2.0", out.stdout + out.stderr)
 
     def test_host_key_granularity(self):
         self.assertEqual(vp._host_key("https://eutils.ncbi.nlm.nih.gov/a?b=c"),

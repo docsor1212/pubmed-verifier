@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v3.1.0
+PMID Citation Verifier -- PubMed E-utilities API v3.2.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -82,8 +82,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "3.1.0"
-_UA_TOOL = "pubmed-verifier/3.1 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "3.2.0"
+_UA_TOOL = "pubmed-verifier/3.2 (+citation verifier; stdlib-only)"
 _UA_BROWSER = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 _CIRCUIT_THRESHOLD = 2  # call-level consecutive transport failures per host
@@ -352,7 +352,7 @@ def fetch_doi_metadata(doi: str) -> dict:
         # "retraction" means the paper has been retracted. Corrections and
         # other update types do NOT count. (In filters the key is hyphenated
         # update-type; response items carry plain "type".)
-        retracted, retraction_note = False, ""
+        retracted, retraction_note, retraction_date = False, "", ""
         for u in msg.get("updated-by", []) or []:
             if not isinstance(u, dict):
                 continue
@@ -360,6 +360,9 @@ def fetch_doi_metadata(doi: str) -> dict:
             if utype == "retraction":
                 retracted = True
                 retraction_note = f"retracted by DOI {u.get('DOI', '?')}"
+                upd = (u.get("updated") or {}).get("date-time") or (u.get("updated") or {}).get("date-parts")
+                if upd:
+                    retraction_date = str(upd)
                 break
         return {
             "valid": True,
@@ -370,6 +373,7 @@ def fetch_doi_metadata(doi: str) -> dict:
             "doi": doi,
             "retracted": retracted,
             "retraction_note": retraction_note,
+            "retraction_date": retraction_date,
             "source": "crossref",
         }
     except Exception as e:
@@ -665,7 +669,8 @@ def verify_arxiv_entry(arxiv_id: str, src: str, claimed: dict = None) -> tuple:
         # (v3.0.0 review P0, deterministic offline repro).
         if root.tag != "{http://www.w3.org/2005/Atom}feed":
             raise ValueError("arXiv API returned non-Atom content")
-        ns = {"a": "http://www.w3.org/2005/Atom"}
+        ns = {"a": "http://www.w3.org/2005/Atom",
+              "arxiv": "http://arxiv.org/schemas/atom"}
         entries = root.findall("a:entry", ns)
         if not entries:
             entry["verdict"] = "invalid"
@@ -698,6 +703,13 @@ def verify_arxiv_entry(arxiv_id: str, src: str, claimed: dict = None) -> tuple:
         entry["pubdate"] = pub
         entry["authors"] = ", ".join(authors[:3])
         entry["meta_source"] = "arxiv"
+        # arxiv:journal_ref / arxiv:doi — preprint-to-published version chain
+        jr = e0.find("arxiv:journal_ref", ns)
+        if jr is not None and jr.text:
+            entry["journal_ref"] = " ".join(jr.text.split())[:120]
+        ado = e0.find("arxiv:doi", ns)
+        if ado is not None and ado.text:
+            entry["arxiv_registered_doi"] = ado.text.strip()
         entry["verdict"] = "unknown"
         # v3.1.0: claimed title comparison (claims keyed by arxiv_id) —
         # existence upgrades to a real verdict only when the user supplied
@@ -726,7 +738,9 @@ def verify_arxiv_entry(arxiv_id: str, src: str, claimed: dict = None) -> tuple:
         else:
             entry["details"] = (f"arXiv ID resolves — registered: {title[:100]} ({pub}). "
                                 f"No claimed metadata to cross-verify.")
-        audit["registered"] = {"title": title, "year": pub, "authors": authors}
+        audit["registered"] = {"title": title, "year": pub, "authors": authors,
+                               "journal_ref": entry.get("journal_ref", ""),
+                               "registered_doi": entry.get("arxiv_registered_doi", "")}
         audit["verdict"] = {"final": entry["verdict"], "details": entry["details"]}
         return entry, audit
     except (urllib.error.URLError, OSError, TimeoutError, http.client.HTTPException,
@@ -1784,6 +1798,64 @@ def generate_csv_report(results: list) -> str:
     return buf.getvalue()
 
 
+def _md_escape(x) -> str:
+    """Markdown table-cell hardening: collapse newlines (kills table-break
+    and block injection), escape backslash, brackets and pipes (review P1)."""
+    s = " ".join(str(x or "").split())
+    s = s.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+    return s.replace("|", "\\|")[:120]
+
+
+def generate_markdown_report(results: list, stats: dict, source: str, deltas: dict = None) -> str:
+    """LLM/agent-friendly Markdown report (v3.2.0): five-state table,
+    evidence columns, readiness — paste-ready for AI workflows."""
+    def esc(x):
+        return _md_escape(x)
+    ready, ready_line = readiness_summary(stats)
+    icon = {"correct": "✅", "mismatch": "⚠️", "partial": "🔶",
+            "invalid": "❌", "unknown": "❓"}
+    lines = [
+        f"# Citation Verification Report — {source}", "",
+        f"**Readiness:** {ready_line}", "",
+        f"**Results:** {stats.get('correct', 0)} correct / {stats.get('mismatch', 0)} mismatch / "
+        f"{stats.get('invalid', 0)} invalid / {stats.get('partial', 0)} partial / "
+        f"{stats.get('unknown', 0)} unknown (total {stats.get('total', 0)})", "",
+        "| Citation | Verdict | Title (registered) | Evidence | Details |",
+        "|---|---|---|---|---|",
+    ]
+    for r in results:
+        key = r.get("arxiv_id") or r.get("pmid") or r.get("doi", "")
+        fld = r.get("fields") or {}
+        marks = {True: "✓", False: "✗", None: "—"}
+        ev = " ".join(marks.get(fld.get(k), "—") for k in ("title", "author", "journal", "year"))
+        flags = []
+        if r.get("retracted"):
+            flags.append("RETRACTED")
+        if r.get("doi_splice_suspect"):
+            flags.append("SPLICE")
+        v = r.get("verdict", "?")
+        flag_s = (" [" + ",".join(flags) + "]") if flags else ""
+
+        def esc(x):
+            # markdown table-cell hardening (review P1): collapse newlines
+            # (kills table-break/block injection), escape backslash, brackets
+            # (link/image syntax) and pipes
+            s = " ".join(str(x or "").split())
+            s = s.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+            s = s.replace("|", "\\|")
+            return s[:120]
+        lines.append(f"| {_md_escape(key)}{flag_s} | {icon.get(v, v)} {v} | {esc(r.get('title'))} | {ev} | {esc(r.get('details'))} |")
+    if deltas and "error" not in deltas:
+        cnt = deltas["counts"]
+        lines += ["", "## Delta vs baseline",
+                  f"newly retracted: {cnt.get('newly_retracted', 0)} · degraded: {cnt.get('degraded', 0)} · "
+                  f"improved: {cnt.get('improved', 0)} · new: {cnt.get('new', 0)} · dropped: {cnt.get('dropped', 0)}"]
+        for d in deltas["newly_retracted"]:
+            lines.append(f"- ⚠ **{esc_md(d['key'])}** — {esc_md(d.get('title', ''))}")
+    lines += ["", "---", f"*Generated by pubmed-verifier v{_TOOL_VERSION}*"]
+    return "\n".join(lines) + "\n"
+
+
 def generate_audit_report(entries: list, stats: dict, args, deltas: dict = None) -> str:
     """Self-contained audit working-paper (v2.6.0): tool identity, redacted
     invocation, per-citation evidence chain and verdict-ladder trace. A third
@@ -2051,7 +2123,7 @@ def main():
     parser.add_argument("--no-cache", action="store_true", help="Disable cache, always query API")
     parser.add_argument("--cache-days", type=int, default=30, help="Cache validity in days (default: 30)")
     parser.add_argument("--output", help="Output file (.json or .html)")
-    parser.add_argument("--format", choices=["json", "html", "text"], default="text", help="Output format")
+    parser.add_argument("--format", choices=["json", "html", "markdown", "text"], default="text", help="Output format")
     parser.add_argument("--ncbi-api-key", default="",
                         help="NCBI E-utilities API key (or env NCBI_API_KEY): rate limit 3->10 req/s, batch ~3x faster")
     parser.add_argument("--mailto", default="",
@@ -2145,6 +2217,8 @@ def main():
                     }
                 elif str(item.get("arxiv_id", "") or "").strip():
                     aid = str(item["arxiv_id"]).strip()
+                    if aid.lower().startswith("arxiv:"):
+                        aid = aid[6:].strip()
                     explicit_arxiv[aid.lower()] = {
                         "claimed_title": str(item.get("title", "") or ""),
                         "claimed_year": str(item.get("year", "") or ""),
@@ -2303,6 +2377,7 @@ def main():
                         if doi_meta.get("retracted"):
                             entry["retracted"] = True
                             entry["retraction_note"] = doi_meta.get("retraction_note", "")
+                            entry["retraction_date"] = doi_meta.get("retraction_date", "")
                             entry["retraction_source"] = "crossref updated-by"
                     else:
                         entry["doi_verified"] = False
@@ -2420,6 +2495,7 @@ def main():
                     "retraction": {
                         "flagged": entry.get("retracted", False),
                         "note": entry.get("retraction_note", ""),
+                        "date": entry.get("retraction_date", ""),
                         "source": entry.get("retraction_source",
                                             "crossref updated-by" if entry.get("retracted") else "")},
                     "verdict": {"final": entry["verdict"], "details": entry["details"],
@@ -2572,6 +2648,9 @@ def main():
         # rather than silently writing HTML into a .txt.
         if args.format == "json" or ext == ".json":
             output_text = generate_json_report(results, stats)
+        elif args.format == "markdown" or ext in (".md", ".markdown"):
+            output_text = generate_markdown_report(results, stats,
+                                                   args.source or args.pmids or "claims", deltas)
         elif args.format == "html" or ext in (".html", ".htm"):
             output_text = generate_html_report(results, stats, args.source or args.pmids or "claims", repro,
                                                deltas)
@@ -2654,6 +2733,12 @@ def main():
                     line += f"\n   Claimed: {r['claimed_title'][:90]}"
                 if r.get("details"):
                     line += f"\n   Details: {r['details']}"
+                fld = r.get("fields") or {}
+                if fld:
+                    marks = {True: "✓", False: "✗", None: "—"}
+                    ev = " · ".join(f"{k} {marks.get(fld.get(k), '—')}"
+                                    for k in ("title", "author", "journal", "year"))
+                    line += f"\n   Evidence: {ev}"
                 if r.get("suggested_pmids"):
                     for s in r["suggested_pmids"][:2]:
                         line += f"\n   → Suggest: PMID {s['pmid']} - {s['title']}"
