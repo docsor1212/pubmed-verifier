@@ -19,11 +19,9 @@ Academic projects routinely contain hundreds of PMID citations. Manual verificat
 - **Verified-bibliography export** — `--export-bibtex` writes correct entries as BibTeX, comments partial ones, excludes and counts the rest
 - **Submission-readiness verdict** — every report leads with `SUBMISSION READY` / `NOT SUBMISSION-READY` and per-problem counts
 - **Audit working-paper** — `--export-audit` writes a self-contained JSON trail (tool identity, redacted invocation, evidence chain, verdict trace) a third party can replay
-- **Retraction detection for every citation** — the registry publication type ("Retracted Publication") flags retracted papers with no DOI or extra flags needed; Crossref `updated-by` adds the retraction-notice DOI
 - **DOI-native verification** — `--dois` verifies DOIs directly (Crossref resolve, 404 = fabrication signal on explicit input); `--source` scans auto-extract DOIs; linked back to PMIDs via Europe PMC
 - **Delta audits** — `--diff previous-audit.json` reports newly retracted, degraded, improved, new and dropped citations
 - **Exports** — `--export-audit` (self-contained JSON trail), `--export-bibtex` (verified bibliography), `--export-csv` (spreadsheet audit table)
-- **Submission-readiness verdict** — every report leads with `SUBMISSION READY` / `NOT SUBMISSION-READY` and per-problem counts
 - **Replacement search** — Find correct PMIDs for broken citations via PubMed search
 - **Multiple output formats** — HTML report, JSON (with per-entry metadata origin), or terminal summary
 

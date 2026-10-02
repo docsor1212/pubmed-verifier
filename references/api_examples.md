@@ -94,5 +94,21 @@ curl -s "https://api.crossref.org/works/10.1038/nature12968?mailto=you@lab.org"
 ```
 
 - 429 responses carry `Retry-After` — back off accordingly (v2.2.0 clamps 1–5 s)
-- 403/406 are often IP-level throttling; retrying with a browser User-Agent helps
+- 403/406 usually mean rate limiting — back off and retry later (the tool rotates standard client identifiers automatically and never fakes a browser)
 - A correct DOI with WRONG paper metadata = spliced/fake citation signature
+
+## arXiv API (export.arxiv.org)
+
+```bash
+# one ID per lookup, Atom feed back; arxiv:doi = the version-of-record
+# DOI the authors registered — the preprint↔published cross-check uses it
+curl -s "https://export.arxiv.org/api/query?id_list=2005.13892&max_results=1"
+```
+
+- No `<entry>` in the feed = the ID does not exist (fabrication signal);
+  a 200 response that is not an Atom feed (portal/maintenance page) is
+  treated as "could not verify", never as "not found"
+- Official etiquette: ≥3 s between calls — large batches are paced
+  deliberately (progress with ETA goes to stderr)
+- `arxiv:journal_ref` / `arxiv:doi` are author-registered fields, shown
+  in the audit trail; see SKILL.md v3.3.0 section for the pairing check

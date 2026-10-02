@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Real-network acceptance for pubmed-verifier v2.2.0 (run where internet works).
+"""Real-network acceptance for pubmed-verifier (repo-level, run where internet works).
 
 Run:  python3 tests/acceptance_realnet.py
 Verdict per case: PASS / FAIL / SKIP(environment). Prints a 汇总 line;
@@ -48,7 +48,7 @@ def fetch_real(pmid):
     return vp.fetch_summaries([pmid], batch_size=1)[pmid]
 
 
-print("== pubmed-verifier v2.8.0 real-network acceptance ==")
+print("== pubmed-verifier real-network acceptance ==")
 
 # ── T0: ground truth reachable ──
 truth = {}
@@ -211,6 +211,50 @@ Path(base_path).unlink(missing_ok=True)
 record("T15 delta audit e2e",
        rc1 in (0, 1) and rc2 in (0, 1) and d2 is not None and "newly_retracted" in d2,
        f"rc1={rc1} rc2={rc2} deltas={d2}")
+
+# ── T16: arXiv existence two-state (real resolves / malformed = invalid) ──
+rc, so, data = run_cli(["--arxivs", "1706.03762,2413.99999", "--no-cache"])
+res_a = {r.get("arxiv_id"): r for r in (data or {}).get("results", [])}
+ok_real = res_a.get("1706.03762", {}).get("valid") is True
+ok_bad = res_a.get("2413.99999", {}).get("verdict") == "invalid"
+record("T16 arXiv existence (real resolves, malformed invalid)",
+       ok_real and ok_bad,
+       f"real-valid={ok_real} badmonth={res_a.get('2413.99999',{}).get('verdict')}")
+
+# ── T17: v3.3.0 preprint ↔ published version-of-record chain ──
+# Ground truth probed 10-02: arXiv:2005.13892 registers DOI
+# 10.1371/journal.pone.0239699 (PLOS ONE 2020), PMID 32966344 via EPMC.
+rc, so, data = run_cli(["--arxivs", "2005.13892", "--no-cache"])
+r = ((data or {}).get("results") or [{}])[0]
+hint_ok = "Version of record: DOI 10.1371/journal.pone.0239699" in str(r.get("details", ""))
+link_ok = r.get("pmid") == "32966344"
+record("T17a bare preprint surfaces version of record (+PMID link)",
+       r.get("valid") is True and hint_ok and link_ok,
+       f"hint={hint_ok} pmid={r.get('pmid')}")
+
+match_claims = [{"arxiv_id": "2005.13892",
+                 "title": "City size and the spreading of COVID-19 in Brazil",
+                 "doi": "10.1371/journal.pone.0239699"}]
+rc, so, data = run_cli(["--claims", json.dumps(match_claims), "--no-cache"])
+r = ((data or {}).get("results") or [{}])[0]
+st_b = (data or {}).get("stats", {})
+record("T17b claimed DOI matches registered → correct + evidence (no unknown inflation)",
+       r.get("verdict") == "correct" and (r.get("fields") or {}).get("doi") is True
+       and st_b.get("correct") == 1 and st_b.get("unknown", 0) == 0,
+       f"verdict={r.get('verdict')} doi_field={(r.get('fields') or {}).get('doi')} "
+       f"correct={st_b.get('correct')} unknown={st_b.get('unknown')}")
+
+spliced = [{"arxiv_id": "2005.13892",
+            "title": "City size and the spreading of COVID-19 in Brazil",
+            "doi": "10.9999/fabricated.pairing"}]
+rc, so, data = run_cli(["--claims", json.dumps(spliced), "--no-cache"])
+r = ((data or {}).get("results") or [{}])[0]
+st = (data or {}).get("stats", {})
+record("T17c claimed DOI mismatch caps correct → partial (stats accounting)",
+       r.get("verdict") == "partial" and (r.get("fields") or {}).get("doi") is False
+       and st.get("partial") == 1 and st.get("unknown") == 0,
+       f"verdict={r.get('verdict')} doi_field={(r.get('fields') or {}).get('doi')} "
+       f"partial={st.get('partial')} unknown={st.get('unknown')}")
 
 # ── 汇总 ──
 passed = sum(1 for r in RESULTS if r["ok"])

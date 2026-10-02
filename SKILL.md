@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 3.2.0
+version: 3.3.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI, DOI check, validate citations, PubMed citation verifier.
 ---
 
-# PubMed Citation Verifier v3.2.0
+# PubMed Citation Verifier v3.3.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -36,13 +36,9 @@ Invoke it whenever citation truth matters:
 - "Does PMID 12345678 really say X?" — point-of-doubt verification
 - Batch QA of a knowledge base's PMID/DOI citations
 - Automatic invocation: trigger this skill whenever the user asks to
-  "verify/check/audit" citations, PMIDs, DOIs or references — no flags
-  needed for a first pass; add `--claims-file` when they supply the
-  expected titles.
-- Automatic invocation: trigger this skill whenever the user asks to
-  "verify/check/audit" citations, PMIDs, DOIs or references — no flags
-  needed for a first pass; add `--claims-file` when they supply the
-  expected titles.
+  "verify/check/audit" citations, PMIDs, DOIs, arXiv preprints or
+  references — no flags needed for a first pass; add `--claims-file`
+  when they supply the expected titles.
 
 ## The five-state verdict
 
@@ -102,8 +98,8 @@ python3 scripts/verify_pmids.py --source . --verify-doi --ncbi-api-key $NCBI_API
 | Honest unknown | automatic | Network failures report as ❓ unknown + exit code 2, never as "PMID not found", and are never cached |
 
 **Exit codes:** `0` clean · `1` problems found (invalid / mismatch / retracted /
-DOI-splice) · `2` could not verify (data sources unreachable) — automation can
-tell "all good" from "no answer".
+DOI-splice, incl. arXiv claimed-DOI pairing mismatches) · `2` could not verify
+(data sources unreachable) — automation can tell "all good" from "no answer".
 
 ## v2.3.0 — retraction detection
 
@@ -243,6 +239,33 @@ stays unknown. Malformed IDs (bad YYMM month) are flagged by shape.
 Timely: arXiv penalizes submissions containing hallucinated or unverified
 references (2026-05 policy) — audit before you submit.
 
+## v3.3.0 — preprint ↔ published-version cross-check
+
+arXiv entries carry the version-of-record DOI their authors registered at
+publication (`arxiv:doi`). v3.3.0 puts it to work:
+
+- **Claimed DOI vs registered DOI** — a claims row with both `arxiv_id`
+  and `doi` is cross-checked: agreement is reported as evidence
+  (`fields.doi ✓`); disagreement caps the verdict at `partial` — the DOI
+  belongs to a different paper (same failure class as PMID DOI-splice).
+- **Version of record surfaced** — verifying a bare preprint ID now shows
+  the registered DOI and, when the published version is PubMed-indexed,
+  its linked PMID — cite and verify the final version, not just the
+  preprint.
+- **Honest accounting** — the readiness line counts arXiv DOI-pairing
+  mismatches as problems; DOI/arXiv phase progress (stderr) now includes
+  elapsed time and an ETA for large batches.
+- Context parsing no longer truncates titles at sentence-internal
+  abbreviations ("U.S. population", "e.g.", "vs.", "Vol.").
+
+Pairing example (match → correct with DOI evidence; wrong DOI → partial):
+
+```bash
+python3 scripts/verify_pmids.py --claims '[{"arxiv_id":"2005.13892",
+  "title":"City size and the spreading of COVID-19 in Brazil",
+  "doi":"10.1371/journal.pone.0239699"}]'
+```
+
 ## How it works
 
 1. **Extract + parse context** — finds `PMID: 12345678` / PubMed URLs in
@@ -266,8 +289,10 @@ references (2026-05 policy) — audit before you submit.
    searches PubMed with the claimed metadata and proposes top-3 candidates.
    (Suggestion search always uses NCBI, even with `--meta-source europepmc`.)
 
-Context parsing is heuristic — abbreviations like "U.S." can split a title
-early. For precise verification, feed structured claims via `--claims-file`.
+Context parsing is heuristic — since v3.3.0, common abbreviations
+("U.S.", "e.g.", "vs.") no longer split a title, but exotic formatting
+still can. For precise verification, feed structured claims via
+`--claims-file`.
 
 | Report | Flag | Use |
 |--------|------|-----|
@@ -314,6 +339,35 @@ Typical order: get papers (cn-med-oa), verify citations (this tool or
 cite-holmes), polish (paper-polisher-pro), make figures (academic-figures),
 translate PDFs (doc-holmes) — pick whichever step you need.
 
+## Boundaries — declared limits
+
+What this tool can NOT do, consolidated in one place:
+
+- **Splice/mismatch signals report disagreement, never pick a side** —
+  when claim and registry disagree, a human reads the evidence line.
+- **Cross-language authors are skipped, not failed** — CJK↔Latin author
+  names are never compared (`author_check: skipped`); the verdict rests
+  on title/journal/year alone.
+- **Context parsing is heuristic** — v3.3.0 keeps common abbreviations
+  (U.S., e.g., vs., St., Vol., No.) from splitting a title, but exotic
+  formatting can still mis-split; for exact metadata use `--claims-file`.
+- **DataCite/repository DOIs are not in Crossref** — an auto-extracted
+  DOI missing from Crossref stays a *suspect*; only user-provided DOIs
+  count a Crossref 404 as invalid.
+- **arXiv moderator removals also return "not found"** — the invalid
+  verdict carries that caveat in its details.
+- **Retraction status is as-of-cache-time** — final pre-submission
+  checks should run with `--no-cache`.
+- **Single-letter initials never match** — "Smith J" vs "Smith John" is
+  not counted as a miss.
+- **unknown ≠ invalid** — unreachable sources yield exit 2 and
+  `unknown`; network failures are never reported as "not found" and
+  never cached.
+- **arXiv pacing is deliberate** — the official API asks for ≥3 s
+  between calls; large arXiv batches are slow by design (progress + ETA
+  on stderr). Entries that register a version-of-record DOI add one
+  Europe PMC lookup each for the PMID link.
+
 ## FAQ & common mistakes
 
 **Large batch (hundreds of PMIDs) is slow — how to speed it up?**
@@ -323,7 +377,7 @@ one Crossref call *per citation* and `--suggest` adds one search *per
 mismatch* — skip them for bulk sweeps, run them on the flagged subset.
 
 **When must I use `--claims-file` instead of scanning?**
-Context parsing is heuristic (abbreviations like "U.S." can split a title).
+Context parsing is heuristic (v3.3.0 guards common abbreviations, exotic formatting can still mis-split).
 For precise verification — or DOIs in claims (splice detection needs `doi`)
 — feed structured JSON/CSV claims.
 
@@ -352,6 +406,12 @@ a final pre-submission check, run with `--no-cache`.
 Check `details` for which field diverged; thresholds are strict on purpose.
 Feed the full citation via `--claims-file` for a precise verdict.
 
+**Why did my arXiv citation drop from correct to partial?**
+Your claims row paired an `arxiv_id` with a `doi`, and the DOI does not
+match the version-of-record DOI registered on that arXiv entry — a typo,
+or a DOI from a different paper. The registered DOI is in `details`;
+fix the claim or drop the `doi` cell.
+
 ## Anti-patterns — things done WRONG
 
 Each entry: the mistake → why it fails → the right way.
@@ -378,7 +438,7 @@ Each entry: the mistake → why it fails → the right way.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v3.2.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v3.3.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref API notes |
 | `tests/` | Offline matrix + real-network acceptance (repo only, not in the package) |
 

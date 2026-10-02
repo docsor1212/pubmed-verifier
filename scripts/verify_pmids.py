@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v3.2.0
+PMID Citation Verifier -- PubMed E-utilities API v3.3.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -82,8 +82,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "3.2.0"
-_UA_TOOL = "pubmed-verifier/3.2 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "3.3.0"
+_UA_TOOL = "pubmed-verifier/3.3 (+citation verifier; stdlib-only)"
 _UA_BROWSER = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 _CIRCUIT_THRESHOLD = 2  # call-level consecutive transport failures per host
@@ -252,8 +252,12 @@ def fetch_summaries(pmids: list, batch_size: int = 50) -> dict:
     results = {}
     batch_interval = 0.12 if _OPTS["ncbi_key"] else 0.4
     use_fallback = _OPTS["meta_source"] == "auto"
+    n_batches = -(-len(pmids) // batch_size) if pmids else 0
     for i in range(0, len(pmids), batch_size):
         batch = pmids[i:i + batch_size]
+        if n_batches > 2:
+            print(f"  PubMed progress: batch {i // batch_size + 1}/{n_batches}"
+                  f" fetched...", file=sys.stderr, flush=True)
         ids_str = ",".join(batch)
         url = ("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?"
                + _ncbi_params({"db": "pubmed", "id": ids_str, "retmode": "json"}))
@@ -634,12 +638,18 @@ def extract_arxivs_from_file(filepath: str) -> list:
     return results
 
 
-def verify_arxiv_entry(arxiv_id: str, src: str, claimed: dict = None) -> tuple:
+def verify_arxiv_entry(arxiv_id: str, src: str, claimed: dict = None,
+                       link_pmid=None) -> tuple:
     """Verify one arXiv ID against the official API (v3.0.0).
 
     Returns (entry, audit_item). No entry in the Atom feed = fabrication
     signal (invalid); a resolving ID attaches the registered title/year and
-    stays unknown (existence is never dressed up as a match)."""
+    stays unknown (existence is never dressed up as a match).
+    v3.3.0: preprint↔published cross-check — a claimed DOI is compared
+    with the arXiv-registered version-of-record DOI (agreement reported,
+    disagreement caps correct → partial), and link_pmid (a DOI→PMID
+    callable) attaches the PubMed-linked version of record to bare
+    preprint citations."""
     arxiv_id = arxiv_id.strip()
     # normalize the arXiv: prefix (CLI paste form) before shape/URL
     if arxiv_id.lower().startswith("arxiv:"):
@@ -738,9 +748,48 @@ def verify_arxiv_entry(arxiv_id: str, src: str, claimed: dict = None) -> tuple:
         else:
             entry["details"] = (f"arXiv ID resolves — registered: {title[:100]} ({pub}). "
                                 f"No claimed metadata to cross-verify.")
+        # v3.3.0: preprint ↔ published-version cross-check. arXiv exposes
+        # the version-of-record DOI (arxiv:doi) registered by the authors.
+        # A claimed DOI that disagrees with it is a pairing-mismatch signal
+        # (caps correct → partial — same failure class as PMID DOI-splice);
+        # a bare preprint citation gets the version of record surfaced:
+        # registered DOI, plus the PubMed-linked PMID when one exists.
+        reg_doi = entry.get("arxiv_registered_doi", "")
+        claimed_doi_raw = str((claimed or {}).get("claimed_doi", "") or "").strip()
+        claimed_doi = _clean_doi(claimed_doi_raw)
+        if claimed_doi_raw:
+            entry["claimed_doi"] = claimed_doi_raw
+        if reg_doi and link_pmid and not entry.get("pmid"):
+            try:
+                linked = link_pmid(reg_doi)
+            except Exception:
+                linked = ""   # linking is enrichment — never a verdict input
+            if str(linked).isdigit():
+                entry["pmid"] = str(linked)
+        if reg_doi and claimed_doi:
+            doi_ok = dois_match(claimed_doi, reg_doi)
+            if entry.get("fields") is None:
+                entry["fields"] = {"title": None, "author": None,
+                                   "journal": None, "year": None}
+            entry["fields"]["doi"] = doi_ok
+            if doi_ok:
+                entry["details"] += (" Claimed DOI matches the arXiv-registered"
+                                     " version-of-record DOI.")
+            else:
+                entry["details"] += (f" Claimed DOI differs from the arXiv-registered"
+                                     f" version-of-record DOI ({reg_doi}) — citation"
+                                     f" pairing mismatch.")
+                if entry["verdict"] == "correct":
+                    entry["verdict"] = "partial"
+        elif reg_doi:
+            entry["details"] += (f" Version of record: DOI {reg_doi}"
+                                 + (f", PMID {entry['pmid']}" if entry.get("pmid") else "")
+                                 + " — consider citing the published version.")
         audit["registered"] = {"title": title, "year": pub, "authors": authors,
                                "journal_ref": entry.get("journal_ref", ""),
                                "registered_doi": entry.get("arxiv_registered_doi", "")}
+        if claimed_doi_raw:
+            audit["claimed_doi"] = claimed_doi_raw
         audit["verdict"] = {"final": entry["verdict"], "details": entry["details"]}
         return entry, audit
     except (urllib.error.URLError, OSError, TimeoutError, http.client.HTTPException,
@@ -806,10 +855,20 @@ def parse_citation_context(context: str) -> dict:
     # Get text before PMID
     pre_text = text[:pmid_match.start()].strip().rstrip(".")
 
-    # Extract authors (before first period followed by uppercase = title start)
-    # Split on ". " — first segment is usually authors, second is title
-    segments = re.split(r'\.\s+', pre_text)
-    segments = [s.strip() for s in segments if s.strip()]
+    # Split on ". " — first segment is usually authors, second is title.
+    # v3.3.0: sentence-internal abbreviations ("U.S.", "e.g.", "vs.", "Vol.")
+    # do NOT end a sentence — a title like "Blood pressure in the U.S.
+    # population" used to be truncated at the abbreviation. Protect them
+    # with a sentinel before splitting. Deliberately NOT protected: "et al.",
+    # "Jr.", "Sr.", "Ed." — they legitimately terminate the author/editor
+    # segment, and keeping them would merge authors with the title.
+    _ABBREV_PAT = re.compile(
+        r'\b(e\.g|i\.e|cf|vs|ca|approx|U\.S|U\.K|Dr|Prof|Mr|Mrs|Ms'
+        r'|St|No|Vol|pp|Fig|Ref)\.(\s+)', re.IGNORECASE)
+    protected = _ABBREV_PAT.sub(lambda m: m.group(1) + '\x00' + m.group(2),
+                                pre_text)
+    segments = re.split(r'\.\s+', protected)
+    segments = [s.replace('\x00', '.').strip() for s in segments if s.strip()]
 
     if len(segments) >= 2:
         # First segment: authors
@@ -1513,13 +1572,14 @@ def _journal_abbrev_match(claimed: str, actual: str) -> bool:
 
 
 def _load_csv_claims(filepath: str) -> dict:
-    if not hasattr(_load_csv_claims, "arxiv_rows"):
-        _load_csv_claims.arxiv_rows = {}
     """Load claimed metadata from CSV file. Returns {pmid: claimed_dict}.
-    
-    Expected columns: pmid, title, authors, journal, year
+
+    Expected columns: pmid, title, authors, journal, year; pure-arXiv rows
+    (arxiv_id, no pmid) are collected into _load_csv_claims.arxiv_rows.
     Authors can be semicolon-separated or pipe-separated.
     """
+    if not hasattr(_load_csv_claims, "arxiv_rows"):
+        _load_csv_claims.arxiv_rows = {}
     claims = {}
     try:
         with open(filepath, "r", encoding="utf-8-sig") as f:
@@ -1536,6 +1596,7 @@ def _load_csv_claims(filepath: str) -> dict:
                     _load_csv_claims.arxiv_rows.setdefault(arxiv_col.lower(), {
                         "claimed_title": row.get("title", "") or row.get("Title", "") or "",
                         "claimed_year": str(row.get("year", "") or row.get("Year", "") or ""),
+                        "claimed_doi": str(row.get("doi", "") or row.get("DOI", "") or ""),
                     })
                     continue
                 authors_raw = row.get("authors", "") or row.get("Authors", "") or ""
@@ -1558,6 +1619,29 @@ def _load_csv_claims(filepath: str) -> dict:
         print(f"Error reading CSV claims file: {e}", file=sys.stderr)
     _load_csv_claims.arxiv_rows = getattr(_load_csv_claims, "arxiv_rows", {})
     return claims
+
+
+def _pmid_claim_from_item(item: dict) -> dict:
+    """Normalize one JSON claim object into the PMID claim dict (v3.3.0)."""
+    return {
+        "claimed_title": str(item.get("title", "") or ""),
+        "claimed_authors": [str(a) for a in item["authors"]]
+                           if isinstance(item.get("authors"), list) else [],
+        "claimed_journal": str(item.get("journal", "") or ""),
+        "claimed_year": str(item.get("year", "") or ""),
+        "claimed_doi": str(item.get("doi", "") or ""),
+    }
+
+
+def _arxiv_claim_from_item(item: dict) -> dict:
+    """Normalize one JSON claim object into the arXiv claim dict.
+    v3.3.0 carries claimed_doi through so the preprint↔published
+    cross-check can compare it with the arXiv-registered DOI."""
+    return {
+        "claimed_title": str(item.get("title", "") or ""),
+        "claimed_year": str(item.get("year", "") or ""),
+        "claimed_doi": str(item.get("doi", "") or ""),
+    }
 
 
 # ── Report generation ──
@@ -1667,7 +1751,7 @@ def generate_bibtex(results: list) -> str:
         entry_lines.append("}")
         if v == "partial":
             partial += 1
-            lines.append(f"% PARTIAL MATCH — verify manually: {r.get('details', '')}")
+            lines.append(f"% PARTIAL MATCH — verify manually: {' '.join(str(r.get('details', '')).split())}")
             lines.extend("% " + l for l in entry_lines)
         else:
             included += 1
@@ -1680,7 +1764,8 @@ def generate_bibtex(results: list) -> str:
 def readiness_summary(stats: dict) -> tuple:
     """(ready, one-line verdict) for the report header (v2.7.0)."""
     problems = (stats.get("invalid", 0) + stats.get("mismatch", 0)
-                + stats.get("retracted", 0) + stats.get("doi_splice", 0))
+                + stats.get("retracted", 0) + stats.get("doi_splice", 0)
+                + stats.get("arxiv_doi_mismatch", 0))
     unverified = stats.get("network_errors", 0)
     unknown_meta = max(0, stats.get("unknown", 0) - unverified)
     if problems == 0 and unverified == 0:
@@ -1701,6 +1786,8 @@ def readiness_summary(stats: dict) -> tuple:
         parts.append(f"{stats['retracted']} retracted")
     if stats.get("doi_splice"):
         parts.append(f"{stats['doi_splice']} DOI-spliced")
+    if stats.get("arxiv_doi_mismatch"):
+        parts.append(f"{stats['arxiv_doi_mismatch']} arXiv-DOI pairing mismatch")
     if unverified:
         parts.append(f"{unverified} unverified (network)")
     if unknown_meta:
@@ -1754,7 +1841,9 @@ def diff_against_baseline(results: list, baseline_path: str) -> dict:
             deltas["new"].append({"key": key, "verdict": r.get("verdict")})
             continue
         if old_verdict == "correct" and r.get("verdict") in bad_now \
-                and not new_retracted and not r.get("network_error"):
+                and not new_retracted and not r.get("network_error") \
+                and not (r.get("entry_kind") == "arxiv"
+                         and r.get("verdict") == "unknown"):
             deltas["degraded"].append({"key": key, "was": old_verdict,
                                        "now": r.get("verdict"),
                                        "details": str(r.get("details", ""))[:80]})
@@ -1827,7 +1916,9 @@ def generate_markdown_report(results: list, stats: dict, source: str, deltas: di
         key = r.get("arxiv_id") or r.get("pmid") or r.get("doi", "")
         fld = r.get("fields") or {}
         marks = {True: "✓", False: "✗", None: "—"}
-        ev = " ".join(marks.get(fld.get(k), "—") for k in ("title", "author", "journal", "year"))
+        ev_keys = ("title", "author", "journal", "year") + \
+            (("doi",) if "doi" in fld else ())
+        ev = " ".join(marks.get(fld.get(k), "—") for k in ev_keys)
         flags = []
         if r.get("retracted"):
             flags.append("RETRACTED")
@@ -1851,7 +1942,7 @@ def generate_markdown_report(results: list, stats: dict, source: str, deltas: di
                   f"newly retracted: {cnt.get('newly_retracted', 0)} · degraded: {cnt.get('degraded', 0)} · "
                   f"improved: {cnt.get('improved', 0)} · new: {cnt.get('new', 0)} · dropped: {cnt.get('dropped', 0)}"]
         for d in deltas["newly_retracted"]:
-            lines.append(f"- ⚠ **{esc_md(d['key'])}** — {esc_md(d.get('title', ''))}")
+            lines.append(f"- ⚠ **{esc(d['key'])}** — {esc(d.get('title', ''))}")
     lines += ["", "---", f"*Generated by pubmed-verifier v{_TOOL_VERSION}*"]
     return "\n".join(lines) + "\n"
 
@@ -1881,7 +1972,7 @@ def generate_audit_report(entries: list, stats: dict, args, deltas: dict = None)
                 "mailto_configured": bool(_OPTS["mailto"]),
             },
             "data_sources": ["eutils.ncbi.nlm.nih.gov", "www.ebi.ac.uk/europepmc",
-                             "api.crossref.org"],
+                             "api.crossref.org", "export.arxiv.org"],
             "verdict_ladder": _VERDICT_LADDER,
         },
         "summary": stats,
@@ -1961,7 +2052,7 @@ def generate_html_report(results: list[dict], stats: dict, source: str, repro: d
         suggested_str = ""
         if suggested:
             suggested_str = "<br>".join(
-                f'<a href="https://pubmed.ncbi.nlm.nih.gov/{s["pmid"]}/" target="_blank">PMID {s["pmid"]}</a>: {html.escape(s.get("title","")[:60])}'
+                f'<a href="https://pubmed.ncbi.nlm.nih.gov/{html.escape(str(s["pmid"]))}/" target="_blank">PMID {html.escape(str(s["pmid"]))}</a>: {html.escape(s.get("title","")[:60])}'
                 for s in suggested[:3]
             )
         match_score = r.get("match_score")
@@ -2178,22 +2269,12 @@ def main():
                         continue
                     pmid = str(item.get("pmid", "")).strip()
                     if pmid.isdigit():
-                        explicit_claims[pmid] = {
-                            "claimed_title": str(item.get("title", "") or ""),
-                            "claimed_authors": [str(a) for a in item["authors"]]
-                                               if isinstance(item.get("authors"), list) else [],
-                            "claimed_journal": str(item.get("journal", "") or ""),
-                            "claimed_year": str(item.get("year", "") or ""),
-                            "claimed_doi": str(item.get("doi", "") or ""),
-                        }
+                        explicit_claims[pmid] = _pmid_claim_from_item(item)
                     elif str(item.get("arxiv_id", "") or "").strip():
                         aid = str(item["arxiv_id"]).strip()
                         if aid.lower().startswith("arxiv:"):
                             aid = aid[6:].strip()
-                        explicit_arxiv[aid.lower()] = {
-                            "claimed_title": str(item.get("title", "") or ""),
-                            "claimed_year": str(item.get("year", "") or ""),
-                        }
+                        explicit_arxiv[aid.lower()] = _arxiv_claim_from_item(item)
             except (json.JSONDecodeError, ValueError, OSError) as e:
                 print(f"Error reading claims file: {e}", file=sys.stderr)
                 sys.exit(1)
@@ -2207,22 +2288,12 @@ def main():
                     continue
                 pmid = str(item.get("pmid", "")).strip()
                 if pmid.isdigit():
-                    explicit_claims[pmid] = {
-                        "claimed_title": str(item.get("title", "") or ""),
-                        "claimed_authors": [str(a) for a in item["authors"]]
-                                           if isinstance(item.get("authors"), list) else [],
-                        "claimed_journal": str(item.get("journal", "") or ""),
-                        "claimed_year": str(item.get("year", "") or ""),
-                        "claimed_doi": str(item.get("doi", "") or ""),
-                    }
+                    explicit_claims[pmid] = _pmid_claim_from_item(item)
                 elif str(item.get("arxiv_id", "") or "").strip():
                     aid = str(item["arxiv_id"]).strip()
                     if aid.lower().startswith("arxiv:"):
                         aid = aid[6:].strip()
-                    explicit_arxiv[aid.lower()] = {
-                        "claimed_title": str(item.get("title", "") or ""),
-                        "claimed_year": str(item.get("year", "") or ""),
-                    }
+                    explicit_arxiv[aid.lower()] = _arxiv_claim_from_item(item)
         except (json.JSONDecodeError, ValueError) as e:
             print(f"Error parsing --claims JSON: {e}", file=sys.stderr)
             sys.exit(1)
@@ -2526,6 +2597,7 @@ def main():
     resolutions = {}
     workers = max(1, min(args.workers, 8))
     if unique_dois and workers > 1 and len(unique_dois) > 1:
+        doi_t0 = time.time()
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
             futs = {ex.submit(resolve_doi, d): d for d, _ in unique_dois}
             done = 0
@@ -2537,8 +2609,12 @@ def main():
                     resolutions[d] = {"status": "error", "meta": None, "error": str(e)}
                 done += 1
                 if done % 25 == 0 or done == len(unique_dois):
-                    print(f"  DOI progress: {done}/{len(unique_dois)} resolved...",
-                          flush=True)
+                    elapsed = time.time() - doi_t0
+                    rate = done / elapsed if elapsed > 0 else 0.0
+                    eta = (len(unique_dois) - done) / rate if rate > 0 else 0.0
+                    print(f"  DOI progress: {done}/{len(unique_dois)} resolved"
+                          f" ({elapsed:.0f}s elapsed, ~{eta:.0f}s left)...",
+                          file=sys.stderr, flush=True)
     elif unique_dois:
         for d, _ in unique_dois:
             resolutions[d] = resolve_doi(d)
@@ -2562,9 +2638,6 @@ def main():
         entry, audit_item = verify_doi_entry(
             doi, src, resolution=resolutions.get(doi),
             linked_pmid=pmid_map.get(doi, ""), linked_info=pmid_info_map.get(pmid_map.get(doi, ""), {}))
-        entry, audit_item = verify_doi_entry(
-            doi, src, resolution=resolutions.get(doi),
-            linked_pmid=pmid_map.get(doi, ""), linked_info=pmid_info_map.get(pmid_map.get(doi, ""), {}))
         if entry["verdict"] == "invalid":
             stats["invalid"] += 1
         elif entry.get("network_error"):
@@ -2583,7 +2656,9 @@ def main():
     # arXiv verification pipeline (v3.0.0) — serial with 3s politeness
     # (official arXiv etiquette: same client >= 3s between calls)
     arxiv_seen = set(r.get("arxiv_id", "").lower() for r in results if r.get("arxiv_id"))
+    arxiv_total = len({a.lower() for a, _, _ in arxiv_inputs} | arxiv_seen)
     arxiv_processed = 0
+    arxiv_t0 = time.time()
     last_call = 0.0
     for aid, src, claimed_aid in arxiv_inputs:
         if aid.lower() in arxiv_seen:
@@ -2594,11 +2669,18 @@ def main():
         if wait > 0:
             time.sleep(wait)
         last_call = time.time()
-        entry, audit_item = verify_arxiv_entry(aid, src, claimed=claimed_aid)
+        entry, audit_item = verify_arxiv_entry(aid, src, claimed=claimed_aid,
+                                               link_pmid=find_pmid_by_doi)
         if entry["verdict"] == "correct":
             stats["correct"] = stats.get("correct", 0) + 1
         elif entry["verdict"] == "mismatch":
             stats["mismatch"] = stats.get("mismatch", 0) + 1
+        elif entry["verdict"] == "partial":
+            # v3.3.0: a DOI-pairing cap lands here — counting it as unknown
+            # would inflate the "existence-checked only" disclosure pool
+            stats["partial"] = stats.get("partial", 0) + 1
+        if (entry.get("fields") or {}).get("doi") is False:
+            stats["arxiv_doi_mismatch"] = stats.get("arxiv_doi_mismatch", 0) + 1
         if entry["verdict"] == "invalid":
             stats["invalid"] += 1
             stats["arxiv_invalid"] = stats.get("arxiv_invalid", 0) + 1
@@ -2606,10 +2688,18 @@ def main():
         elif entry.get("network_error"):
             stats["unknown"] += 1
             stats["network_errors"] = stats.get("network_errors", 0) + 1
-        else:
+        elif entry["verdict"] not in ("correct", "mismatch", "partial"):
+            # v3.3.0 P1 fix (latent since v3.0.0): correct/mismatch/partial
+            # entries used to fall into this else and were ALSO counted as
+            # unknown — inflating the "existence-checked only" disclosure
             stats["unknown"] += 1
-        if arxiv_processed % 5 == 0:
-            print(f"  arXiv progress: {arxiv_processed} verified...", flush=True)
+        if arxiv_processed % 5 == 0 or arxiv_processed == arxiv_total:
+            elapsed = time.time() - arxiv_t0
+            rate = arxiv_processed / elapsed if elapsed > 0 else 0.0
+            eta = (arxiv_total - arxiv_processed) / rate if rate > 0 else 0.0
+            print(f"  arXiv progress: {arxiv_processed}/{arxiv_total} verified"
+                  f" ({elapsed:.0f}s elapsed, ~{eta:.0f}s left)...",
+                  file=sys.stderr, flush=True)
         if entry["verdict"] == "invalid":
             print(f"  ⚠ INVALID arXiv ID: {entry.get('arxiv_id')} — fabrication signal",
                   flush=True)
@@ -2636,7 +2726,7 @@ def main():
     repro = {
         "command": "verify_pmids.py " + " ".join(_redacted_argv()),
         "version": _TOOL_VERSION,
-        "sources": "eutils.ncbi.nlm.nih.gov · www.ebi.ac.uk (Europe PMC) · api.crossref.org — all HTTPS",
+        "sources": "eutils.ncbi.nlm.nih.gov · www.ebi.ac.uk (Europe PMC) · api.crossref.org · export.arxiv.org — all HTTPS",
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -2755,7 +2845,8 @@ def main():
     if stats.get("network_errors"):
         sys.exit(2)
     sys.exit(1 if stats["invalid"] > 0 or stats.get("mismatch", 0) > 0
-             or stats.get("retracted", 0) > 0 or stats.get("doi_splice", 0) > 0 else 0)
+             or stats.get("retracted", 0) > 0 or stats.get("doi_splice", 0) > 0
+             or stats.get("arxiv_doi_mismatch", 0) > 0 else 0)
 
 
 if __name__ == "__main__":

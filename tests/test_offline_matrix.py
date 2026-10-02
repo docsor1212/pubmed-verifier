@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Offline test matrix for pubmed-verifier v2.2.0 (stdlib only, no network).
+"""Offline test matrix for pubmed-verifier (stdlib only, no network).
 
 Run:  python3 tests/test_offline_matrix.py
 Covers the v2.2.0 network hardening (Retry-After, UA rotation, circuit
@@ -11,6 +11,7 @@ classification, cache protection) plus regression of the five-state core.
 import csv
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -304,7 +305,7 @@ class TestCli(_Reset):
         script = Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"
         out = subprocess.run([sys.executable, str(script), "--version"],
                              capture_output=True, text=True)
-        self.assertIn("3.2.0", out.stdout + out.stderr)
+        self.assertIn(vp._TOOL_VERSION, out.stdout + out.stderr)
 
     def test_host_key_granularity(self):
         self.assertEqual(vp._host_key("https://eutils.ncbi.nlm.nih.gov/a?b=c"),
@@ -1181,47 +1182,6 @@ class TestArxivClaims(_Reset):
 
     def test_csv_arxiv_only_row_collected(self):
         with tempfile.TemporaryDirectory() as td:
-            p = Path(td) / "c.csv"
-            p.write_text("arxiv_id,title,year\n1706.03762,Attention Is All You Need,2017\n",
-                         encoding="utf-8")
-            claims = vp._load_csv_claims(str(p))
-            rows = getattr(vp._load_csv_claims, "arxiv_rows", {})
-        self.assertEqual(rows.get("1706.03762", {}).get("claimed_title"),
-                         "Attention Is All You Need")
-
-
-class TestArxivClaims(_Reset):
-    """v3.1.0 arXiv claims verification e2e (unit-level)."""
-
-    def _atom(self):
-        return mock.mock_open(read_data=b"""<?xml version='1.0'?><feed xmlns="http://www.w3.org/2005/Atom"><title>q</title><entry><title>Attention Is All You Need</title><published>2017-06-12T00:00:00Z</published></entry></feed>""").return_value
-
-    def test_correct_match(self):
-        with mock.patch.object(vp.urllib.request, "urlopen", return_value=self._atom()), \
-             mock.patch.object(vp.time, "sleep"):
-            e, _ = vp.verify_arxiv_entry("1706.03762", "cli",
-                claimed={"claimed_title": "Attention Is All You Need", "claimed_year": "2017"})
-        self.assertEqual(e["verdict"], "correct")
-        self.assertEqual(e.get("claimed_title"), "Attention Is All You Need")
-        self.assertEqual(e["fields"]["year"], True)
-
-    def test_mismatch_detected(self):
-        with mock.patch.object(vp.urllib.request, "urlopen", return_value=self._atom()), \
-             mock.patch.object(vp.time, "sleep"):
-            e, _ = vp.verify_arxiv_entry("1706.03762", "cli",
-                claimed={"claimed_title": "Completely Different Paper About CNN", "claimed_year": "2017"})
-        self.assertEqual(e["verdict"], "mismatch")
-
-    def test_year_mismatch_shown_not_verdict_breaking(self):
-        with mock.patch.object(vp.urllib.request, "urlopen", return_value=self._atom()), \
-             mock.patch.object(vp.time, "sleep"):
-            e, _ = vp.verify_arxiv_entry("1706.03762", "cli",
-                claimed={"claimed_title": "Attention Is All You Need", "claimed_year": "1999"})
-        self.assertEqual(e["verdict"], "correct")
-        self.assertEqual(e["fields"]["year"], False)
-
-    def test_csv_arxiv_only_row_collected(self):
-        with tempfile.TemporaryDirectory() as td:
             fp = Path(td) / "c.csv"
             fp.write_text("arxiv_id,title,year\n1706.03762,Attention Is All You Need,2017\n",
                           encoding="utf-8")
@@ -1229,6 +1189,163 @@ class TestArxivClaims(_Reset):
             rows = getattr(vp._load_csv_claims, "arxiv_rows", {})
         self.assertEqual(rows.get("1706.03762", {}).get("claimed_title"),
                          "Attention Is All You Need")
+
+
+class TestV330(_Reset):
+    """v3.3.0: arXiv preprint↔published cross-check, abbreviation-safe
+    context parsing, progress wiring, readiness extension — plus a
+    test-hygiene lock (no duplicate class definitions, the v3.2.0 lesson)."""
+
+    def _atom_doi(self, with_doi=True):
+        doi = ("<arxiv:doi>10.1371/journal.pone.0239699</arxiv:doi>"
+               if with_doi else "")
+        return mock.mock_open(read_data=b"""<?xml version='1.0'?><feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom"><title>q</title><entry><title>City size and the spreading of COVID-19 in Brazil</title><published>2020-05-28T00:00:00Z</published><author><name>A Author</name></author>""" + doi.encode() + b"</entry></feed>").return_value
+
+    def _verify(self, atom, arxiv_id="2005.13892", claimed=None, link=None):
+        with mock.patch.object(vp.urllib.request, "urlopen", return_value=atom), \
+             mock.patch.object(vp.time, "sleep"):
+            return vp.verify_arxiv_entry(arxiv_id, "cli", claimed=claimed,
+                                         link_pmid=link)
+
+    def test_doi_match_reported_as_evidence(self):
+        e, _ = self._verify(self._atom_doi(), claimed={
+            "claimed_title": "City size and the spreading of COVID-19 in Brazil",
+            "claimed_doi": "10.1371/journal.pone.0239699"})
+        self.assertEqual(e["verdict"], "correct")
+        self.assertIs(e["fields"]["doi"], True)
+        self.assertIn("matches the arXiv-registered", e["details"])
+
+    def test_doi_mismatch_caps_correct_to_partial(self):
+        e, _ = self._verify(self._atom_doi(), claimed={
+            "claimed_title": "City size and the spreading of COVID-19 in Brazil",
+            "claimed_doi": "10.1234/fabricated.doi"})
+        self.assertEqual(e["verdict"], "partial")
+        self.assertIs(e["fields"]["doi"], False)
+        self.assertIn("pairing mismatch", e["details"])
+
+    def test_doi_mismatch_without_title_stays_unknown(self):
+        # the ladder stays honest: a DOI mismatch alone never manufactures
+        # a partial — only caps an existing correct
+        e, _ = self._verify(self._atom_doi(), claimed={
+            "claimed_doi": "10.1234/fabricated.doi"})
+        self.assertEqual(e["verdict"], "unknown")
+        self.assertIs(e["fields"]["doi"], False)
+
+    def test_bare_preprint_surfaces_version_of_record(self):
+        seen = []
+        e, _ = self._verify(self._atom_doi(),
+                            link=lambda d: (seen.append(d), "32966344")[1])
+        self.assertEqual(seen, ["10.1371/journal.pone.0239699"])
+        self.assertEqual(e["pmid"], "32966344")
+        self.assertIn("Version of record: DOI 10.1371/journal.pone.0239699", e["details"])
+        self.assertIn("PMID 32966344", e["details"])
+
+    def test_linker_failure_never_breaks_verdict(self):
+        # the DOI hint survives (it comes from the arXiv record itself);
+        # only the PMID enrichment is dropped, and the verdict never moves
+        def boom(d):
+            raise OSError("epmc down")
+        e, _ = self._verify(self._atom_doi(), link=boom)
+        self.assertEqual(e["verdict"], "unknown")
+        self.assertEqual(e.get("pmid", ""), "")
+        self.assertIn("Version of record: DOI 10.1371/journal.pone.0239699", e["details"])
+        self.assertNotIn("PMID", e["details"])
+
+    def test_no_registered_doi_no_link_no_hint(self):
+        called = []
+        e, _ = self._verify(self._atom_doi(with_doi=False), arxiv_id="1706.03762",
+                            link=lambda d: called.append(d))
+        self.assertEqual(called, [])
+        self.assertNotIn("Version of record", e["details"])
+
+    def test_readiness_counts_arxiv_doi_mismatch(self):
+        ready, line = vp.readiness_summary(
+            {"total": 1, "correct": 0, "mismatch": 0, "partial": 0,
+             "invalid": 0, "unknown": 0, "arxiv_doi_mismatch": 1})
+        self.assertFalse(ready)
+        self.assertIn("arXiv-DOI pairing mismatch", line)
+
+    def test_context_us_title_not_truncated(self):
+        c = vp.parse_citation_context(
+            "Smith J, Jones B. Blood pressure in the U.S. population: NHANES "
+            "2015. Hypertension. 2015;66(4):123-9. PMID: 26133316")
+        self.assertEqual(c["claimed_title"],
+                         "Blood pressure in the U.S. population: NHANES 2015")
+        self.assertEqual(c["claimed_journal"], "Hypertension")
+
+    def test_context_eg_vs_st_not_truncated(self):
+        c = vp.parse_citation_context(
+            "Doe J. Outcomes vs. expectations in St. John's wort trials, e.g. "
+            "dosage effects. J Altern Med. 2019. PMID: 31000001")
+        self.assertEqual(c["claimed_title"],
+                         "Outcomes vs. expectations in St. John's wort trials, e.g. dosage effects")
+
+    def test_context_et_al_still_splits_authors(self):
+        # deliberate non-guard: "et al." terminates the author segment
+        c = vp.parse_citation_context(
+            "Ravelli A, Martini A, et al. Felty syndrome. Ann Rheum Dis. "
+            "2003;62(6):571. PMID: 12730673")
+        self.assertEqual(c["claimed_title"], "Felty syndrome")
+        self.assertIn("Ravelli", c["claimed_authors"])
+
+    def test_csv_arxiv_row_carries_doi(self):
+        with tempfile.TemporaryDirectory() as td:
+            fp = Path(td) / "c.csv"
+            fp.write_text("arxiv_id,title,doi\n"
+                          "2005.13892,City size,10.1371/journal.pone.0239699\n",
+                          encoding="utf-8")
+            vp._load_csv_claims(str(fp))
+            rows = getattr(vp._load_csv_claims, "arxiv_rows", {})
+        self.assertEqual(rows["2005.13892"]["claimed_doi"],
+                         "10.1371/journal.pone.0239699")
+
+    def test_json_arxiv_claim_helper_carries_doi(self):
+        h = vp._arxiv_claim_from_item(
+            {"arxiv_id": "2005.13892", "title": "T", "year": "2020",
+             "doi": "10.1371/journal.pone.0239699"})
+        self.assertEqual(h["claimed_doi"], "10.1371/journal.pone.0239699")
+        p = vp._pmid_claim_from_item({"pmid": "123", "title": "T"})
+        self.assertEqual(p["claimed_doi"], "")
+
+    def test_verify_doi_entry_called_once_per_doi(self):
+        # v3.3.0 P2 fix: the DOI loop used to call verify_doi_entry twice
+        # per entry (first result silently discarded — latent hazard)
+        src = Path(__file__).with_name("..") .joinpath("scripts", "verify_pmids.py").resolve().read_text(encoding="utf-8")
+        self.assertEqual(src.count("entry, audit_item = verify_doi_entry("), 1)
+
+    def test_markdown_deltas_no_nameerror(self):
+        # strict-round P0 lock: the v3.2.0 markdown deltas block called an
+        # undefined esc_md — crashed (NameError) on --diff + markdown when
+        # newly_retracted entries existed (deterministic offline repro)
+        deltas = {"counts": {"newly_retracted": 1, "degraded": 0, "improved": 0,
+                             "new": 0, "dropped": 0},
+                  "newly_retracted": [{"key": "123|456", "title": "Retracted | paper"}],
+                  "degraded": [], "improved": [], "new": [], "dropped": []}
+        md = vp.generate_markdown_report([], {"total": 0}, "test", deltas=deltas)
+        self.assertIn("Delta vs baseline", md)
+        self.assertIn("123\\|456", md)   # pipe escaped — table-safe
+
+    def test_delta_arxiv_unknown_twin_not_degraded(self):
+        # an enriched bare-preprint twin (arXiv entry linked to a PMID that
+        # the baseline knows as a correct PMID citation) is enrichment, not
+        # a degradation — must not emit a false "degraded" delta
+        baseline = {"citations": [{"pmid": "32966344", "verdict": "correct"}]}
+        import json as _json, tempfile as _tf, os as _os
+        with _tf.TemporaryDirectory() as td:
+            bp = _os.path.join(td, "base.json")
+            open(bp, "w", encoding="utf-8").write(_json.dumps(baseline))
+            current = [{"pmid": "32966344", "entry_kind": "arxiv",
+                        "verdict": "unknown", "network_error": False,
+                        "arxiv_id": "2005.13892"}]
+            d = vp.diff_against_baseline(current, bp)
+        self.assertEqual(d.get("degraded", []), [])
+
+    def test_no_duplicate_test_class_definitions(self):
+        # v3.2.0 lesson: a shadowed class silently skips its tests
+        classes = re.findall(r"^class (\w+)\(", 
+                             Path(__file__).read_text(encoding="utf-8"), re.M)
+        self.assertEqual(len(classes), len(set(classes)),
+                         f"duplicate test classes: {classes}")
 
 
 if __name__ == "__main__":
