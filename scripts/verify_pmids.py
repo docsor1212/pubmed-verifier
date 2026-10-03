@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v3.4.0
+PMID Citation Verifier -- PubMed E-utilities API v3.5.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -82,8 +82,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "3.4.0"
-_UA_TOOL = "pubmed-verifier/3.4 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "3.5.0"
+_UA_TOOL = "pubmed-verifier/3.5 (+citation verifier; stdlib-only)"
 _UA_BROWSER = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 _CIRCUIT_THRESHOLD = 2  # call-level consecutive transport failures per host
@@ -2280,6 +2280,163 @@ function flt(c) {{
 
 # ── Main ──
 
+# ── Claims linting (v3.5.0): offline pre-flight for claims files ──
+
+_LINT_KNOWN_COLS = {"pmid", "title", "authors", "journal", "year",
+                    "doi", "arxiv_id", "arxiv"}
+_LINT_KNOWN_KEYS = {"pmid", "title", "authors", "journal", "year",
+                    "doi", "arxiv_id"}
+
+
+def lint_claims_json(path: str) -> list:
+    """Lint a JSON claims file offline. Returns diagnostic strings."""
+    issues = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        return [f"ERROR: file unreadable as JSON: {e}"]
+    if not isinstance(data, list):
+        return ["ERROR: JSON claims must be an array of objects"]
+    seen_keys = {}
+    for i, item in enumerate(data, 1):
+        tag = f"row {i}"
+        if not isinstance(item, dict):
+            issues.append(f"{tag}: ERROR not an object")
+            continue
+        unknown = sorted(set(item) - _LINT_KNOWN_KEYS)
+        if unknown:
+            issues.append(f"{tag}: WARN unknown key(s) {unknown} — "
+                          f"known: {sorted(_LINT_KNOWN_KEYS)}")
+        pmid = str(item.get("pmid", "") or "").strip()
+        arx = str(item.get("arxiv_id", "") or "").strip()
+        doi = str(item.get("doi", "") or "").strip()
+        title = str(item.get("title", "") or "").strip()
+        if not (pmid or arx or doi):
+            issues.append(f"{tag}: ERROR no pmid / arxiv_id / doi — row is unusable")
+            continue
+        key = ("pmid", pmid) if pmid and pmid.isdigit() else \
+              ("arxiv", arx.lower()) if arx else \
+              ("doi", _clean_doi(doi) or doi.lower()) if doi else None
+        if key and key in seen_keys:
+            issues.append(f"{tag}: WARN duplicate of {tag and seen_keys[key]} "
+                          f"(same {key[0]} {key[1]!r}) — the row will be merged")
+        else:
+            seen_keys[key] = tag
+        if pmid and not pmid.isdigit():
+            # JSON loader tolerates a non-digit pmid when another ID key
+            # routes the row — keep the lint warning at WARN level there
+            level = "WARN" if (arx or doi) else "ERROR"
+            issues.append(f"{tag}: {level} pmid={pmid!r} is not all digits")
+        if arx and not _arxiv_id_valid_shape(arx):
+            issues.append(f"{tag}: ERROR arxiv_id={arx!r} fails the arXiv ID shape "
+                          f"(new YYMM.NNNNN or old category/NNNNNNN)")
+        if doi:
+            cd = _clean_doi(doi)
+            if not cd or not cd.startswith("10."):
+                issues.append(f"{tag}: ERROR doi={doi!r} does not look like a DOI "
+                              f"(10./prefix missing after cleaning)")
+        if not title:
+            issues.append(f"{tag}: WARN no title — verdict caps at partial "
+                          f"(existence-only without it)")
+        authors = item.get("authors")
+        if authors is not None and not isinstance(authors, list):
+            issues.append(f"{tag}: WARN authors should be a list of surname strings, "
+                          f"got {type(authors).__name__}")
+    return issues
+
+
+def lint_claims_csv(path: str) -> list:
+    """Lint a CSV claims file offline. Returns diagnostic strings."""
+    issues = []
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            fieldnames = [fn.strip() for fn in (reader.fieldnames or [])]
+            rows = [(reader.line_num, row) for row in reader]
+    except Exception as e:
+        return [f"ERROR: file unreadable as CSV: {e}"]
+    unknown_cols = [c for c in fieldnames
+                    if c.lower() not in _LINT_KNOWN_COLS]
+    if unknown_cols:
+        issues.append(f"columns: WARN unknown column(s) {unknown_cols} — "
+                      f"known: {sorted(_LINT_KNOWN_COLS)} (typo?)")
+    if "pmid" not in [c.lower() for c in fieldnames] and \
+       "arxiv_id" not in [c.lower() for c in fieldnames] and \
+       "arxiv" not in [c.lower() for c in fieldnames] and \
+       "doi" not in [c.lower() for c in fieldnames]:
+        issues.append("columns: ERROR none of pmid / arxiv_id / doi present")
+    blank = 0
+    seen_keys = {}
+    for i, row in rows:   # i = physical line number captured at read time
+        tag = f"line {i}"
+        vals = {k: (v if isinstance(v, str) else "") for k, v in row.items()}
+        if not any(v.strip() for v in vals.values()):
+            blank += 1
+            continue
+        get = lambda *names: next((str(vals.get(n, "") or "").strip()
+                                   for n in names if str(vals.get(n, "") or "").strip()), "")
+        pmid = get("pmid", "PMID")
+        arx = get("arxiv_id", "arxiv")
+        doi = get("doi", "DOI")
+        title = get("title", "Title")
+        if not (pmid or arx or doi):
+            issues.append(f"{tag}: ERROR no pmid / arxiv_id / doi — row is unusable")
+            continue
+        if pmid and not pmid.isdigit():
+            issues.append(f"{tag}: ERROR pmid={pmid!r} is not all digits")
+        if arx and not _arxiv_id_valid_shape(arx):
+            issues.append(f"{tag}: ERROR arxiv_id={arx!r} fails the arXiv ID shape "
+                          f"(new YYMM.NNNNN or old category/NNNNNNN)")
+        if doi:
+            cd = _clean_doi(doi)
+            if not cd or not cd.startswith("10."):
+                issues.append(f"{tag}: ERROR doi={doi!r} does not look like a DOI "
+                              f"(10./prefix missing after cleaning)")
+        if not title:
+            issues.append(f"{tag}: WARN no title — verdict caps at partial "
+                          f"(existence-only without it)")
+        key = ("pmid", pmid) if pmid and pmid.isdigit() else \
+              ("arxiv", arx.lower()) if arx else \
+              ("doi", _clean_doi(doi) or doi.lower()) if doi else None
+        if key and key in seen_keys:
+            issues.append(f"{tag}: WARN duplicate of {seen_keys[key]} "
+                          f"(same {key[0]} {key[1]!r}) — the row will be merged")
+        else:
+            seen_keys[key] = tag
+    if blank:
+        issues.append(f"rows: INFO {blank} blank row(s) skipped")
+    return issues
+
+
+def run_claims_lint(path: str) -> int:
+    """Print a lint report for a claims file; returns process exit code."""
+    print(f"Linting claims file: {path}")
+    if path.lower().endswith(".csv"):
+        issues = lint_claims_csv(path)
+    else:
+        issues = lint_claims_json(path)
+    if not issues:
+        print("OK — no issues found (format is usable by --claims-file)")
+        return 0
+    def _sev(issue_line):
+        if issue_line.startswith("ERROR"):
+            return "ERROR"
+        seg = issue_line.split(": ", 1)[1] if ": " in issue_line else issue_line
+        if seg.startswith("ERROR"):
+            return "ERROR"
+        if seg.startswith("WARN"):
+            return "WARN"
+        return "INFO"
+    errors = sum(1 for i in issues if _sev(i) == "ERROR")
+    warns = sum(1 for i in issues if _sev(i) == "WARN")
+    infos = len(issues) - errors - warns
+    for i in issues:
+        print(f"  {i}")
+    print(f"{len(issues)} issue(s): {errors} error(s), {warns} warning(s), {infos} info")
+    return 1 if errors else 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=f"PMID Citation Verifier v{_TOOL_VERSION} -- Five-state verification of PMIDs, DOIs and arXiv IDs with retraction detection for every citation, DOI-native verification, delta audits against a baseline, audit/BibTeX/CSV export, and dual-source network hardening")
@@ -2318,8 +2475,13 @@ def main():
                         help="Comma-separated arXiv IDs to verify against the official arXiv API (nonexistent = fabrication signal)")
     parser.add_argument("--diff", metavar="BASELINE_JSON",
                         help="Compare this run to a previous audit working-paper: newly retracted, degraded, improved, new, dropped")
+    parser.add_argument("--lint-claims", metavar="FILE",
+                        help="Offline lint of a claims file (JSON/CSV): ID shapes, "
+                             "missing titles, unknown columns, duplicate keys — no network")
     parser.add_argument("--version", action="version", version=f"pubmed-verifier {_TOOL_VERSION}")
     args = parser.parse_args()
+    if args.lint_claims:
+        sys.exit(run_claims_lint(args.lint_claims))
 
     _OPTS["ncbi_key"] = args.ncbi_api_key or os.environ.get("NCBI_API_KEY", "")
     _OPTS["mailto"] = args.mailto or os.environ.get("PUBMED_VERIFIER_MAILTO", "")

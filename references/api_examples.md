@@ -94,7 +94,7 @@ curl -s "https://api.crossref.org/works/10.1038/nature12968?mailto=you@lab.org"
 ```
 
 - 429 responses carry `Retry-After` — back off accordingly (v2.2.0 clamps 1–5 s)
-- 403/406 usually mean rate limiting — back off and retry later (the tool rotates standard client identifiers automatically and never fakes a browser)
+- 403/406 usually mean rate limiting — back off and retry later (the tool rotates client identifiers, including a standard browser UA on retry, per the SKILL.md network-hardening table)
 - A correct DOI with WRONG paper metadata = spliced/fake citation signature
 
 ## arXiv API (export.arxiv.org)

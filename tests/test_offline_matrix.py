@@ -1452,5 +1452,82 @@ class TestV340(_Reset):
         self.assertIn("da Silva Junior", e["authors"])
 
 
+class TestV350(_Reset):
+    """v3.5.0: --lint-claims offline diagnostics (JSON/CSV, zero network)."""
+
+    def _lint(self, content, name):
+        import tempfile as _tf, os as _os, subprocess as _sp
+        with _tf.TemporaryDirectory() as td:
+            p = _os.path.join(td, name)
+            open(p, "w", encoding="utf-8").write(content)
+            r = _sp.run([sys.executable,
+                         str(Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"),
+                         "--lint-claims", p], capture_output=True, text=True, timeout=60)
+        return r.returncode, r.stdout + r.stderr
+
+    def test_clean_json_exit0(self):
+        rc, out = self._lint(json.dumps([{"pmid": "31018962", "title": "T",
+                                          "authors": ["A B"]}]), "ok.json")
+        self.assertEqual(rc, 0)
+        self.assertIn("OK — no issues", out)
+
+    def test_dirty_json_flags(self):
+        rc, out = self._lint(json.dumps([
+            {"pmid": "31x18962", "title": "T"},
+            {"doi": "10.1/x"},
+            {"arxiv_id": "2413.99999", "title": "T"},
+            {"pmid": "123", "titel": "t"}]), "bad.json")
+        self.assertEqual(rc, 1)
+        for frag in ("not all digits", "no title", "unknown key", "arXiv ID shape"):
+            self.assertIn(frag, out)
+
+    def test_dirty_csv_flags(self):
+        csv = ("pmid,titel,year,doi,arxiv_id\n"
+               "31018962,T,2019,not-a-doi,\n,,,,,\n,T,2017,,1706.03762\n")
+        rc, out = self._lint(csv, "bad.csv")
+        self.assertEqual(rc, 1)
+        for frag in ("unknown column(s) ['titel']", "10./prefix", "blank row"):
+            self.assertIn(frag, out)
+
+    def test_doi_prefix_checked_in_json_lint(self):
+        rc, out = self._lint(json.dumps([{"doi": "not-a-doi", "title": "T"}]), "d.json")
+        self.assertEqual(rc, 1)
+        self.assertIn("10./prefix", out)
+
+    def test_authors_type_warning(self):
+        rc, out = self._lint(json.dumps([{"pmid": "1", "title": "T",
+                                          "authors": "notalist"}]), "a.json")
+        self.assertIn("authors should be a list", out)
+
+    def test_lint_is_offline(self):
+        # blackhole proxy: any egress would fail the run — exit must stay 0
+        import subprocess as _sp
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "ok.json"
+            p.write_text(json.dumps([{"doi": "10.1/x", "title": "T"}]), encoding="utf-8")
+            env = dict(os.environ, HTTPS_PROXY="http://127.0.0.1:1",
+                       HTTP_PROXY="http://127.0.0.1:1")
+            r = _sp.run([sys.executable,
+                         str(Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"),
+                         "--lint-claims", str(p)], capture_output=True, text=True,
+                        timeout=60, env=env)
+        self.assertEqual(r.returncode, 0)
+
+    def test_unreadable_json_reported(self):
+        rc, out = self._lint("{not json", "broken.json")
+        self.assertEqual(rc, 1)
+        self.assertIn("unreadable as JSON", out)
+
+    def test_version_strings_in_sync(self):
+        # P0 recurrence guard (v3.3.0/v3.4.0 both missed this): the three
+        # version carriers must agree with _TOOL_VERSION
+        root = Path(__file__).resolve().parent.parent
+        ver = vp._TOOL_VERSION
+        for rel, pattern in (("SKILL.md", "version: "), ("SKILL_ZH.md", "version: ")):
+            self.assertIn(pattern + ver, (root / rel).read_text(encoding="utf-8"))
+        meta = json.loads((root / "skillhub-meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta.get("version"), ver)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 3.4.0
+version: 3.5.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI, DOI check, validate citations, PubMed citation verifier.
 ---
 
-# PubMed Citation Verifier v3.4.0
+# PubMed Citation Verifier v3.5.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -39,6 +39,12 @@ Invoke it whenever citation truth matters:
   "verify/check/audit" citations, PMIDs, DOIs, arXiv preprints or
   references — no flags needed for a first pass; add `--claims-file`
   when they supply the expected titles.
+
+**Trigger priority & tool choice** — explicit "verify / check / audit
+citations, references, PMIDs, DOIs" requests invoke this skill first.
+cite-holmes is for deep research with machine-verified citations; when a
+request mixes research and verification, run the research first, then
+this tool for the final reference audit.
 
 ## The five-state verdict
 
@@ -84,6 +90,182 @@ python3 scripts/verify_pmids.py --arxivs "2401.12345,cs/0211004" --no-cache
 # Institutional niceties (recommended): NCBI API key + contact email
 python3 scripts/verify_pmids.py --source . --verify-doi --ncbi-api-key $NCBI_API_KEY --mailto you@lab.org
 ```
+
+## FAQ & common mistakes
+
+**Top 10 things NOT to do** (each is detailed below or in Anti-patterns):
+
+| # | Don't | Do instead |
+|---|-------|------------|
+| 1 | Treat `--pmids` existence output as "verified" | Feed `--claims-file` with titles for real verification |
+| 2 | Submit claims without `title` | Always include titles — the verdict caps at partial without one |
+| 3 | Trust cached verdicts on publication day | Final check with `--no-cache` |
+| 4 | Read "not found" as "fabricated" for auto-extracted DOIs | Check doi.org / arxiv.org by hand first |
+| 5 | Treat the leading `'` in CSV cells as corruption | It is the formula-injection guard — strip after import |
+| 6 | Read the READY line as a quality score | It means "no problems among the checks that ran" |
+| 7 | Pass `--source` together with `--pmids` | `--source` is ignored entirely when `--pmids` is given |
+| 8 | Deep-verify (`--verify-doi` / `--suggest`) a thousand-entry sweep | Sweep first, deep-verify the flagged subset |
+| 9 | Expect author matching across CJK↔Latin names | They are skipped honestly (`author_check: skipped`) |
+| 10 | Ship a reference list without the audit trail | `--export-audit` writes a replayable working paper |
+
+**Large batch (hundreds of PMIDs) is slow — how to speed it up?**
+Metadata-only verification queries in batches of 50 with 0.4 s spacing
+(0.12 s with `--ncbi-api-key`); cached re-runs are ~5 s. `--verify-doi` adds
+one Crossref call *per citation* and `--suggest` adds one search *per
+mismatch* — skip them for bulk sweeps, run them on the flagged subset.
+
+**When must I use `--claims-file` instead of scanning?**
+Context parsing is heuristic (v3.3.0 guards common abbreviations, exotic formatting can still mis-split).
+For precise verification — or DOIs in claims (splice detection needs `doi`)
+— feed structured JSON/CSV claims.
+
+**Slow or unstable network (China)?**
+Standard `HTTPS_PROXY`/`HTTP_PROXY` env vars are honored natively; raise
+`--timeout`; `--meta-source europepmc` routes via Europe PMC when NCBI is
+unreachable (per-entry `meta_source` shows which was used); cached results
+are reused for 30 days.
+
+**❓ unknown vs ❌ invalid?**
+`unknown` (exit 2) = "could not verify, sources unreachable" — retry later;
+`invalid` (exit 1) = "verified not-found". Network failures are never
+reported as not-found and never cached.
+
+**What does RETRACTED mean in a report?**
+The registry itself lists the paper's publication type as "Retracted
+Publication" (checked for every citation since v2.7.0 — no DOI or flags
+needed), and/or Crossref records a retraction. The verdict is capped at
+partial and a human review note is attached — citing it would propagate
+withdrawn science. A retraction *notice* is never flagged; papers under
+*Expression of Concern* (an editorial note, not a retraction) are not
+flagged either. Retraction status reflects the registry at cache time — for
+a final pre-submission check, run with `--no-cache`.
+
+**Mismatch reported but the title looks similar?**
+Check `details` for which field diverged; thresholds are strict on purpose.
+Feed the full citation via `--claims-file` for a precise verdict.
+
+**My claims file seems to lose rows / verdicts look weaker than expected?**
+Lint it offline first: `python3 scripts/verify_pmids.py --lint-claims
+claims.csv` reports unusable rows, ID shape errors, unknown columns
+(typo'd headers like "titel"), missing titles and DOI prefix problems —
+no network, exit 1 on errors.
+
+**Can I verify a DOI with claimed metadata (full verdict)?**
+Yes — since v3.4.0 a claims row keyed by `doi` (with `title`, optionally
+`authors`/`journal`/`year`) gets the same cross-check as PMID claims:
+correct / mismatch / partial against the registered metadata. A DOI row
+without claims stays `unknown` (existence only).
+
+**Why did my arXiv citation drop from correct to partial?**
+Your claims row paired an `arxiv_id` with a `doi`, and the DOI does not
+match the version-of-record DOI registered on that arXiv entry — a typo,
+or a DOI from a different paper. The registered DOI is in `details`;
+fix the claim or drop the `doi` cell.
+
+## Anti-patterns — things done WRONG
+
+Each entry: the mistake → why it fails → the right way.
+
+1. **Treating `--pmids` output as "fully verified"** — existence-only.
+   → Wrong: "all 5 PMIDs exist, so the citations are correct."
+   → Right: existence-checked only; feed `--claims-file` with titles for
+   real verification (the READY line says so explicitly).
+2. **Claims without `title`** — author/journal/year alone can never reach
+   `correct`; the report caps at `partial`. → Always include titles.
+3. **Trusting a cached verdict right after publication day** — a brand-new
+   PMID may have been cached as not-found by an earlier run, and retraction
+   status is as of cache time. → Final pre-submission check: `--no-cache`.
+4. **Assuming "not found" always means fabricated** — auto-extracted DOIs
+   that 404 stay *suspects* (DataCite DOIs don't live in Crossref); arXiv
+   IDs removed by moderators also return empty. → Check doi.org / arxiv.org
+   by hand before accusing.
+5. **Copying the leading `'` from CSV cells** — that apostrophe is the
+   formula-injection guard, not data corruption. → Strip it after import.
+6. **Reading the READY line as a quality score** — it only means "no
+   problems found among the checks that ran", not "this paper is good".
+
+## Boundaries — declared limits
+
+What this tool can NOT do, consolidated in one place:
+
+- **Splice/mismatch signals report disagreement, never pick a side** —
+  when claim and registry disagree, a human reads the evidence line.
+- **Cross-language authors are skipped, not failed** — CJK↔Latin author
+  names are never compared (`author_check: skipped`); the verdict rests
+  on title/journal/year alone.
+- **Context parsing is heuristic** — v3.3.0 keeps common abbreviations
+  (U.S., e.g., vs., St., Vol., No.) from splitting a title, but exotic
+  formatting can still mis-split; for exact metadata use `--claims-file`.
+- **DataCite/repository DOIs are not in Crossref** — an auto-extracted
+  DOI missing from Crossref stays a *suspect*; only user-provided DOIs
+  count a Crossref 404 as invalid.
+- **arXiv moderator removals also return "not found"** — the invalid
+  verdict carries that caveat in its details.
+- **Retraction status is as-of-cache-time** — final pre-submission
+  checks should run with `--no-cache`.
+- **Single-letter initials never match** — "Smith J" vs "Smith John" is
+  not counted as a miss.
+- **unknown ≠ invalid** — unreachable sources yield exit 2 and
+  `unknown`; network failures are never reported as "not found" and
+  never cached.
+- **arXiv pacing is deliberate** — the official API asks for ≥3 s
+  between calls; large arXiv batches are slow by design (progress + ETA
+  on stderr). Entries that register a version-of-record DOI add one
+  Europe PMC lookup each for the PMID link.
+- **DOI claims compare against the registry that actually answered** —
+  the linked PubMed record when the DOI resolves to one, Crossref
+  otherwise (Crossref author fields are sparser, so the author mark is
+  more often "—"); a DOI row without a claimed title stays `unknown`,
+  not partial; an explicitly user-provided DOI (`--dois` or claims) that
+  is missing from Crossref counts as invalid.
+
+## Claims reference format
+
+`--claims-file` accepts JSON (an array of objects) or CSV. Recognized
+columns: `pmid`, `title`, `authors` (semicolon/pipe-separated),
+`journal`, `year`, `doi`, `arxiv_id`. A row needs one of `pmid`,
+`arxiv_id` or `doi`; a missing `title` caps the verdict at partial.
+
+```csv
+pmid,title,authors,journal,year,doi,arxiv_id
+31018962,Candidate criteria for diagnosis of familial...,Gattorno,Ann Rheum Dis,2019,10.1136/annrheumdis-2019-215048,
+,Attention Is All You Need,Vaswani,NeurIPS,2017,,1706.03762
+,City size and the spreading of COVID-19 in Brazil,Silva Junior;Other,PLOS ONE,2020,10.1371/journal.pone.0239699,
+```
+
+Validate any file offline first: `--lint-claims file.csv` reports
+unusable rows, ID shape errors, unknown columns, duplicates and missing
+titles (no network). Lint wins when combined with verification flags —
+only the lint runs.
+
+## Best practices & tuning
+
+- **Speed up large batches** — request an NCBI API key (see
+  https://ncbiinsights.ncbi.nlm.nih.gov/api-keys/): batches of 50 IDs run
+  at 0.12 s spacing instead of 0.4 s; cached re-runs take seconds.
+- **Parallel DOI verification** — `--workers` (default 4, cap 8) applies to
+  Crossref resolution and Europe PMC linking; arXiv stays serial by
+  official etiquette (≥3 s between calls).
+- **Two-phase workflow** — sweep with metadata-only verification first
+  (no `--verify-doi`, no `--suggest`), then deep-verify only the flagged
+  subset; each deep flag adds one API call per citation.
+- **Claims over context parsing** — whenever you know the expected titles,
+  feed `--claims-file`: it enables the full verdict ladder and the DOI /
+  arXiv pairing checks. Validate the file offline first:
+  `python3 scripts/verify_pmids.py --lint-claims claims.csv` reports ID
+  shape errors, missing titles, unknown columns and duplicates without any
+  network access.
+- **Flaky networks** — raise `--timeout`; HTTPS_PROXY/HTTP_PROXY are
+  honored natively; unreachable NCBI falls back to Europe PMC
+  automatically (`meta_source` shows which answered).
+- **Cache policy** — results cache 30 days, negative entries 3 days;
+  `--cache-days` to tune; `--no-cache` for the final pre-submission pass.
+- **Scale expectations** — metadata-only throughput is API-bound
+  (~1–2 min per 1000 PMIDs with an API key); DOI resolution adds one
+  Crossref call per DOI. One deliberate trade-off: the verifier is a
+  single stdlib-only file — copy `scripts/verify_pmids.py` anywhere with
+  Python 3.8+ and it runs, no pip, no venv (that portability is why the
+  code is not split into modules).
 
 ## v2.2.0 — network hardening
 
@@ -288,6 +470,19 @@ python3 scripts/verify_pmids.py --claims '[{"doi":"10.1371/journal.pone.0239699"
   "journal":"PLoS ONE","year":"2020"}]'
 ```
 
+## v3.5.0 — claims lint & usage-first restructuring
+
+- **`--lint-claims FILE`** — offline pre-flight for claims files
+  (JSON/CSV, zero network): ID shape errors, missing titles (the verdict
+  would cap at partial), unknown/typo'd columns, DOI prefix checks,
+  unusable rows — exit 1 on errors. Fix the format before the run
+  instead of guessing from weak verdicts.
+- **Documentation restructured around usage**: FAQ, anti-patterns and
+  declared boundaries now sit right after Quick start, led by a Top-10
+  "don't do this" table; new **Best practices & tuning** section (API-key
+  batching, worker tuning, two-phase deep-verification, cache policy,
+  scale expectations — and why the verifier is deliberately one file).
+
 ## How it works
 
 1. **Extract + parse context** — finds `PMID: 12345678` / PubMed URLs in
@@ -361,118 +556,11 @@ Typical order: get papers (cn-med-oa), verify citations (this tool or
 cite-holmes), polish (paper-polisher-pro), make figures (academic-figures),
 translate PDFs (doc-holmes) — pick whichever step you need.
 
-## Boundaries — declared limits
-
-What this tool can NOT do, consolidated in one place:
-
-- **Splice/mismatch signals report disagreement, never pick a side** —
-  when claim and registry disagree, a human reads the evidence line.
-- **Cross-language authors are skipped, not failed** — CJK↔Latin author
-  names are never compared (`author_check: skipped`); the verdict rests
-  on title/journal/year alone.
-- **Context parsing is heuristic** — v3.3.0 keeps common abbreviations
-  (U.S., e.g., vs., St., Vol., No.) from splitting a title, but exotic
-  formatting can still mis-split; for exact metadata use `--claims-file`.
-- **DataCite/repository DOIs are not in Crossref** — an auto-extracted
-  DOI missing from Crossref stays a *suspect*; only user-provided DOIs
-  count a Crossref 404 as invalid.
-- **arXiv moderator removals also return "not found"** — the invalid
-  verdict carries that caveat in its details.
-- **Retraction status is as-of-cache-time** — final pre-submission
-  checks should run with `--no-cache`.
-- **Single-letter initials never match** — "Smith J" vs "Smith John" is
-  not counted as a miss.
-- **unknown ≠ invalid** — unreachable sources yield exit 2 and
-  `unknown`; network failures are never reported as "not found" and
-  never cached.
-- **arXiv pacing is deliberate** — the official API asks for ≥3 s
-  between calls; large arXiv batches are slow by design (progress + ETA
-  on stderr). Entries that register a version-of-record DOI add one
-  Europe PMC lookup each for the PMID link.
-- **DOI claims compare against the registry that actually answered** —
-  the linked PubMed record when the DOI resolves to one, Crossref
-  otherwise (Crossref author fields are sparser, so the author mark is
-  more often "—"); a DOI row without a claimed title stays `unknown`,
-  not partial; an explicitly user-provided DOI (`--dois` or claims) that
-  is missing from Crossref counts as invalid.
-
-## FAQ & common mistakes
-
-**Large batch (hundreds of PMIDs) is slow — how to speed it up?**
-Metadata-only verification queries in batches of 50 with 0.4 s spacing
-(0.12 s with `--ncbi-api-key`); cached re-runs are ~5 s. `--verify-doi` adds
-one Crossref call *per citation* and `--suggest` adds one search *per
-mismatch* — skip them for bulk sweeps, run them on the flagged subset.
-
-**When must I use `--claims-file` instead of scanning?**
-Context parsing is heuristic (v3.3.0 guards common abbreviations, exotic formatting can still mis-split).
-For precise verification — or DOIs in claims (splice detection needs `doi`)
-— feed structured JSON/CSV claims.
-
-**Slow or unstable network (China)?**
-Standard `HTTPS_PROXY`/`HTTP_PROXY` env vars are honored natively; raise
-`--timeout`; `--meta-source europepmc` routes via Europe PMC when NCBI is
-unreachable (per-entry `meta_source` shows which was used); cached results
-are reused for 30 days.
-
-**❓ unknown vs ❌ invalid?**
-`unknown` (exit 2) = "could not verify, sources unreachable" — retry later;
-`invalid` (exit 1) = "verified not-found". Network failures are never
-reported as not-found and never cached.
-
-**What does RETRACTED mean in a report?**
-The registry itself lists the paper's publication type as "Retracted
-Publication" (checked for every citation since v2.7.0 — no DOI or flags
-needed), and/or Crossref records a retraction. The verdict is capped at
-partial and a human review note is attached — citing it would propagate
-withdrawn science. A retraction *notice* is never flagged; papers under
-*Expression of Concern* (an editorial note, not a retraction) are not
-flagged either. Retraction status reflects the registry at cache time — for
-a final pre-submission check, run with `--no-cache`.
-
-**Mismatch reported but the title looks similar?**
-Check `details` for which field diverged; thresholds are strict on purpose.
-Feed the full citation via `--claims-file` for a precise verdict.
-
-**Can I verify a DOI with claimed metadata (full verdict)?**
-Yes — since v3.4.0 a claims row keyed by `doi` (with `title`, optionally
-`authors`/`journal`/`year`) gets the same cross-check as PMID claims:
-correct / mismatch / partial against the registered metadata. A DOI row
-without claims stays `unknown` (existence only).
-
-**Why did my arXiv citation drop from correct to partial?**
-Your claims row paired an `arxiv_id` with a `doi`, and the DOI does not
-match the version-of-record DOI registered on that arXiv entry — a typo,
-or a DOI from a different paper. The registered DOI is in `details`;
-fix the claim or drop the `doi` cell.
-
-## Anti-patterns — things done WRONG
-
-Each entry: the mistake → why it fails → the right way.
-
-1. **Treating `--pmids` output as "fully verified"** — existence-only.
-   → Wrong: "all 5 PMIDs exist, so the citations are correct."
-   → Right: existence-checked only; feed `--claims-file` with titles for
-   real verification (the READY line says so explicitly).
-2. **Claims without `title`** — author/journal/year alone can never reach
-   `correct`; the report caps at `partial`. → Always include titles.
-3. **Trusting a cached verdict right after publication day** — a brand-new
-   PMID may have been cached as not-found by an earlier run, and retraction
-   status is as of cache time. → Final pre-submission check: `--no-cache`.
-4. **Assuming "not found" always means fabricated** — auto-extracted DOIs
-   that 404 stay *suspects* (DataCite DOIs don't live in Crossref); arXiv
-   IDs removed by moderators also return empty. → Check doi.org / arxiv.org
-   by hand before accusing.
-5. **Copying the leading `'` from CSV cells** — that apostrophe is the
-   formula-injection guard, not data corruption. → Strip it after import.
-6. **Reading the READY line as a quality score** — it only means "no
-   problems found among the checks that ran", not "this paper is good".
-
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v3.4.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v3.5.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `examples/claims.sample.csv` | Reference format for `--claims-file` (incl. a DOI-only row) |
 | `tests/` | Offline matrix + real-network acceptance (repo only, not in the package) |
