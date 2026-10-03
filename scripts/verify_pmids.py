@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v3.3.0
+PMID Citation Verifier -- PubMed E-utilities API v3.4.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -82,8 +82,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "3.3.0"
-_UA_TOOL = "pubmed-verifier/3.3 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "3.4.0"
+_UA_TOOL = "pubmed-verifier/3.4 (+citation verifier; stdlib-only)"
 _UA_BROWSER = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 _CIRCUIT_THRESHOLD = 2  # call-level consecutive transport failures per host
@@ -500,7 +500,8 @@ def find_pmid_by_doi(doi: str) -> str:
 
 
 def verify_doi_entry(doi: str, src: str, resolution: dict = None,
-                     linked_pmid: str = None, linked_info: dict = None) -> tuple:
+                     linked_pmid: str = None, linked_info: dict = None,
+                     claimed: dict = None) -> tuple:
     """Verify one standalone DOI (v2.8.0). Returns (entry, audit_item).
 
     Semantics are honest by construction: a resolving DOI proves existence,
@@ -509,7 +510,10 @@ def verify_doi_entry(doi: str, src: str, resolution: dict = None,
     404 on an EXPLICITLY provided DOI counts as invalid (fabrication
     signal); on one auto-extracted from scanned text it stays a suspect
     (unknown) — the user never endorsed that string, and DataCite/repository
-    DOIs do not live in Crossref."""
+    DOIs do not live in Crossref.
+    v3.4.0: with claimed metadata (a claims row keyed by DOI) the entry gets
+    the full cross-check against the attached metadata — PubMed record when
+    linked, Crossref registered otherwise — instead of staying unknown."""
     entry = {"pmid": "", "doi": doi, "source_file": os.path.basename(src),
              "claimed_title": "", "valid": False, "entry_kind": "doi"}
     res = resolution if resolution is not None else resolve_doi(doi)
@@ -549,6 +553,8 @@ def verify_doi_entry(doi: str, src: str, resolution: dict = None,
                 entry["journal"] = info["journal"]
                 entry["pubdate"] = info["pubdate"]
                 entry["meta_source"] = "pubmed"
+                if info.get("authors"):
+                    entry["authors"] = ", ".join(info["authors"][:3])
                 entry["details"] = (f"DOI resolves and links to PMID {pmid} — full "
                                     f"PubMed record attached. No claimed metadata "
                                     f"to cross-verify.")
@@ -558,12 +564,55 @@ def verify_doi_entry(doi: str, src: str, resolution: dict = None,
                         entry["retraction_note"] = info.get("retraction_note", "")
                     entry["retraction_source"] = entry.get("retraction_source", "") or \
                         "PubMed publication type"
+        # v3.4.0: full cross-check when the user claimed metadata for this
+        # DOI — same machinery as the PMID pipeline, honest unknown without
+        # claims. The comparison uses the raw registered sources (lists),
+        # not the display-joined entry fields.
+        cl = claimed or {}
+        ctitle = str(cl.get("claimed_title", "") or "").strip()
+        if ctitle:
+            entry["claimed_title"] = ctitle
+        if entry.get("resolved") and ctitle:
+            if entry.get("meta_source") == "pubmed" and info:
+                actual = {"title": info.get("title", ""),
+                          "authors": info.get("authors", []) or [],
+                          "journal": info.get("journal", ""),
+                          "pubdate": info.get("pubdate", "")}
+            else:
+                actual = {"title": meta.get("title", ""),
+                          "authors": meta.get("authors", []) or [],
+                          "journal": meta.get("journal", ""),
+                          "pubdate": meta.get("year", "")}
+            cross = cross_check_citation(cl, actual)
+            if entry.get("retracted"):
+                cross["verdict"], cross["details"] = apply_retraction_cap(
+                    cross["verdict"], cross["details"])
+            entry["verdict"] = cross["verdict"]
+            entry["details"] = cross["details"]
+            entry["confidence"] = round(cross.get("confidence", 0), 2)
+            # field marks: bool only when actually compared (claimed AND
+            # present in the registry) — otherwise None ("—"), as in the
+            # PMID pipeline
+            entry["fields"] = {
+                "title": cross.get("title_match") if ctitle else None,
+                "author": (None if str(cross.get("author_check", "")).startswith("skipped")
+                           else cross.get("author_match"))
+                          if (cl.get("claimed_authors") and actual.get("authors")) else None,
+                "journal": cross.get("journal_match")
+                           if (cl.get("claimed_journal") and actual.get("journal")) else None,
+                "year": cross.get("year_match")
+                        if (cl.get("claimed_year") and actual.get("pubdate")) else None,
+            }
         audit = {"doi": doi, "pmid": entry.get("pmid", ""),
                  "source_file": entry["source_file"],
                  "registered": meta, "resolve": "resolved",
+                 "verdict": {"final": entry["verdict"], "details": entry["details"]},
                  "link_note": entry.get("link_note", ""), "error": ""}
+        if ctitle:
+            audit["claimed"] = cl
     elif res["status"] == "not_found":
-        explicit = src == "cli"
+        # v3.4.0: claims-sourced DOIs are user-endorsed just like --dois
+        explicit = src in ("cli", "claims")
         entry["verdict"] = "invalid" if explicit else "unknown"
         if explicit:
             entry["details"] = ("DOI not found in Crossref — fabrication signal "
@@ -1575,11 +1624,14 @@ def _load_csv_claims(filepath: str) -> dict:
     """Load claimed metadata from CSV file. Returns {pmid: claimed_dict}.
 
     Expected columns: pmid, title, authors, journal, year; pure-arXiv rows
-    (arxiv_id, no pmid) are collected into _load_csv_claims.arxiv_rows.
+    (arxiv_id, no pmid) are collected into _load_csv_claims.arxiv_rows;
+    pure-DOI rows (doi, no pmid/arxiv) into _load_csv_claims.doi_rows (v3.4.0).
     Authors can be semicolon-separated or pipe-separated.
     """
     if not hasattr(_load_csv_claims, "arxiv_rows"):
         _load_csv_claims.arxiv_rows = {}
+    if not hasattr(_load_csv_claims, "doi_rows"):
+        _load_csv_claims.doi_rows = {}
     claims = {}
     try:
         with open(filepath, "r", encoding="utf-8-sig") as f:
@@ -1587,7 +1639,24 @@ def _load_csv_claims(filepath: str) -> dict:
             for row in reader:
                 pmid = str(row.get("pmid", "") or row.get("PMID", "")).strip()
                 arxiv_col = str(row.get("arxiv_id", "") or row.get("arxiv", "") or "").strip()
+                doi_col = str(row.get("doi", "") or row.get("DOI", "") or "").strip()
                 if not pmid and not arxiv_col:
+                    # v3.4.0: pure-DOI row — collected into the DOI claims map
+                    cd = _clean_doi(doi_col) if doi_col else ""
+                    if cd:
+                        authors_raw = row.get("authors", "") or row.get("Authors", "") or ""
+                        if ";" in authors_raw:
+                            doi_authors = [a.strip() for a in authors_raw.split(";") if a.strip()]
+                        elif "|" in authors_raw:
+                            doi_authors = [a.strip() for a in authors_raw.split("|") if a.strip()]
+                        else:
+                            doi_authors = [a.strip() for a in authors_raw.split(",") if a.strip()]
+                        _load_csv_claims.doi_rows.setdefault(cd, {
+                            "claimed_title": row.get("title", "") or row.get("Title", "") or "",
+                            "claimed_authors": doi_authors,
+                            "claimed_journal": row.get("journal", "") or row.get("Journal", "") or "",
+                            "claimed_year": str(row.get("year", "") or row.get("Year", "") or ""),
+                        })
                     continue
                 if pmid and not pmid.isdigit():
                     continue
@@ -1641,6 +1710,18 @@ def _arxiv_claim_from_item(item: dict) -> dict:
         "claimed_title": str(item.get("title", "") or ""),
         "claimed_year": str(item.get("year", "") or ""),
         "claimed_doi": str(item.get("doi", "") or ""),
+    }
+
+
+def _doi_claim_from_item(item: dict) -> dict:
+    """Normalize one claim object keyed by DOI (v3.4.0): the DOI itself is
+    the verification key, so there is no claimed_doi here."""
+    return {
+        "claimed_title": str(item.get("title", "") or ""),
+        "claimed_authors": [str(a) for a in item["authors"]]
+                           if isinstance(item.get("authors"), list) else [],
+        "claimed_journal": str(item.get("journal", "") or ""),
+        "claimed_year": str(item.get("year", "") or ""),
     }
 
 
@@ -1747,7 +1828,8 @@ def generate_bibtex(results: list) -> str:
             entry_lines.append(f"  pages = {{{_bib_escape(r['pages'])}}},")
         if r.get("doi"):
             entry_lines.append(f"  doi = {{{_bib_escape(r['doi'])}}},")
-        entry_lines.append(f"  note = {{verified by pubmed-verifier ({v}; PMID {r['pmid']})}}")
+        _note_tail = f"; PMID {r['pmid']}" if r.get("pmid") else ""
+        entry_lines.append(f"  note = {{verified by pubmed-verifier ({v}{_note_tail})}}")
         entry_lines.append("}")
         if v == "partial":
             partial += 1
@@ -2248,6 +2330,7 @@ def main():
     pmid_entries = []  # list of (pmid, source_file, context, claimed_dict)
     explicit_claims = {}
     explicit_arxiv = {}   # claims keyed by arxiv_id (v3.1.0)
+    explicit_doi = {}     # claims keyed by clean DOI (v3.4.0)
 
     # Load explicit claims from --claims or --claims-file
     if args.claims_file:
@@ -2255,7 +2338,8 @@ def main():
         if filepath.lower().endswith(".csv"):
             explicit_claims = _load_csv_claims(filepath)
             explicit_arxiv.update(getattr(_load_csv_claims, "arxiv_rows", {}))
-            if not explicit_claims and not explicit_arxiv:
+            explicit_doi.update(getattr(_load_csv_claims, "doi_rows", {}))
+            if not explicit_claims and not explicit_arxiv and not explicit_doi:
                 print(f"No valid PMIDs found in CSV file: {filepath}", file=sys.stderr)
                 sys.exit(1)
         else:
@@ -2275,6 +2359,10 @@ def main():
                         if aid.lower().startswith("arxiv:"):
                             aid = aid[6:].strip()
                         explicit_arxiv[aid.lower()] = _arxiv_claim_from_item(item)
+                    elif str(item.get("doi", "") or "").strip():
+                        cd = _clean_doi(str(item["doi"]))
+                        if cd:
+                            explicit_doi[cd] = _doi_claim_from_item(item)
             except (json.JSONDecodeError, ValueError, OSError) as e:
                 print(f"Error reading claims file: {e}", file=sys.stderr)
                 sys.exit(1)
@@ -2294,17 +2382,21 @@ def main():
                     if aid.lower().startswith("arxiv:"):
                         aid = aid[6:].strip()
                     explicit_arxiv[aid.lower()] = _arxiv_claim_from_item(item)
+                elif str(item.get("doi", "") or "").strip():
+                    cd = _clean_doi(str(item["doi"]))
+                    if cd:
+                        explicit_doi[cd] = _doi_claim_from_item(item)
         except (json.JSONDecodeError, ValueError) as e:
             print(f"Error parsing --claims JSON: {e}", file=sys.stderr)
             sys.exit(1)
 
     # Collect PMIDs from sources
-    doi_inputs = []   # (clean_doi, source_label) — v2.8.0
+    doi_inputs = []   # (clean_doi, source_label, claimed_dict|None) — v2.8.0/v3.4.0
     if args.dois:
         for d in args.dois.split(","):
             cd = _clean_doi(d)
             if cd:
-                doi_inputs.append((cd, "cli"))
+                doi_inputs.append((cd, "cli", explicit_doi.get(cd)))
     if args.pmids and args.source:
         print("WARN: both --pmids and --source given; --source is ignored "
               "entirely (its PMIDs and DOIs are NOT scanned).", file=sys.stderr)
@@ -2329,7 +2421,8 @@ def main():
                 claimed = explicit_claims.get(pmid, parse_citation_context(ctx))
                 pmid_entries.append((pmid, source, ctx, claimed))
             for doi, dctx in extract_dois_from_file(source):
-                doi_inputs.append((_clean_doi(doi), source))
+                cd = _clean_doi(doi)
+                doi_inputs.append((cd, source, explicit_doi.get(cd)))
             for aid, actx in extract_arxivs_from_file(source):
                 arxiv_inputs.append((aid, source, explicit_arxiv.get(aid.lower())))
         elif os.path.isdir(source):
@@ -2342,19 +2435,22 @@ def main():
                 for fname in files:
                     if fname.lower().endswith((".html", ".md", ".txt", ".htm", ".json")):
                         for doi, dctx in extract_dois_from_file(os.path.join(root, fname)):
-                            doi_inputs.append((_clean_doi(doi), os.path.join(root, fname)))
+                            cd = _clean_doi(doi)
+                            doi_inputs.append((cd, os.path.join(root, fname), explicit_doi.get(cd)))
                         for aid, actx in extract_arxivs_from_file(os.path.join(root, fname)):
                             arxiv_inputs.append((aid, os.path.join(root, fname),
                                                  explicit_arxiv.get(aid.lower())))
         else:
             print(f"Error: {source} not found", file=sys.stderr)
             sys.exit(1)
-    elif explicit_claims or explicit_arxiv:
+    elif explicit_claims or explicit_arxiv or explicit_doi:
         # Only --claims provided, no --source or --pmids
         for pmid, claimed in explicit_claims.items():
             pmid_entries.append((pmid, "claims", "", claimed))
         for aid, claimed in explicit_arxiv.items():
             arxiv_inputs.append((aid, "claims", claimed))
+        for cd, claimed in explicit_doi.items():
+            doi_inputs.append((cd, "claims", claimed))
     elif not doi_inputs and not arxiv_inputs:
         parser.print_help()
         sys.exit(1)
@@ -2588,18 +2684,18 @@ def main():
     doi_seen = set(r.get("doi") for r in results if r.get("doi"))
     unique_dois = []
     seen_d = set()
-    for d, src in doi_inputs:
+    for d, src, claimed in doi_inputs:
         if d in doi_seen or d in seen_d:
             continue
         seen_d.add(d)
-        unique_dois.append((d, src))
+        unique_dois.append((d, src, claimed))
     doi_processed = len(unique_dois)
     resolutions = {}
     workers = max(1, min(args.workers, 8))
     if unique_dois and workers > 1 and len(unique_dois) > 1:
         doi_t0 = time.time()
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = {ex.submit(resolve_doi, d): d for d, _ in unique_dois}
+            futs = {ex.submit(resolve_doi, d): d for d, _, _ in unique_dois}
             done = 0
             for fut in concurrent.futures.as_completed(futs):
                 d = futs[fut]
@@ -2616,10 +2712,10 @@ def main():
                           f" ({elapsed:.0f}s elapsed, ~{eta:.0f}s left)...",
                           file=sys.stderr, flush=True)
     elif unique_dois:
-        for d, _ in unique_dois:
+        for d, _, _ in unique_dois:
             resolutions[d] = resolve_doi(d)
     # Phase 2 (v2.9.0): link resolved DOIs back to PMIDs — parallel EPMC queries
-    resolved_dois = [d for d, _ in unique_dois
+    resolved_dois = [d for d, _, _ in unique_dois
                      if resolutions.get(d, {}).get("status") == "resolved"]
     pmid_map = {}
     if resolved_dois:
@@ -2634,20 +2730,28 @@ def main():
     linked_pmids = sorted({p for p in pmid_map.values() if p})
     pmid_info_map = fetch_summaries(linked_pmids) if linked_pmids else {}
     # Phase 4: build entries serially (stats stay main-thread)
-    for doi, src in unique_dois:
+    for doi, src, claimed in unique_dois:
         entry, audit_item = verify_doi_entry(
             doi, src, resolution=resolutions.get(doi),
-            linked_pmid=pmid_map.get(doi, ""), linked_info=pmid_info_map.get(pmid_map.get(doi, ""), {}))
+            linked_pmid=pmid_map.get(doi, ""), linked_info=pmid_info_map.get(pmid_map.get(doi, ""), {}),
+            claimed=claimed)
+        # v3.4.0: claimed verdicts counted explicitly first (same shape as the
+        # arXiv loop — the v3.3.0 double-count lesson), then unknown buckets
+        if entry["verdict"] == "correct":
+            stats["correct"] = stats.get("correct", 0) + 1
+        elif entry["verdict"] == "mismatch":
+            stats["mismatch"] = stats.get("mismatch", 0) + 1
+        elif entry["verdict"] == "partial":
+            stats["partial"] = stats.get("partial", 0) + 1
         if entry["verdict"] == "invalid":
             stats["invalid"] += 1
         elif entry.get("network_error"):
             stats["unknown"] += 1
             stats["network_errors"] = stats.get("network_errors", 0) + 1
-        elif entry.get("resolved"):
-            stats["unknown"] += 1
-            stats["doi_resolved"] = stats.get("doi_resolved", 0) + 1
-        else:
-            stats["unknown"] += 1   # scanned-404 suspect: existence unknown
+        elif entry["verdict"] not in ("correct", "mismatch", "partial"):
+            stats["unknown"] += 1   # existence-only (resolved) or scanned-404 suspect
+            if entry.get("resolved"):
+                stats["doi_resolved"] = stats.get("doi_resolved", 0) + 1
         if entry.get("retracted"):
             stats["retracted"] = stats.get("retracted", 0) + 1
         results.append(entry)

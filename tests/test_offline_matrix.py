@@ -1348,5 +1348,109 @@ class TestV330(_Reset):
                          f"duplicate test classes: {classes}")
 
 
+class TestV340(_Reset):
+    """v3.4.0: DOI claims become first-class — claims rows keyed by DOI
+    (no PMID/arXiv) get the full cross-check instead of being dropped."""
+
+    RES = {"status": "resolved", "meta": {
+        "title": "City size and the spreading of COVID-19 in Brazil",
+        "journal": "PLoS ONE", "year": "2020",
+        "authors": ["Silva Junior", "CODES19 Collective"], "retracted": False}}
+
+    def _verify(self, claimed, meta=None, linked_pmid="", linked_info=None):
+        res = {"status": "resolved", "meta": meta or dict(self.RES["meta"])}
+        return vp.verify_doi_entry("10.1371/journal.pone.0239699", "cli",
+                                   resolution=res, linked_pmid=linked_pmid,
+                                   linked_info=linked_info or {}, claimed=claimed)[0]
+
+    def test_doi_claim_helper_shape(self):
+        h = vp._doi_claim_from_item({"doi": "10.1/x", "title": "T", "year": "2020",
+                                     "authors": ["A B"]})
+        self.assertEqual(h["claimed_authors"], ["A B"])
+        self.assertNotIn("claimed_doi", h)
+
+    def test_csv_doi_only_row_collected(self):
+        with tempfile.TemporaryDirectory() as td:
+            fp = Path(td) / "c.csv"
+            fp.write_text("pmid,title,authors,journal,year,doi,arxiv_id\n"
+                          "31018962,T1,Gattorno,Ann Rheum Dis,2019,10.1136/x,\n"
+                          ",City size,Silva Junior;Other,PLOS ONE,2020,10.1371/journal.pone.0239699,\n",
+                          encoding="utf-8")
+            claims = vp._load_csv_claims(str(fp))
+            drows = getattr(vp._load_csv_claims, "doi_rows", {})
+        self.assertIn("31018962", claims)
+        self.assertIn("10.1371/journal.pone.0239699", drows)
+        self.assertEqual(drows["10.1371/journal.pone.0239699"]["claimed_authors"],
+                         ["Silva Junior", "Other"])
+
+    def test_json_doi_routing_present_in_both_loops(self):
+        # the v3.3-era bug shape: a claims row type silently dropped —
+        # lock the routing in BOTH JSON claim loops (file + inline)
+        s = Path(__file__).read_text(encoding="utf-8")
+        scripts = Path(__file__).with_name("..").joinpath("scripts", "verify_pmids.py").resolve().read_text(encoding="utf-8")
+        self.assertEqual(scripts.count("explicit_doi[cd] = _doi_claim_from_item(item)"), 2)
+
+    def test_crossref_only_correct_with_journal(self):
+        e = self._verify({"claimed_title": "City size and the spreading of COVID-19 in Brazil",
+                          "claimed_journal": "PLoS ONE", "claimed_year": "2020"})
+        self.assertEqual(e["verdict"], "correct")
+        self.assertEqual(e["fields"], {"title": True, "author": None,
+                                       "journal": True, "year": True})
+
+    def test_title_only_stays_partial(self):
+        e = self._verify({"claimed_title": "City size and the spreading of COVID-19 in Brazil"})
+        self.assertEqual(e["verdict"], "partial")
+
+    def test_wrong_title_is_mismatch(self):
+        e = self._verify({"claimed_title": "A completely different paper about widgets"})
+        self.assertEqual(e["verdict"], "mismatch")
+
+    def test_retraction_caps_claimed_correct(self):
+        meta = dict(self.RES["meta"], retracted=True, retraction_note="retracted by DOI 10.x/y")
+        e = self._verify({"claimed_title": "City size and the spreading of COVID-19 in Brazil",
+                          "claimed_journal": "PLoS ONE"}, meta=meta)
+        self.assertEqual(e["verdict"], "partial")
+        self.assertIs(e["retracted"], True)
+
+    def test_no_claims_stays_unknown(self):
+        e = self._verify(None)
+        self.assertEqual(e["verdict"], "unknown")
+        self.assertIn("No claimed metadata", e["details"])
+
+    def test_claims_sourced_404_is_invalid(self):
+        # a claims-file DOI is user-endorsed just like --dois: a Crossref
+        # 404 is a fabrication signal (was suspect/unknown before v3.4.0
+        # fixed the src gate — the doc boundary had promised this)
+        e, _ = vp.verify_doi_entry("10.9999/fake.does.not.exist", "claims",
+                                   resolution={"status": "not_found",
+                                               "error": "HTTP Error 404"})
+        self.assertEqual(e["verdict"], "invalid")
+        self.assertIn("fabrication", e["details"])
+
+    def test_audit_records_claimed_input(self):
+        res = {"status": "resolved", "meta": dict(self.RES["meta"])}
+        _, a = vp.verify_doi_entry("10.1/x", "claims", resolution=res,
+                                   linked_pmid="", linked_info={},
+                                   claimed={"claimed_title": "City size and the spreading of COVID-19 in Brazil",
+                                            "claimed_journal": "PLoS ONE"})
+        self.assertIn("claimed", a)
+        self.assertEqual(a["claimed"]["claimed_journal"], "PLoS ONE")
+        _, a2 = vp.verify_doi_entry("10.1/x", "cli", resolution=res,
+                                    linked_pmid="", linked_info={})
+        self.assertNotIn("claimed", a2)
+
+    def test_linked_path_uses_pubmed_record(self):
+        info = {"valid": True, "title": "City size and the spreading of COVID-19 in Brazil",
+                "journal": "PLoS ONE", "pubdate": "2020-08-15",
+                "doi": "10.1371/journal.pone.0239699",
+                "authors": ["Euclides da Silva Junior", "Another Author"]}
+        e = self._verify({"claimed_title": "City size and the spreading of COVID-19 in Brazil",
+                          "claimed_journal": "PLoS ONE"},
+                         linked_pmid="32966344", linked_info=info)
+        self.assertEqual(e["verdict"], "correct")
+        self.assertEqual(e["pmid"], "32966344")
+        self.assertIn("da Silva Junior", e["authors"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 3.3.0
+version: 3.4.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI, DOI check, validate citations, PubMed citation verifier.
 ---
 
-# PubMed Citation Verifier v3.3.0
+# PubMed Citation Verifier v3.4.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -266,6 +266,28 @@ python3 scripts/verify_pmids.py --claims '[{"arxiv_id":"2005.13892",
   "doi":"10.1371/journal.pone.0239699"}]'
 ```
 
+## v3.4.0 — DOI claims become first-class
+
+Claims rows could carry a PMID or an arXiv ID — a row keyed by DOI alone
+was silently ignored, and DOI entries always stayed `unknown` ("no claimed
+metadata to cross-verify"). v3.4.0 closes the matrix: all three citation
+types now accept claimed metadata.
+
+- A claims row with a `doi` (no PMID, no arXiv ID) is cross-checked against
+  the registered metadata — the linked PubMed record when the DOI resolves
+  to one, Crossref otherwise — and gets the full verdict ladder:
+  correct / mismatch / partial.
+- Retraction capping applies as everywhere: a claimed-correct match on a
+  retracted paper is capped at partial with the retraction note.
+- Without claims, DOI entries stay unknown — existence is never dressed up
+  as a match.
+
+```bash
+python3 scripts/verify_pmids.py --claims '[{"doi":"10.1371/journal.pone.0239699",
+  "title":"City size and the spreading of COVID-19 in Brazil",
+  "journal":"PLoS ONE","year":"2020"}]'
+```
+
 ## How it works
 
 1. **Extract + parse context** — finds `PMID: 12345678` / PubMed URLs in
@@ -367,6 +389,12 @@ What this tool can NOT do, consolidated in one place:
   between calls; large arXiv batches are slow by design (progress + ETA
   on stderr). Entries that register a version-of-record DOI add one
   Europe PMC lookup each for the PMID link.
+- **DOI claims compare against the registry that actually answered** —
+  the linked PubMed record when the DOI resolves to one, Crossref
+  otherwise (Crossref author fields are sparser, so the author mark is
+  more often "—"); a DOI row without a claimed title stays `unknown`,
+  not partial; an explicitly user-provided DOI (`--dois` or claims) that
+  is missing from Crossref counts as invalid.
 
 ## FAQ & common mistakes
 
@@ -406,6 +434,12 @@ a final pre-submission check, run with `--no-cache`.
 Check `details` for which field diverged; thresholds are strict on purpose.
 Feed the full citation via `--claims-file` for a precise verdict.
 
+**Can I verify a DOI with claimed metadata (full verdict)?**
+Yes — since v3.4.0 a claims row keyed by `doi` (with `title`, optionally
+`authors`/`journal`/`year`) gets the same cross-check as PMID claims:
+correct / mismatch / partial against the registered metadata. A DOI row
+without claims stays `unknown` (existence only).
+
 **Why did my arXiv citation drop from correct to partial?**
 Your claims row paired an `arxiv_id` with a `doi`, and the DOI does not
 match the version-of-record DOI registered on that arXiv entry — a typo,
@@ -438,8 +472,9 @@ Each entry: the mistake → why it fails → the right way.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v3.3.0, stdlib-only) |
-| `references/api_examples.md` | PubMed / Europe PMC / Crossref API notes |
+| `scripts/verify_pmids.py` | Main verifier (v3.4.0, stdlib-only) |
+| `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
+| `examples/claims.sample.csv` | Reference format for `--claims-file` (incl. a DOI-only row) |
 | `tests/` | Offline matrix + real-network acceptance (repo only, not in the package) |
 
 ## License

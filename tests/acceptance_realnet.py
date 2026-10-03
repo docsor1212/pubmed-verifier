@@ -256,6 +256,43 @@ record("T17c claimed DOI mismatch caps correct → partial (stats accounting)",
        f"verdict={r.get('verdict')} doi_field={(r.get('fields') or {}).get('doi')} "
        f"partial={st.get('partial')} unknown={st.get('unknown')}")
 
+# ── T18: DOI claims first-class (v3.4.0) ──
+rc, so, data = run_cli(["--claims", json.dumps([
+    {"doi": "10.1371/journal.pone.0239699",
+     "title": "City size and the spreading of COVID-19 in Brazil",
+     "journal": "PLoS ONE", "year": "2020"}]), "--no-cache"])
+r = ((data or {}).get("results") or [{}])[0]
+st18 = (data or {}).get("stats", {})
+record("T18a DOI claims correct (linked PubMed record, no unknown inflation)",
+       r.get("verdict") == "correct" and st18.get("correct") == 1 and st18.get("unknown") == 0,
+       f"verdict={r.get('verdict')} correct={st18.get('correct')} unknown={st18.get('unknown')}")
+
+rc, so, data = run_cli(["--claims", json.dumps([
+    {"doi": "10.1371/journal.pone.0239699",
+     "title": "A completely different paper about widgets"}]), "--no-cache"])
+r = ((data or {}).get("results") or [{}])[0]
+record("T18b DOI claims wrong title → mismatch",
+       rc == 1 and r.get("verdict") == "mismatch",
+       f"rc={rc} verdict={r.get('verdict')}")
+
+# ── T18c: claims-sourced DOI 404 = fabrication signal (user-endorsed) ──
+rc, so, data = run_cli(["--claims", json.dumps([
+    {"doi": "10.9999/fake.does.not.exist", "title": "Anything"}]), "--no-cache"])
+r = ((data or {}).get("results") or [{}])[0]
+record("T18c claims-sourced DOI 404 → invalid (not suspect)",
+       rc == 1 and r.get("verdict") == "invalid",
+       f"rc={rc} verdict={r.get('verdict')}")
+
+# ── T19: DOI claims + retraction cap (STAP paper, real retracted DOI) ──
+rc, so, data = run_cli(["--claims", json.dumps([
+    {"doi": "10.1038/nature12968",
+     "title": "Stimulus-triggered fate conversion of somatic cells into pluripotency",
+     "journal": "Nature"}]), "--no-cache"])
+r = ((data or {}).get("results") or [{}])[0]
+record("T19 DOI claims retraction cap (claimed correct → partial)",
+       r.get("verdict") == "partial" and r.get("retracted") is True,
+       f"verdict={r.get('verdict')} retracted={r.get('retracted')} note={str(r.get('retraction_note',''))[:40]}")
+
 # ── 汇总 ──
 passed = sum(1 for r in RESULTS if r["ok"])
 failed = sum(1 for r in RESULTS if not r["ok"])
