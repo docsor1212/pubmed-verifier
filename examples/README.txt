@@ -17,3 +17,6 @@ claims.sample.csv — reference format for --claims-file
 Run:  python3 scripts/verify_pmids.py --claims-file examples/claims.sample.csv
 
 Lint first (offline, v3.5.0): python3 scripts/verify_pmids.py --lint-claims examples/claims.sample.csv
+
+Bibliography (v3.6.0): refs.sample.bib audits a .bib file directly —
+python3 scripts/verify_pmids.py --bibliography examples/refs.sample.bib

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v3.5.0
+PMID Citation Verifier -- PubMed E-utilities API v3.6.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -82,8 +82,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "3.5.0"
-_UA_TOOL = "pubmed-verifier/3.5 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "3.6.0"
+_UA_TOOL = "pubmed-verifier/3.6 (+citation verifier; stdlib-only)"
 _UA_BROWSER = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 _CIRCUIT_THRESHOLD = 2  # call-level consecutive transport failures per host
@@ -619,10 +619,10 @@ def verify_doi_entry(doi: str, src: str, resolution: dict = None,
                                 "（DOI 查无——伪造信号；DataCite/仓储 DOI 不经 "
                                 "Crossref，处置前请经 doi.org 复核）")
         else:
-            entry["details"] = ("DOI auto-extracted from scanned text, not found in "
-                                "Crossref（自动抽取的 DOI 在 Crossref 查无——疑似但"
-                                "不判伪造：DataCite/仓储 DOI 不经 Crossref，请人工经 "
-                                "doi.org 复核）")
+            entry["details"] = ("DOI not found in Crossref — treated as a suspect, "
+                                "never auto-invalidated（DOI 查无——按疑似处理，绝不"
+                                "自动判伪造：DataCite/仓储 DOI 不经 Crossref，请人工"
+                                "经 doi.org 复核）")
         entry["suspect"] = not explicit
         entry["error"] = res["error"]
         audit = {"doi": doi, "pmid": "", "source_file": entry["source_file"],
@@ -2280,6 +2280,138 @@ function flt(c) {{
 
 # ── Main ──
 
+# ── BibTeX bibliography input (v3.6.0) ──
+
+_BIB_SKIP_TYPES = ("string", "preamble", "comment")
+_BIB_ARXIV_IN_TEXT = re.compile(r'arXiv[:\s]*((?:\d{4}\.\d{4,5})|(?:[\w.-]+/\d{7}))', re.I)
+
+
+def _bib_clean_value(val: str) -> str:
+    """Strip protective braces, unescape common BibTeX escapes, fold spaces."""
+    val = val.strip()
+    if len(val) >= 2 and ((val[0] == '{' and val[-1] == '}') or
+                          (val[0] == '"' and val[-1] == '"')):
+        val = val[1:-1]
+    val = re.sub(r'[{}]', '', val)
+    for esc, ch in (r'\&', '&'), (r'\%', '%'), (r'\_', '_'), (r'\$', '$'), (r'\#', '#'), (r'\"', '"'):
+        val = val.replace(esc, ch)
+    return " ".join(val.split())
+
+
+def _split_bib_fields(body: str) -> list:
+    """Split an entry body into (name, raw_value) pairs at brace/quote depth 0."""
+    parts, cur = [], []
+    depth = in_q = 0
+    for ch in body:
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth = max(0, depth - 1)
+        elif ch == '"' and depth == 0:
+            in_q = not in_q
+        if ch == ',' and depth == 0 and not in_q:
+            parts.append(''.join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    parts.append(''.join(cur))
+    pairs = []
+    for p in parts:
+        if '=' not in p:
+            continue
+        name, _, val = p.partition('=')
+        name = name.strip().lower()
+        if name and not name.isdigit():
+            pairs.append((name, val.strip()))
+    return pairs
+
+
+def parse_bibtex(path: str) -> tuple:
+    """Parse a BibTeX file (v3.6.0). Returns (entries, issues); each entry is
+    {citekey, entry_type, fields (names lowered, values cleaned), line}.
+    @string/@preamble/@comment blocks are skipped."""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        return [], [f"ERROR: file unreadable: {e}"]
+    entries, issues = [], []
+    _AT_HEAD = re.compile(r'@(\w+)\s*[{(]')   # positional: no O(n) slices
+    i, n = 0, len(text)
+    scan_pos, line_base = 0, 1                 # incremental newline counter
+    while i < n:
+        at = text.find("@", i)
+        if at < 0:
+            break
+        m = _AT_HEAD.match(text, at)
+        if not m:
+            i = at + 1
+            continue
+        etype = m.group(1).lower()
+        if etype in _BIB_SKIP_TYPES:
+            i = m.end()
+            continue
+        line_base += text.count("\n", scan_pos, at)
+        scan_pos = at
+        entry_line = line_base
+        open_ch = text[m.end() - 1]
+        close_ch = '}' if open_ch == '{' else ')'
+        depth, j = 0, m.end() - 1
+        while j < n:
+            if text[j] == open_ch:
+                depth += 1
+            elif text[j] == close_ch:
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        if j >= n:
+            issues.append(f"line {entry_line}: ERROR unclosed "
+                          f"@{etype} entry — braces never balance")
+            break
+        body = text[m.end():j]
+        citekey, comma, rest = body.partition(",")
+        citekey = citekey.strip()
+        if not citekey:
+            issues.append(f"line {entry_line}: WARN @{etype} entry "
+                          f"without a citekey")
+            citekey = f"anon{len(entries) + 1}"
+        fields = {name: _bib_clean_value(val) for name, val in _split_bib_fields(rest)}
+        entries.append({"citekey": citekey, "entry_type": etype,
+                        "fields": fields, "line": entry_line})
+        i = j + 1
+    return entries, issues
+
+
+def bib_entry_route(fields: dict) -> tuple:
+    """Routing decision for one parsed entry (v3.6.0).
+    Returns (kind, id_string, claimed) with kind in pmid/doi/arxiv/none.
+    Priority: PMID > DOI > arXiv (a routed PMID/DOI yields full verdicts)."""
+    claimed = {
+        "claimed_title": fields.get("title", ""),
+        "claimed_authors": [a.strip() for a in re.split(
+            r'\s+and\s+', fields.get("author", ""), flags=re.I) if a.strip()],
+        "claimed_journal": fields.get("journal", ""),
+        "claimed_year": next((y for y in re.findall(
+            r'(?:19|20)\d{2}', fields.get("year", "") + " " + fields.get("date", ""))), ""),
+    }
+    pmid = fields.get("pmid", "").strip()
+    if not pmid.isdigit():
+        m = re.search(r'PMID[:\s]*(\d{4,9})(?!\d)', fields.get("note", ""), re.I)
+        pmid = m.group(1) if m else ""
+    if pmid.isdigit():
+        return "pmid", pmid, claimed
+    doi = _clean_doi(fields.get("doi", ""))
+    if doi:
+        return "doi", doi, claimed
+    hay = fields.get("journal", "") + " " + fields.get("note", "")
+    m_arx = _BIB_ARXIV_IN_TEXT.search(hay)
+    arx = fields.get("eprint", "").strip() or (m_arx.group(1) if m_arx else "")
+    if arx:
+        claimed["claimed_doi"] = fields.get("doi", "")
+        return "arxiv", arx, claimed
+    return "none", "", claimed
+
+
 # ── Claims linting (v3.5.0): offline pre-flight for claims files ──
 
 _LINT_KNOWN_COLS = {"pmid", "title", "authors", "journal", "year",
@@ -2409,11 +2541,44 @@ def lint_claims_csv(path: str) -> list:
     return issues
 
 
+def lint_claims_bib(path: str) -> list:
+    """Lint a BibTeX bibliography offline (v3.6.0)."""
+    entries, issues = parse_bibtex(path)
+    issues = list(issues)
+    if not entries and not any(i.startswith("ERROR") for i in issues):
+        issues.append("ERROR: no @entries found in the file")
+    seen_keys = {}
+    for e in entries:
+        # sanitize: the citekey is user data — a ": WARN"/": ERROR" inside it
+        # must not spoof the severity counter (which reads after ": ")
+        ck = " ".join(str(e["citekey"]).replace(":", "_").split())
+        tag = f"@{e['entry_type']} {ck} (line {e['line']})"
+        kind, ident, _ = bib_entry_route(e["fields"])
+        if kind == "none":
+            issues.append(f"{tag}: ERROR no pmid / doi / arXiv ID — "
+                          f"entry cannot be routed")
+        else:
+            key = (kind, ident)
+            if key in seen_keys:
+                issues.append(f"{tag}: WARN duplicate of {seen_keys[key]} "
+                              f"(same {kind} {ident!r}) — the row will be merged")
+            else:
+                seen_keys[key] = tag
+        if not e["fields"].get("title"):
+            note = ("stays unknown (no cross-check possible)"
+                    if kind in ("doi", "none") else
+                    "verdict caps at partial")
+            issues.append(f"{tag}: WARN no title — {note}")
+    return issues
+
+
 def run_claims_lint(path: str) -> int:
     """Print a lint report for a claims file; returns process exit code."""
     print(f"Linting claims file: {path}")
     if path.lower().endswith(".csv"):
         issues = lint_claims_csv(path)
+    elif path.lower().endswith(".bib"):
+        issues = lint_claims_bib(path)
     else:
         issues = lint_claims_json(path)
     if not issues:
@@ -2475,8 +2640,11 @@ def main():
                         help="Comma-separated arXiv IDs to verify against the official arXiv API (nonexistent = fabrication signal)")
     parser.add_argument("--diff", metavar="BASELINE_JSON",
                         help="Compare this run to a previous audit working-paper: newly retracted, degraded, improved, new, dropped")
+    parser.add_argument("--bibliography", metavar="FILE",
+                        help="Verify a BibTeX bibliography file (.bib): entries route "
+                             "by PMID (field or note) > DOI > arXiv eprint/ID pattern")
     parser.add_argument("--lint-claims", metavar="FILE",
-                        help="Offline lint of a claims file (JSON/CSV): ID shapes, "
+                        help="Offline lint of a claims file (JSON/CSV/BibTeX): ID shapes, "
                              "missing titles, unknown columns, duplicate keys — no network")
     parser.add_argument("--version", action="version", version=f"pubmed-verifier {_TOOL_VERSION}")
     args = parser.parse_args()
@@ -2569,6 +2737,34 @@ def main():
             a = a.strip()
             if a:
                 arxiv_inputs.append((a, "cli", explicit_arxiv.get(a.lower())))
+    # BibTeX bibliography input (v3.6.0): entries route PMID > DOI > arXiv,
+    # each carrying its claimed metadata for the full cross-check
+    if args.bibliography:
+        bib_entries, bib_issues = parse_bibtex(args.bibliography)
+        for msg in bib_issues:
+            print(f"  bibliography: {msg}", file=sys.stderr)
+        bib_src = os.path.basename(args.bibliography)
+        bib_routed = {"pmid": 0, "doi": 0, "arxiv": 0}
+        bib_skipped = []
+        for e in bib_entries:
+            kind, ident, claimed = bib_entry_route(e["fields"])
+            if kind == "none":
+                bib_skipped.append(f"{e['citekey']} (line {e['line']})")
+                continue
+            bib_routed[kind] += 1
+            label = f"{bib_src}#{e['citekey']}"
+            if kind == "pmid":
+                pmid_entries.append((ident, label, "", claimed))
+            elif kind == "doi":
+                doi_inputs.append((ident, label, claimed))
+            else:
+                arxiv_inputs.append((ident, label, claimed))
+        if bib_entries:
+            print(f"Bibliography {bib_src}: {len(bib_entries)} entries — "
+                  f"{bib_routed['pmid']} PMID / {bib_routed['doi']} DOI / "
+                  f"{bib_routed['arxiv']} arXiv routed"
+                  + (f", {len(bib_skipped)} skipped: {', '.join(bib_skipped)}"
+                     if bib_skipped else ""), flush=True)
     if args.pmids:
         for p in args.pmids.split(","):
             p = p.strip()
@@ -2613,10 +2809,17 @@ def main():
             arxiv_inputs.append((aid, "claims", claimed))
         for cd, claimed in explicit_doi.items():
             doi_inputs.append((cd, "claims", claimed))
-    elif not doi_inputs and not arxiv_inputs:
+    elif not pmid_entries and not doi_inputs and not arxiv_inputs:
         parser.print_help()
         sys.exit(1)
 
+    # v3.6.0: explicit CLI/claims inputs outrank bibliography duplicates in
+    # the DOI/arXiv dedup — a claims-file DOI keeps its 404=invalid semantics
+    # even when a .bib carries the same DOI
+    doi_inputs = [t for t in doi_inputs if t[1] in ("cli", "claims")] + \
+                 [t for t in doi_inputs if t[1] not in ("cli", "claims")]
+    arxiv_inputs = [t for t in arxiv_inputs if t[1] in ("cli", "claims")] + \
+                   [t for t in arxiv_inputs if t[1] not in ("cli", "claims")]
     if not pmid_entries and not doi_inputs and not arxiv_inputs:
         print("No PMIDs, DOIs or arXiv IDs found.")
         sys.exit(0)

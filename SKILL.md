@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 3.5.0
+version: 3.6.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -17,10 +17,10 @@ description: >-
   dependencies, runs fully local. Triggers: verify PMIDs, check citations,
   validate references, citation audit, reference check, PMID check, audit
   references, batch verify references, AI hallucination detection, verify
-  DOI, DOI check, validate citations, PubMed citation verifier.
+  DOI, DOI check, validate citations, PubMed citation verifier, BibTeX audit.
 ---
 
-# PubMed Citation Verifier v3.5.0
+# PubMed Citation Verifier v3.6.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -87,6 +87,9 @@ python3 scripts/verify_pmids.py --source /path/to/project --diff audit.json --ou
 # Verify arXiv IDs (preprints) — mixed audits supported
 python3 scripts/verify_pmids.py --arxivs "2401.12345,cs/0211004" --no-cache
 
+# Audit a BibTeX bibliography file directly (PMID > DOI > arXiv routing)
+python3 scripts/verify_pmids.py --bibliography refs.bib --no-cache
+
 # Institutional niceties (recommended): NCBI API key + contact email
 python3 scripts/verify_pmids.py --source . --verify-doi --ncbi-api-key $NCBI_API_KEY --mailto you@lab.org
 ```
@@ -144,6 +147,12 @@ a final pre-submission check, run with `--no-cache`.
 Check `details` for which field diverged; thresholds are strict on purpose.
 Feed the full citation via `--claims-file` for a precise verdict.
 
+**Can I audit my .bib file directly?**
+Yes — `--bibliography refs.bib` routes each entry by PMID > DOI > arXiv
+and cross-checks the claimed metadata. `--lint-claims refs.bib` validates
+it offline first. The round trip works: `--export-bibtex` output can be
+fed back after edits.
+
 **My claims file seems to lose rows / verdicts look weaker than expected?**
 Lint it offline first: `python3 scripts/verify_pmids.py --lint-claims
 claims.csv` reports unusable rows, ID shape errors, unknown columns
@@ -197,8 +206,9 @@ What this tool can NOT do, consolidated in one place:
   (U.S., e.g., vs., St., Vol., No.) from splitting a title, but exotic
   formatting can still mis-split; for exact metadata use `--claims-file`.
 - **DataCite/repository DOIs are not in Crossref** — an auto-extracted
-  DOI missing from Crossref stays a *suspect*; only user-provided DOIs
-  count a Crossref 404 as invalid.
+  or bibliography-sourced DOI missing from Crossref stays a *suspect*
+  (`.bib` files commonly hold DataCite/repository DOIs — check doi.org
+  by hand); only `--dois`/claims DOIs count a Crossref 404 as invalid.
 - **arXiv moderator removals also return "not found"** — the invalid
   verdict carries that caveat in its details.
 - **Retraction status is as-of-cache-time** — final pre-submission
@@ -249,6 +259,9 @@ only the lint runs.
 - **Two-phase workflow** — sweep with metadata-only verification first
   (no `--verify-doi`, no `--suggest`), then deep-verify only the flagged
   subset; each deep flag adds one API call per citation.
+- **Round-trip bibliographies** — `--export-bibtex` writes verified
+  entries as BibTeX; after edits, `--bibliography refs.bib` re-audits the
+  file (PMID in the note re-links the full record).
 - **Claims over context parsing** — whenever you know the expected titles,
   feed `--claims-file`: it enables the full verdict ladder and the DOI /
   arXiv pairing checks. Validate the file offline first:
@@ -483,6 +496,18 @@ python3 scripts/verify_pmids.py --claims '[{"doi":"10.1371/journal.pone.0239699"
   batching, worker tuning, two-phase deep-verification, cache policy,
   scale expectations — and why the verifier is deliberately one file).
 
+## v3.6.0 — BibTeX bibliography audit
+
+**`--bibliography refs.bib`** audits a .bib file directly: entries route by
+PMID (the `pmid` field, or a "PMID: NNNN" in the note — including the
+notes `--export-bibtex` itself writes) > DOI > arXiv (`eprint`, or an
+"arXiv:XXXX.XXXXX" in the journal/note), each carrying its claimed
+title/authors/journal/year for the full cross-check. Entries without any
+routable ID are counted and skipped. This closes the loop with
+`--export-bibtex`: a verified bibliography can be re-audited after edits.
+`--lint-claims refs.bib` validates the file offline (unroutable entries,
+missing titles, unclosed blocks).
+
 ## How it works
 
 1. **Extract + parse context** — finds `PMID: 12345678` / PubMed URLs in
@@ -560,9 +585,10 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v3.5.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v3.6.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `examples/claims.sample.csv` | Reference format for `--claims-file` (incl. a DOI-only row) |
+| `examples/refs.sample.bib` | Sample bibliography for `--bibliography` (DOI/PMID/arXiv routing) |
 | `tests/` | Offline matrix + real-network acceptance (repo only, not in the package) |
 
 ## License

@@ -293,6 +293,52 @@ record("T19 DOI claims retraction cap (claimed correct → partial)",
        r.get("verdict") == "partial" and r.get("retracted") is True,
        f"verdict={r.get('verdict')} retracted={r.get('retracted')} note={str(r.get('retraction_note',''))[:40]}")
 
+# ── T20: BibTeX bibliography input (v3.6.0) ──
+import tempfile
+bib_content = '''@article{covid2020,
+  title = {City size and the spreading of COVID-19 in Brazil},
+  author = {Silva Junior},
+  journal = {PLoS ONE},
+  year = {2020},
+  doi = {10.1371/journal.pone.0239699}
+}
+
+@article{gattorno2019,
+  title = {Classification criteria for autoinflammatory recurrent fevers},
+  author = {Gattorno},
+  journal = {Ann Rheum Dis},
+  year = {2019},
+  pmid = {31018962}
+}
+
+@misc{attention2017,
+  title = {Attention Is All You Need},
+  author = {Vaswani},
+  year = {2017},
+  eprint = {1706.03762}
+}
+'''
+with tempfile.NamedTemporaryFile(suffix=".bib", delete=False, mode="w", encoding="utf-8") as tf:
+    tf.write(bib_content)
+    bib_path = tf.name
+rc, so, data = run_cli(["--bibliography", bib_path, "--no-cache"])
+res_list = (data or {}).get("results", [])
+
+def _find(**kw):
+    for r in res_list:
+        if all(str(r.get(k, "")) == v for k, v in kw.items()):
+            return r
+    return {}
+doi_r = _find(doi="10.1371/journal.pone.0239699")
+pmid_r = _find(pmid="31018962")   # linked entry also carries its registry DOI — key by PMID
+arx_r = _find(arxiv_id="1706.03762")
+record("T20 bibliography (.bib) three-route audit",
+       doi_r.get("verdict") == "correct" and pmid_r.get("verdict") == "correct"
+       and arx_r.get("valid") is True,
+       f"doi={doi_r.get('verdict')} pmid={pmid_r.get('verdict')} "
+       f"arxiv={arx_r.get('verdict')}/valid={arx_r.get('valid')}")
+Path(bib_path).unlink(missing_ok=True)
+
 # ── 汇总 ──
 passed = sum(1 for r in RESULTS if r["ok"])
 failed = sum(1 for r in RESULTS if not r["ok"])

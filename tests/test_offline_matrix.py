@@ -1529,5 +1529,157 @@ class TestV350(_Reset):
         self.assertEqual(meta.get("version"), ver)
 
 
+class TestV360(_Reset):
+    """v3.6.0: BibTeX bibliography input — parser, routing, round-trip, lint."""
+
+    BIB = '''% comment
+@string{x = "y"}
+
+@article{a1,
+  title = {City size and the spreading of COVID-19 in {B}razil},
+  author = {Silva Junior and Other},
+  journal = {PLoS ONE},
+  year = {2020},
+  doi = {10.1371/journal.pone.0239699},
+  note = {verified (correct; PMID 32966344)}
+}
+
+@misc{a2,
+  title = {Attention Is All You Need},
+  year = {2017},
+  eprint = {1706.03762},
+  archiveprefix = {arXiv}
+}
+
+@article{a3,
+  title = {Pattern match},
+  journal = {arXiv preprint arXiv:2401.12345},
+  year = {2024}
+}
+
+@article{a4,
+  title = {No identifier}
+}
+'''
+
+    def _parse(self, content):
+        import tempfile as _tf, os as _os
+        with _tf.TemporaryDirectory() as td:
+            p = _os.path.join(td, "r.bib")
+            open(p, "w", encoding="utf-8").write(content)
+            return vp.parse_bibtex(p)
+
+    def test_parser_entries_fields_braces(self):
+        entries, issues = self._parse(self.BIB)
+        self.assertEqual(issues, [])
+        self.assertEqual(len(entries), 4)
+        f = {e["citekey"]: e["fields"] for e in entries}
+        self.assertEqual(f["a1"]["title"],
+                         "City size and the spreading of COVID-19 in Brazil")
+        self.assertEqual(f["a1"]["doi"], "10.1371/journal.pone.0239699")
+
+    def test_routing_priority_pmid_doi_arxiv(self):
+        entries, _ = self._parse(self.BIB)
+        routes = {e["citekey"]: vp.bib_entry_route(e["fields"]) for e in entries}
+        self.assertEqual(routes["a1"][0], "pmid")
+        self.assertEqual(routes["a1"][1], "32966344")
+        self.assertEqual(routes["a2"][0], "arxiv")
+        self.assertEqual(routes["a2"][1], "1706.03762")
+        self.assertEqual(routes["a3"][0], "arxiv")
+        self.assertEqual(routes["a3"][1], "2401.12345")
+        self.assertEqual(routes["a4"][0], "none")
+        claimed = routes["a1"][2]
+        self.assertEqual(claimed["claimed_authors"], ["Silva Junior", "Other"])
+        self.assertEqual(claimed["claimed_year"], "2020")
+
+    def test_roundtrip_export_then_parse(self):
+        results = [{"pmid": "32966344", "doi": "10.1371/journal.pone.0239699",
+                    "verdict": "correct", "valid": True, "retracted": False,
+                    "title": "City size and the spreading of COVID-19 in Brazil",
+                    "journal": "PLoS ONE", "pubdate": "2020-08-15",
+                    "authors": "Silva Junior, Other"}]
+        bib = vp.generate_bibtex(results)
+        entries, issues = self._parse(bib)
+        self.assertEqual(issues, [])
+        self.assertEqual(len(entries), 1)
+        kind, ident, claimed = vp.bib_entry_route(entries[0]["fields"])
+        self.assertEqual((kind, ident), ("pmid", "32966344"))
+        self.assertEqual(claimed["claimed_title"],
+                         "City size and the spreading of COVID-19 in Brazil")
+        self.assertEqual(claimed["claimed_journal"], "PLoS ONE")
+        self.assertEqual(claimed["claimed_year"], "2020")
+
+    def test_lint_bib_reports_unroutable_and_unclosed(self):
+        import tempfile as _tf, os as _os, subprocess as _sp
+        with _tf.TemporaryDirectory() as td:
+            p = _os.path.join(td, "bad.bib")
+            open(p, "w", encoding="utf-8").write(
+                "@article{x, title = {no id}}\n\n@article{y, title = {oops}")
+            r = _sp.run([sys.executable,
+                         str(Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"),
+                         "--lint-claims", p], capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 1)
+        for frag in ("cannot be routed", "unclosed"):
+            self.assertIn(frag, r.stdout + r.stderr)
+
+    def test_lint_bib_clean_ok(self):
+        import tempfile as _tf, os as _os, subprocess as _sp
+        sample = Path(__file__).resolve().parent.parent / "examples" / "refs.sample.bib"
+        r = _sp.run([sys.executable,
+                     str(Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"),
+                     "--lint-claims", str(sample)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_parse_at_dense_input_terminates_fast(self):
+        # strict-round P1 lock: positional @ matching — a 100k-junk-@ file
+        # must parse in well under the 60s subprocess timeout AND find the
+        # real entry after the junk (the old slice-based matcher was O(n²))
+        import tempfile as _tf, os as _os
+        content = "@" * 100000 + \
+            "\n@article{real1, title = {Real}, doi = {10.1371/journal.pone.0239699}}\n"
+        with _tf.TemporaryDirectory() as td:
+            p = _os.path.join(td, "bomb.bib")
+            open(p, "w", encoding="utf-8").write(content)
+            entries, issues = vp.parse_bibtex(p)
+        self.assertEqual(issues, [])
+        self.assertEqual([e["citekey"] for e in entries], ["real1"])
+
+    def test_bib_lint_citekey_cannot_spoof_severity(self):
+        # a citekey containing ": WARN" must not flip an ERROR into exit 0
+        import tempfile as _tf, os as _os, subprocess as _sp
+        with _tf.TemporaryDirectory() as td:
+            p = _os.path.join(td, "evil.bib")
+            open(p, "w", encoding="utf-8").write(
+                '@article{a: WARN spoof, title = {X}}\n')
+            r = _sp.run([sys.executable,
+                         str(Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"),
+                         "--lint-claims", p], capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("1 error(s)", r.stdout + r.stderr)
+
+    def test_bib_lint_duplicate_warn(self):
+        import tempfile as _tf, os as _os, subprocess as _sp
+        with _tf.TemporaryDirectory() as td:
+            p = _os.path.join(td, "dup.bib")
+            open(p, "w", encoding="utf-8").write(
+                '@article{d1, title = {T}, doi = {10.1/x}}\n'
+                '@article{d2, title = {T2}, doi = {10.1/x}}\n')
+            r = _sp.run([sys.executable,
+                         str(Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"),
+                         "--lint-claims", p], capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("duplicate of", r.stdout + r.stderr)
+
+    def test_bib_note_pmid_never_truncated(self):
+        entries, _ = self._parse(
+            '@article{t, title = {T}, note = {PMID: 3101896212345}}\n')
+        kind, ident, _ = vp.bib_entry_route(entries[0]["fields"])
+        self.assertEqual((kind, ident), ("none", ""))
+
+    def test_bib_clean_value_escapes(self):
+        self.assertEqual(vp._bib_clean_value(r"A \& B \% C"), "A & B % C")
+        self.assertEqual(vp._bib_clean_value("{Nested {Braces}}"), "Nested Braces")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
