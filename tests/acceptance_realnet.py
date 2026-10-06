@@ -339,6 +339,18 @@ record("T20 bibliography (.bib) three-route audit",
        f"arxiv={arx_r.get('verdict')}/valid={arx_r.get('valid')}")
 Path(bib_path).unlink(missing_ok=True)
 
+# ── T21: parallel workers DOI pipeline (relocated from offline matrix) ──
+import tempfile
+with tempfile.TemporaryDirectory() as td:
+    csvp = Path(td) / "t.csv"
+    rc, so, data = run_cli(["--dois", "10.9999/fake.1,10.9999/fake.2",
+                            "--workers", "2", "--no-cache",
+                            "--export-csv", str(csvp)])
+    csv_text = csvp.read_text(encoding="utf-8")
+record("T21 workers DOI pipeline (fake DOIs invalid, CSV exported)",
+       rc == 1 and csv_text.count("10.9999/fake") == 2,
+       f"rc={rc} csv_rows={csv_text.count('10.9999/fake')}")
+
 # ── 汇总 ──
 passed = sum(1 for r in RESULTS if r["ok"])
 failed = sum(1 for r in RESULTS if not r["ok"])

@@ -1,5 +1,7 @@
 # PubMed Citation Verifier 🔬
 
+[![GitHub Stars](https://img.shields.io/github/stars/docsor1212/pubmed-verifier?style=social&label=Star)](https://github.com/docsor1212/pubmed-verifier/stargazers)
+
 Batch-verify PMID citations against PubMed API. Built for researchers, medical writers, and evidence-based medicine teams.
 
 ## Why?
@@ -16,7 +18,7 @@ Academic projects routinely contain hundreds of PMID citations. Manual verificat
 - **Content matching** — Keyword overlap scoring flags potentially irrelevant citations
 - **Three citation types in one audit** — PMIDs, DOIs and arXiv IDs (preprints) verified in a single scan; arXiv IDs checked against the official API (nonexistent = fabrication signal); claims rows keyed by DOI get full verdicts, and preprints surface their published version of record
 - **Claims lint** — `--lint-claims file.csv` validates a claims file offline (ID shapes, missing titles, unknown columns, duplicates) before any verification run
-- **BibTeX bibliography audit** — `--bibliography refs.bib` verifies a .bib file directly (entries route by PMID > DOI > arXiv with full cross-checks); round-trips with `--export-bibtex`
+- **Bibliography audit** — `--bibliography refs.bib` / `refs.ris` verifies BibTeX and RIS files directly (Zotero/EndNote/Mendeley exports; entries route by PMID > DOI > arXiv with full cross-checks); round-trips with `--export-bibtex` / `--export-ris`
 - **Retraction detection for every citation** — the registry publication type ("Retracted Publication") flags retracted papers with no DOI or extra flags needed; Crossref `updated-by` adds the retraction-notice DOI
 - **Verified-bibliography export** — `--export-bibtex` writes correct entries as BibTeX, comments partial ones, excludes and counts the rest
 - **Submission-readiness verdict** — every report leads with `SUBMISSION READY` / `NOT SUBMISSION-READY` and per-problem counts
@@ -42,6 +44,8 @@ python3 scripts/verify_pmids.py --pmids 31018962,22213727,999999999
 # Institutional mode: API key + polite pool
 python3 scripts/verify_pmids.py --source ./papers --verify-doi --ncbi-api-key $NCBI_API_KEY --mailto you@lab.org
 ```
+
+**China mirror (ModelScope 魔搭)**: <https://modelscope.cn/skills/Docsor/pubmed-verifier> — if you find this skill useful, a like there helps others find it.
 
 ## Use Cases
 

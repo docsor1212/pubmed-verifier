@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 3.6.0
+version: 3.7.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI, DOI check, validate citations, PubMed citation verifier, BibTeX audit.
 ---
 
-# PubMed Citation Verifier v3.6.0
+# PubMed Citation Verifier v3.7.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -87,8 +87,9 @@ python3 scripts/verify_pmids.py --source /path/to/project --diff audit.json --ou
 # Verify arXiv IDs (preprints) — mixed audits supported
 python3 scripts/verify_pmids.py --arxivs "2401.12345,cs/0211004" --no-cache
 
-# Audit a BibTeX bibliography file directly (PMID > DOI > arXiv routing)
+# Audit a BibTeX or RIS bibliography file directly (PMID > DOI > arXiv routing)
 python3 scripts/verify_pmids.py --bibliography refs.bib --no-cache
+python3 scripts/verify_pmids.py --bibliography refs.ris --no-cache --export-ris verified.ris
 
 # Institutional niceties (recommended): NCBI API key + contact email
 python3 scripts/verify_pmids.py --source . --verify-doi --ncbi-api-key $NCBI_API_KEY --mailto you@lab.org
@@ -147,11 +148,12 @@ a final pre-submission check, run with `--no-cache`.
 Check `details` for which field diverged; thresholds are strict on purpose.
 Feed the full citation via `--claims-file` for a precise verdict.
 
-**Can I audit my .bib file directly?**
-Yes — `--bibliography refs.bib` routes each entry by PMID > DOI > arXiv
-and cross-checks the claimed metadata. `--lint-claims refs.bib` validates
-it offline first. The round trip works: `--export-bibtex` output can be
-fed back after edits.
+**Can I audit my .bib or .ris file directly?**
+Yes — `--bibliography refs.bib` (BibTeX) and `--bibliography refs.ris`
+(RIS/Zotero/EndNote/Mendeley) route each entry by PMID > DOI > arXiv
+and cross-check the claimed metadata. `--lint-claims` validates either
+format offline first. The round trip works both ways: `--export-bibtex`
+and `--export-ris` output can be fed back after edits.
 
 **My claims file seems to lose rows / verdicts look weaker than expected?**
 Lint it offline first: `python3 scripts/verify_pmids.py --lint-claims
@@ -259,9 +261,9 @@ only the lint runs.
 - **Two-phase workflow** — sweep with metadata-only verification first
   (no `--verify-doi`, no `--suggest`), then deep-verify only the flagged
   subset; each deep flag adds one API call per citation.
-- **Round-trip bibliographies** — `--export-bibtex` writes verified
-  entries as BibTeX; after edits, `--bibliography refs.bib` re-audits the
-  file (PMID in the note re-links the full record).
+- **Round-trip bibliographies** — `--export-bibtex` / `--export-ris`
+  write verified entries; after edits, `--bibliography refs.bib` /
+  `refs.ris` re-audits the file (the PMID re-links the full record).
 - **Claims over context parsing** — whenever you know the expected titles,
   feed `--claims-file`: it enables the full verdict ladder and the DOI /
   arXiv pairing checks. Validate the file offline first:
@@ -508,6 +510,16 @@ routable ID are counted and skipped. This closes the loop with
 `--lint-claims refs.bib` validates the file offline (unroutable entries,
 missing titles, unclosed blocks).
 
+## v3.7.0 — RIS bibliography support
+
+`--bibliography` now accepts **RIS files** (`refs.ris` — Zotero/EndNote/
+Mendeley exports) alongside BibTeX: records route by PMID (AN tag, or a
+"PMID: NNNN" note) > DOI (DO) > arXiv (UR/eprint), each with claimed
+metadata for the full cross-check. **`--export-ris`** completes the loop —
+verified entries as `TY JOUR`, partials as `TY DATA` with a PARTIAL note.
+`--lint-claims refs.ris` validates offline (unroutable records, missing
+titles, duplicates, unterminated records).
+
 ## How it works
 
 1. **Extract + parse context** — finds `PMID: 12345678` / PubMed URLs in
@@ -585,7 +597,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v3.6.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v3.7.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `examples/claims.sample.csv` | Reference format for `--claims-file` (incl. a DOI-only row) |
 | `examples/refs.sample.bib` | Sample bibliography for `--bibliography` (DOI/PMID/arXiv routing) |

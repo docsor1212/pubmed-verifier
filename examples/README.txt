@@ -20,3 +20,6 @@ Lint first (offline, v3.5.0): python3 scripts/verify_pmids.py --lint-claims exam
 
 Bibliography (v3.6.0): refs.sample.bib audits a .bib file directly —
 python3 scripts/verify_pmids.py --bibliography examples/refs.sample.bib
+
+RIS (v3.7.0): refs.sample.ris audits Zotero/EndNote/Mendeley exports —
+python3 scripts/verify_pmids.py --bibliography examples/refs.sample.ris

@@ -1055,20 +1055,6 @@ class TestV290FirstClassDoi(_Reset):
         self.assertEqual(rows[2][0], "10.1/x")
         self.assertEqual(rows[2][1], "doi")
 
-    def test_workers_doi_pipeline_smoke(self):
-        import subprocess
-        script = Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"
-        with tempfile.TemporaryDirectory() as td:
-            out = subprocess.run(
-                [sys.executable, str(script), "--dois",
-                 "10.9999/fake.1,10.9999/fake.2", "--workers", "2", "--no-cache",
-                 "--export-csv", str(Path(td) / "t.csv")],
-                capture_output=True, text=True, timeout=180)
-            csv_text = (Path(td) / "t.csv").read_text(encoding="utf-8")
-        self.assertEqual(out.returncode, 1)
-        self.assertEqual(csv_text.count("10.9999/fake"), 2)
-
-
 class TestArxiv(_Reset):
     """v3.0.0 arXiv ID verification."""
 
@@ -1679,6 +1665,137 @@ class TestV360(_Reset):
     def test_bib_clean_value_escapes(self):
         self.assertEqual(vp._bib_clean_value(r"A \& B \% C"), "A & B % C")
         self.assertEqual(vp._bib_clean_value("{Nested {Braces}}"), "Nested Braces")
+
+
+class TestV370(_Reset):
+    """v3.7.0: RIS bibliography support — parser, route adapter, export
+    round-trip, lint."""
+
+    RIS = '''TY  - JOUR
+AU  - Silva, Junior
+TI  - City size and the spreading of COVID-19 in Brazil
+JO  - PLoS ONE
+PY  - 2020
+DO  - 10.1371/journal.pone.0239699
+AN  - 32966344
+N1  - verified by pubmed-verifier
+ER  - 
+
+TY  - JOUR
+TI  - Attention Is All You Need
+PY  - 2017
+UR  - https://arxiv.org/abs/1706.03762
+ER  - 
+
+TY  - JOUR
+TI  - No identifier record
+ER  - 
+'''
+
+    def _parse(self, content):
+        import tempfile as _tf, os as _os
+        with _tf.TemporaryDirectory() as td:
+            p = _os.path.join(td, "r.ris")
+            open(p, "w", encoding="utf-8").write(content)
+            return vp.parse_ris(p)
+
+    def test_parser_records_tags_continuation(self):
+        entries, issues = self._parse(self.RIS)
+        self.assertEqual(issues, [])
+        self.assertEqual(len(entries), 3)
+        f = {e["citekey"]: e["fields"] for e in entries}
+        self.assertEqual(f["ris32966344"]["ti"],
+                         "City size and the spreading of COVID-19 in Brazil")
+        self.assertEqual(f["ris32966344"]["jo"], "PLoS ONE")
+
+    def test_route_adapter_pmid_arxiv_none(self):
+        entries, _ = self._parse(self.RIS)
+        routes = {e["citekey"]: vp.bib_entry_route(vp.ris_to_bib_fields(e["fields"]))
+                  for e in entries}
+        self.assertEqual(routes["ris32966344"][:2], ("pmid", "32966344"))
+        c = routes["ris32966344"][2]
+        self.assertEqual(c["claimed_journal"], "PLoS ONE")
+        self.assertEqual(c["claimed_year"], "2020")
+        self.assertEqual(routes["ris2"][:2], ("arxiv", "1706.03762"))
+        self.assertEqual(routes["ris3"][0], "none")
+
+    def test_multi_au_joined_and_repeat_tag(self):
+        entries, _ = self._parse(
+            "TY  - JOUR\nAU  - A One\nAU  - B Two\nTI  - T\nER  - \n")
+        fields = vp.ris_to_bib_fields(entries[0]["fields"])
+        self.assertEqual(fields["author"], "A One and B Two")
+
+    def test_export_ris_roundtrip(self):
+        results = [{"pmid": "32966344", "doi": "10.1371/journal.pone.0239699",
+                    "verdict": "correct", "valid": True, "retracted": False,
+                    "title": "City size and the spreading of COVID-19 in Brazil",
+                    "journal": "PLoS ONE", "pubdate": "2020-08-15",
+                    "authors": "Silva Junior, Other"},
+                   {"pmid": "111", "verdict": "partial", "valid": True,
+                    "retracted": False, "title": "Partial paper",
+                    "journal": "J", "pubdate": "2019", "authors": "A B",
+                    "details": "title mismatch"}]
+        ris_out = vp.generate_ris(results)
+        entries, issues = self._parse(ris_out)
+        self.assertEqual(issues, [])
+        self.assertEqual(len(entries), 2)
+        kinds = {e["citekey"]: vp.bib_entry_route(vp.ris_to_bib_fields(e["fields"]))[:2]
+                 for e in entries}
+        self.assertEqual(kinds["ris32966344"], ("pmid", "32966344"))
+        self.assertIn("PARTIAL MATCH", entries[1]["fields"].get("n1", ""))
+        self.assertEqual(entries[1]["entry_type"], "DATA")
+
+    def test_lint_ris_flags(self):
+        import tempfile as _tf, os as _os, subprocess as _sp
+        with _tf.TemporaryDirectory() as td:
+            p = _os.path.join(td, "bad.ris")
+            open(p, "w", encoding="utf-8").write("TY  - JOUR\nER  - \n")
+            r = _sp.run([sys.executable,
+                         str(Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"),
+                         "--lint-claims", p], capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 1)
+        out = r.stdout + r.stderr
+        for frag in ("cannot be routed", "stays unknown (no cross-check possible)"):
+            self.assertIn(frag, out)
+
+    def test_parser_continuation_folds_into_route(self):
+        # strict-round P1 lock: continuation lines fold into the LOWERCASE
+        # storage key — the first cut wrote a phantom uppercase key and the
+        # folded text vanished, truncating claimed titles into false
+        # mismatches on wrapped (Ovid-style) exports
+        wrapped = ("TY  - JOUR\n"
+                   "TI  - Trial of drug X versus placebo for prevention of\n"
+                   "recurrent events in adults with chronic disease\n"
+                   "DO  - 10.1371/journal.pone.0239699\n"
+                   "ER  - \n")
+        entries, issues = self._parse(wrapped)
+        self.assertEqual(issues, [])
+        self.assertEqual(entries[0]["fields"]["ti"],
+                         "Trial of drug X versus placebo for prevention of "
+                         "recurrent events in adults with chronic disease")
+
+    def test_lint_ris_entry_type_cannot_spoof_severity(self):
+        import tempfile as _tf, os as _os, subprocess as _sp
+        with _tf.TemporaryDirectory() as td:
+            p = _os.path.join(td, "evil.ris")
+            open(p, "w", encoding="utf-8").write(
+                "TY  - X: WARN duplicate of @fake\nTI  - T\nER  - \n")
+            r = _sp.run([sys.executable,
+                         str(Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py"),
+                         "--lint-claims", p], capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("1 error(s)", r.stdout + r.stderr)
+
+    def test_ris_bom_tolerated(self):
+        entries, issues = self._parse(
+            "\ufeffTY  - JOUR\nTI  - T\nDO  - 10.1/x\nER  - \n")
+        self.assertEqual(issues, [])
+        self.assertEqual(len(entries), 1)
+
+    def test_unterminated_record_diagnosed(self):
+        entries, issues = self._parse("TY  - JOUR\nTI  - Never closed\n")
+        self.assertEqual(len(entries), 1)
+        self.assertTrue(any("unterminated" in i for i in issues))
 
 
 if __name__ == "__main__":
