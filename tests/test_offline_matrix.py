@@ -493,8 +493,9 @@ class TestAuthorVerification(_Reset):
         r = vp.cross_check_citation(claimed, actual)
         self.assertEqual(r.get("author_check"), "skipped (cross-language CJK↔Latin)")
         self.assertTrue(r["journal_match"] and r["year_match"])
-        # review P1: comparable fields unanimous -> correct, never mismatch
-        self.assertEqual(r["verdict"], "correct")
+        # review P1: comparable fields unanimous -> never mismatch
+        # v3.8.0 (ub02 B3): title-less claims cap at partial per the docs
+        self.assertEqual(r["verdict"], "partial")
 
     def test_claimed_full_name_token_extracted(self):
         # "Zaripova A" as a claimed token must extract to "zaripova" (v2.5.0)
@@ -882,12 +883,14 @@ class TestAttackRegressions(_Reset):
 
     def test_authors_only_correct_claim_not_mismatch(self):
         # attacker P0: title omitted, authors correct -> was accused "mismatch"
+        # v3.8.0 (ub02 B3): still never mismatch, but now capped at partial —
+        # the documented ladder promises title-less claims never reach correct
         claimed = {"claimed_title": "", "claimed_authors": ["Gattorno", "Hofer"],
                    "claimed_journal": "", "claimed_year": ""}
         actual = {"title": "", "authors": ["Gattorno M", "Hofer M"],
                   "journal": "", "pubdate": ""}
         r = vp.cross_check_citation(claimed, actual)
-        self.assertEqual(r["verdict"], "correct")
+        self.assertEqual(r["verdict"], "partial")
         self.assertIn("all comparable fields match", r["details"])
 
     def test_authors_only_wrong_journal_partial_not_mismatch(self):
@@ -1796,6 +1799,91 @@ ER  -
         entries, issues = self._parse("TY  - JOUR\nTI  - Never closed\n")
         self.assertEqual(len(entries), 1)
         self.assertTrue(any("unterminated" in i for i in issues))
+
+
+class TestV380(_Reset):
+    """v3.8.0: verdict-ladder corrections from the independent external
+    audit (ub02 note_1791303399_57cf48) — B1/B2/B3 locked."""
+
+    def test_b1_author_line_not_taken_as_title(self):
+        # wrapped citation after preceding prose: segments[1] is the author
+        # line and must NOT become the claimed title
+        ctx = ("Early work established the classification framework [1]. "
+               "Zaripova LN, Midgley A, Christmas SE. Juvenile idiopathic "
+               "arthritis: from aetiopathogenesis to therapeutic approaches. "
+               "Pediatr Rheumatol Online J. 2021;19(1):85. PMID: 34425842.")
+        c = vp.parse_citation_context(ctx)
+        self.assertEqual(c["claimed_title"],
+                         "Juvenile idiopathic arthritis: from aetiopathogenesis to therapeutic approaches")
+        self.assertTrue(any("Midgley" in a or "Zaripova" in a
+                            for a in c["claimed_authors"]))
+
+    def test_b1_paragraph_initial_form_unchanged(self):
+        c = vp.parse_citation_context(
+            "Ravelli A, Martini A, et al. Felty syndrome. Ann Rheum Dis. 2003. PMID: 12730673")
+        self.assertEqual(c["claimed_title"], "Felty syndrome")
+
+    def test_b2_entirely_different_authors_cap_at_partial(self):
+        cross = vp.cross_check_citation(
+            {"claimed_title": "Effect of cement space on marginal discrepancy",
+             "claimed_authors": ["Croissant"], "claimed_journal": "Dent Mater J",
+             "claimed_year": "2021"},
+            {"title": "Effect of cement space on marginal discrepancy and retention of CAD/CAM crown",
+             "authors": ["Hassan LA", "Goo CL"], "journal": "Dent Mater J",
+             "pubdate": "2021"})
+        self.assertEqual(cross["verdict"], "partial")
+        self.assertIn("entirely different", cross["details"])
+
+    def test_b2_partial_surname_overlap_keeps_correct(self):
+        cross = vp.cross_check_citation(
+            {"claimed_title": "Effect of cement space on marginal discrepancy and retention",
+             "claimed_authors": ["Hassan"], "claimed_journal": "Dent Mater J",
+             "claimed_year": "2021"},
+            {"title": "Effect of cement space on marginal discrepancy and retention of CAD/CAM crown",
+             "authors": ["Hassan LA", "Goo CL"], "journal": "Dent Mater J",
+             "pubdate": "2021"})
+        self.assertEqual(cross["verdict"], "correct")
+
+    def test_b3_title_less_caps_at_partial(self):
+        cross = vp.cross_check_citation(
+            {"claimed_authors": ["Gattorno"], "claimed_journal": "Ann Rheum Dis",
+             "claimed_year": "2019"},
+            {"title": "Classification criteria for autoinflammatory recurrent fevers",
+             "authors": ["Gattorno"], "journal": "Ann Rheum Dis", "pubdate": "2019"})
+        self.assertEqual(cross["verdict"], "partial")
+        self.assertIn("feed the title", cross["details"])
+
+    def test_b3_cjk_skip_title_less_caps_at_partial(self):
+        cross = vp.cross_check_citation(
+            {"claimed_authors": ["张三"], "claimed_journal": "Lancet",
+             "claimed_year": "2007"},
+            {"title": "Some paper", "authors": ["Zhang San"],
+             "journal": "Lancet", "pubdate": "2007 Jun"})
+        self.assertEqual(cross["verdict"], "partial")
+
+    def test_b1_short_word_title_not_misshifted(self):
+        # strict-round P1: a prose-led SHORT-WORD title ("Use of CT in ICU")
+        # has no author-line features — must not be treated as an author
+        # segment (the unguarded shift turned correct into mismatch)
+        c = vp.parse_citation_context(
+            "We assessed imaging strategies. Use of CT in ICU. Intensive Care "
+            "Med. 2021;49:85. PMID: 34425842.")
+        self.assertEqual(c["claimed_title"], "Use of CT in ICU")
+
+    def test_b1_van_dijk_form_shifts(self):
+        # particle surnames with a lone initial still read as an author line
+        c = vp.parse_citation_context(
+            "Prior work set the stage. Gattorno A, Van Dijk M. Classification "
+            "criteria for autoinflammatory recurrent fevers. Ann Rheum Dis. "
+            "2019. PMID: 31018962.")
+        self.assertEqual(c["claimed_title"],
+                         "Classification criteria for autoinflammatory recurrent fevers")
+
+    def test_ladder_doc_promise_consistency(self):
+        # the FAQ/anti-patterns promise must match behavior — grep-guard it
+        sk = Path(__file__).resolve().parent.parent / "SKILL.md"
+        text = sk.read_text(encoding="utf-8")
+        self.assertIn("caps at `partial`", text)
 
 
 if __name__ == "__main__":

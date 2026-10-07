@@ -10,7 +10,8 @@ claims.sample.csv — reference format for --claims-file
   deliberately inexact title → partial (title mismatch, everything else
   matches — demonstrates the partial rung, not a data error); the
   1706.03762 row → correct; the doi-only 10.1371 row → correct (its
-  second author "Other" is a synthetic placeholder); the 24476887 row
+  second author "Other" is a synthetic placeholder; v3.8.0's
+  mis-attribution cap means a wrong author set would drop it to partial); the 24476887 row
   (STAP cells) is RETRACTED on purpose → RETRACTED flag with a partial
   cap — it demonstrates retraction detection, not a data error
 

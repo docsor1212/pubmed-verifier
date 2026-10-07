@@ -297,7 +297,7 @@ record("T19 DOI claims retraction cap (claimed correct → partial)",
 import tempfile
 bib_content = '''@article{covid2020,
   title = {City size and the spreading of COVID-19 in Brazil},
-  author = {Silva Junior},
+  author = {Ribeiro},
   journal = {PLoS ONE},
   year = {2020},
   doi = {10.1371/journal.pone.0239699}

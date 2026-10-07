@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v3.7.0
+PMID Citation Verifier -- PubMed E-utilities API v3.8.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -82,8 +82,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "3.7.0"
-_UA_TOOL = "pubmed-verifier/3.7 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "3.8.0"
+_UA_TOOL = "pubmed-verifier/3.8 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -925,18 +925,47 @@ def parse_citation_context(context: str) -> dict:
     segments = re.split(r'\.\s+', protected)
     segments = [s.replace('\x00', '.').strip() for s in segments if s.strip()]
 
+    # v3.8.0 (ub02 B1): when the citation is NOT the first sentence of its
+    # block, segments[0] is preceding prose and segments[1] is the AUTHOR
+    # line ("Zaripova LN, Midgley A, Christmas SE") — treating it as the
+    # claimed title mis-reported correct references as mismatch. If
+    # segments[1] is entirely author-shaped, the title lives in segments[2].
+    # NOTE: the initials group must stay case-SENSITIVE (scoped (?-i:...)) —
+    # under re.I it swallows short lowercase words ("of", "in") and turned
+    # short-word titles like "Use of CT in ICU" into fake author lines
+    _AUTHOR_SEG = re.compile(
+        r"^[A-ZÀ-ÿ][\w'’.-]+(?:(?-i: [A-Z]{1,3})\b\.?)+"
+        r"(?:(?:,| and | &) [A-ZÀ-ÿ][\w'’.-]+(?:(?-i: [A-Z]{1,3})\b\.?)+)*$"
+        r"(?:,? (?i:et al))\.?$", re.I)
+    title_idx = 1
+    author_seg_idx = 0
+    if len(segments) >= 3 and segments[0]:
+        seg1 = segments[1].strip().rstrip(".")
+        # strong author-line features: "et al", a full author-shape match, a
+        # lone-initial token ("Van Dijk M"), or comma groups that EACH carry
+        # a case-sensitive initials token — a bare comma is not enough
+        # (titles like "trials, e.g. dosage effects" contain commas too)
+        _groups = [g for g in (x.strip().rstrip(".") for x in seg1.split(",")) if g]
+        _comma_authorish = len(_groups) >= 2 and all(
+            re.search(r"(?-i:\b[A-Z]{1,3}\b\.?)", g) for g in _groups)
+        authorish = ("et al" in seg1.lower()
+                     or _AUTHOR_SEG.match(seg1)
+                     or _comma_authorish
+                     or re.search(r"(?:^|[\s,])[A-Z]\.?(?=$|[\s,])", seg1))
+        if authorish and not _AUTHOR_SEG.match(segments[0].strip().rstrip(".")):
+            title_idx = 2
+            author_seg_idx = 1
     if len(segments) >= 2:
-        # First segment: authors
-        author_str = segments[0]
-        claimed["claimed_authors"] = _extract_author_surnames(author_str)
-        
-        # Second segment: title
-        claimed["claimed_title"] = segments[1].strip().rstrip(".")
+        # First segment: authors (the author-shaped segment when shifted)
+        claimed["claimed_authors"] = _extract_author_surnames(segments[author_seg_idx])
+
+        # Title segment (shifted past an author-shaped segment when present)
+        claimed["claimed_title"] = segments[title_idx].strip().rstrip(".")
 
         # Try to find journal in remaining segments if not already found
-        if not claimed["claimed_journal"] and len(segments) >= 3:
+        if not claimed["claimed_journal"] and len(segments) >= title_idx + 2:
             # Journal is typically the segment after title, possibly with year/volume
-            for seg in segments[2:]:
+            for seg in segments[title_idx + 1:]:
                 # Skip volume/issue patterns like "2021;17(4):e90285"
                 if re.match(r'^\d{4};', seg):
                     continue
@@ -1146,6 +1175,7 @@ def cross_check_citation(claimed: dict, actual: dict) -> dict:
                 result["author_match"] = hits >= 2
             else:
                 result["author_match"] = hits >= 1
+            result["_author_hits"] = hits   # internal: 0 = entirely different set
             checks_run += 1
 
     # --- Journal match ---
@@ -1194,13 +1224,15 @@ def cross_check_citation(claimed: dict, actual: dict) -> dict:
     author_skipped = bool(result.get("author_check"))
 
     # Cross-language author skip + no claimed title + all comparable fields
-    # match: the comparable evidence is unanimous -- correct, not mismatch
-    # (v2.5.0 review P1).
+    # match. v3.8.0 (ub02 B3): the documented ladder caps title-less claims
+    # at partial — same author+journal+year can cover several papers — so
+    # the former "correct" here becomes an encouraging partial.
     if author_skipped and not claimed.get("claimed_title") \
             and result["journal_match"] and result["year_match"]:
-        result["verdict"] = "correct"
-        result["details"] = ("author skipped (cross-language); all comparable "
-                             "fields match")
+        result["verdict"] = "partial"
+        result["details"] = ("title not claimed (author skipped cross-language); "
+                             "all comparable fields match — feed the title for a "
+                             "full verdict")
         return result
 
     author_skipped = bool(result.get("author_check"))
@@ -1210,17 +1242,12 @@ def cross_check_citation(claimed: dict, actual: dict) -> dict:
     # to the mismatch ladder accused perfectly-cited references of being
     # hallucinations when the user simply omitted the title column.
     if not claimed.get("claimed_title") and checks_run > 0:
-        matched_count = sum([result["title_match"], result["author_match"],
+        # v3.8.0 (ub02 B3): the FAQ, anti-patterns and boundaries all promise
+        # that title-less claims never reach correct — the former
+        # all-fields-match shortcut contradicted the docs and the five-state
+        # definition. Everything here now caps at partial.
+        matched_count = sum([result["author_match"],
                              result["journal_match"], result["year_match"]])
-        if matched_count == checks_run and not author_skipped:
-            result["verdict"] = "correct"
-            result["details"] = "title not claimed; all comparable fields match"
-            return result
-        if author_skipped and matched_count == checks_run:
-            result["verdict"] = "correct"
-            result["details"] = ("author skipped (cross-language); all comparable "
-                                 "fields match")
-            return result
         miss = []
         if claimed.get("claimed_authors") and not author_skipped and not result["author_match"]:
             miss.append("author differs")
@@ -1230,15 +1257,33 @@ def cross_check_citation(claimed: dict, actual: dict) -> dict:
             miss.append("year differs")
         result["verdict"] = "partial"
         result["details"] = ("title not claimed; " +
-                             ("; ".join(miss) if miss else "comparable fields partially match"))
+                             ("; ".join(miss) if miss else
+                              "all comparable fields match — feed the title for a full verdict"))
         return result
 
     if result["title_match"] and (result["author_match"] or result["journal_match"]):
-        result["verdict"] = "correct"
-        if not result["author_match"]:
-            details_parts.append("author differs slightly")
-        if not result["journal_match"]:
-            details_parts.append("journal name variant")
+        # v3.8.0 (ub02 B2): an ENTIRELY different author set (comparison ran,
+        # zero surname hits) is a real mis-attribution — cap at partial even
+        # when title and journal match. Partial surname overlap (abbreviated
+        # or reordered names) keeps correct, guarding against noise.
+        _raw_authors = " ".join(str(a) for a in (actual.get("authors") or []))
+        _token_anywhere = any(len(str(t)) >= 4 and str(t) in _raw_authors
+                              for t in claimed.get("claimed_authors", []))
+        if (claimed.get("claimed_authors") and not author_skipped
+                and result["author_match"] is False
+                and result.get("_author_hits") == 0
+                and not _token_anywhere
+                and result["journal_match"]):
+            result["verdict"] = "partial"
+            details_parts.append("author set entirely different (mis-attribution)")
+        else:
+            result["verdict"] = "correct"
+            if not result["author_match"] and not author_skipped:
+                details_parts.append("author differs slightly")
+            elif author_skipped:
+                details_parts.append("author skipped (cross-language)")
+            if not result["journal_match"]:
+                details_parts.append("journal name variant")
     elif result["author_match"] and result["journal_match"] and not result["title_match"]:
         result["verdict"] = "partial"
         details_parts.append("title differs but author+journal match")
@@ -1734,9 +1779,11 @@ def _doi_claim_from_item(item: dict) -> dict:
 # ── Report generation ──
 
 _VERDICT_LADDER = (
-    "correct = title match AND (author or journal match); "
+    "correct = title match AND (author or journal match), unless capped; "
     "partial = title-only match, or author+journal match without title, "
-    "or capped from correct by retraction/DOI-splice signals; "
+    "or capped from correct by retraction/DOI-splice signals, "
+    "or author-set mis-attribution (zero surname overlap), "
+    "or title-less claims (all comparable fields may match); "
     "mismatch = none of the above; "
     "unknown = insufficient comparable claims or unreachable sources. "
     "Single-letter author initials never match; CJK↔Latin author names are "
@@ -2996,7 +3043,12 @@ def main():
         for cd, claimed in explicit_doi.items():
             doi_inputs.append((cd, "claims", claimed))
     elif not pmid_entries and not doi_inputs and not arxiv_inputs:
-        parser.print_help()
+        if explicit_claims is not None or explicit_doi is not None:
+            print("No usable claims in the input — check the claims payload "
+                  "or file (--lint-claims validates files offline).",
+                  file=sys.stderr)
+        else:
+            parser.print_help()
         sys.exit(1)
 
     # v3.6.0: explicit CLI/claims inputs outrank bibliography duplicates in
@@ -3317,6 +3369,8 @@ def main():
     last_call = 0.0
     for aid, src, claimed_aid in arxiv_inputs:
         if aid.lower() in arxiv_seen:
+            print(f"  note: duplicate arXiv ID {aid} merged into the first "
+                  f"occurrence (later claims ignored)", file=sys.stderr, flush=True)
             continue
         arxiv_seen.add(aid.lower())
         arxiv_processed += 1

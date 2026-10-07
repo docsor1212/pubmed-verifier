@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 3.7.0
+version: 3.8.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI, DOI check, validate citations, PubMed citation verifier, BibTeX audit.
 ---
 
-# PubMed Citation Verifier v3.7.0
+# PubMed Citation Verifier v3.8.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -122,6 +122,12 @@ mismatch* — skip them for bulk sweeps, run them on the flagged subset.
 Context parsing is heuristic (v3.3.0 guards common abbreviations, exotic formatting can still mis-split).
 For precise verification — or DOIs in claims (splice detection needs `doi`)
 — feed structured JSON/CSV claims.
+
+**My citation text is in Chinese — the scan parses little?**
+Context parsing is tuned for standard English reference formats; Chinese
+prose around `[PMID: xxx]` markers mostly yields nothing comparable
+(honest `unknown`s). Feed the metadata via `--claims-file` instead —
+structured input gets full verdicts regardless of language.
 
 **Slow or unstable network (China)?**
 Standard `HTTPS_PROXY`/`HTTP_PROXY` env vars are honored natively; raise
@@ -520,6 +526,29 @@ verified entries as `TY JOUR`, partials as `TY DATA` with a PARTIAL note.
 `--lint-claims refs.ris` validates offline (unroutable records, missing
 titles, duplicates, unterminated records).
 
+## v3.8.0 — verdict-ladder corrections (independent external test audit)
+
+An independent real-data audit (24 scenarios, registry-ground-truthed) found
+three judgment-ladder defects; all three are fixed and locked:
+
+- **B1 scan false positives** — when a citation is not the first sentence of
+  its block, the author line was taken as the claimed title (correct
+  references reported as mismatch). The parser now shifts past an
+  author-shaped segment.
+- **B2 author mis-attribution** — a claimed author set entirely different
+  from the registry (zero surname overlap) was still reported as correct
+  when title and journal matched; it now caps at partial. Partial surname
+  overlap (abbreviated or reordered names) keeps correct.
+- **B3 title-less claims** — author+journal+year matches without a claimed
+  title now cap at partial, exactly as the FAQ/anti-patterns/boundaries
+  always promised (the same author/journal/year can cover several papers).
+  Cross-language author skips follow the same cap.
+- Also: duplicate arXiv IDs announce their merge on stderr (run
+  `--lint-claims` to catch duplicate claim rows offline); the
+  cross-language skip no longer coexists with contradictory details text;
+  empty `--claims` gets a one-line hint; docs state that Chinese-language
+  citation contexts parse weakly — use `--claims-file`.
+
 ## How it works
 
 1. **Extract + parse context** — finds `PMID: 12345678` / PubMed URLs in
@@ -597,10 +626,11 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v3.7.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v3.8.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `examples/claims.sample.csv` | Reference format for `--claims-file` (incl. a DOI-only row) |
 | `examples/refs.sample.bib` | Sample bibliography for `--bibliography` (DOI/PMID/arXiv routing) |
+| `examples/refs.sample.ris` | Sample RIS bibliography (Zotero/EndNote/Mendeley) |
 | `tests/` | Offline matrix + real-network acceptance (repo only, not in the package) |
 
 ## License
