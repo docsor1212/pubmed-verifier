@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 3.8.0
+version: 3.9.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI, DOI check, validate citations, PubMed citation verifier, BibTeX audit.
 ---
 
-# PubMed Citation Verifier v3.8.0
+# PubMed Citation Verifier v3.9.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -87,6 +87,9 @@ python3 scripts/verify_pmids.py --source /path/to/project --diff audit.json --ou
 # Verify arXiv IDs (preprints) — mixed audits supported
 python3 scripts/verify_pmids.py --arxivs "2401.12345,cs/0211004" --no-cache
 
+# Pre-flight: are the four data sources reachable right now?
+python3 scripts/verify_pmids.py --check-net
+
 # Audit a BibTeX or RIS bibliography file directly (PMID > DOI > arXiv routing)
 python3 scripts/verify_pmids.py --bibliography refs.bib --no-cache
 python3 scripts/verify_pmids.py --bibliography refs.ris --no-cache --export-ris verified.ris
@@ -124,10 +127,11 @@ For precise verification — or DOIs in claims (splice detection needs `doi`)
 — feed structured JSON/CSV claims.
 
 **My citation text is in Chinese — the scan parses little?**
-Context parsing is tuned for standard English reference formats; Chinese
-prose around `[PMID: xxx]` markers mostly yields nothing comparable
-(honest `unknown`s). Feed the metadata via `--claims-file` instead —
-structured input gets full verdicts regardless of language.
+GB/T 7714-style references (……标题[J]. 刊名, 年… PMID: xxx) parse since
+v3.9.0 — title/journal comparisons against Latin registries are skipped
+cross-language, so verdicts rest on year/DOI evidence. Free Chinese prose
+without a PMID marker still yields little — feed `--claims-file` for full
+verdicts regardless of language.
 
 **Slow or unstable network (China)?**
 Standard `HTTPS_PROXY`/`HTTP_PROXY` env vars are honored natively; raise
@@ -549,6 +553,24 @@ three judgment-ladder defects; all three are fixed and locked:
   empty `--claims` gets a one-line hint; docs state that Chinese-language
   citation contexts parse weakly — use `--claims-file`.
 
+## v3.9.0 — Chinese references (GB/T 7714), network pre-flight, Python API
+
+- **GB/T 7714 Chinese references parse** — `……标题[J]. 刊名, 年… PMID: xxx`
+  contexts now yield the title (via the `[J]/[M]/[R]` type marker),
+  authors, journal, year and any DOI that follows the PMID. The title
+  comparison against a Latin registry title is skipped cross-language
+  (never a mismatch source); a DOI in the reference is cross-checked
+  against the registry like any claims DOI. Requires a PMID marker per
+  reference.
+- **`--check-net`** — probes the four data sources (5 s each), shows your
+  proxy state and prints practical next steps when something is
+  unreachable. Run it when results come back unknown on a constrained
+  network.
+- **Python API reference** — `references/python_api.md` documents the
+  stable importable surfaces (`fetch_summaries`, `cross_check_citation`,
+  `verify_doi_entry`, `parse_citation_context`, `suggest_correct_pmid`)
+  with copy-paste examples.
+
 ## How it works
 
 1. **Extract + parse context** — finds `PMID: 12345678` / PubMed URLs in
@@ -626,8 +648,9 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v3.8.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v3.9.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
+| `references/python_api.md` | Calling the verifier from Python (stable surfaces + examples) |
 | `examples/claims.sample.csv` | Reference format for `--claims-file` (incl. a DOI-only row) |
 | `examples/refs.sample.bib` | Sample bibliography for `--bibliography` (DOI/PMID/arXiv routing) |
 | `examples/refs.sample.ris` | Sample RIS bibliography (Zotero/EndNote/Mendeley) |

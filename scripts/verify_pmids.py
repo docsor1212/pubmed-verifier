@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v3.8.0
+PMID Citation Verifier -- PubMed E-utilities API v3.9.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -82,8 +82,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "3.8.0"
-_UA_TOOL = "pubmed-verifier/3.8 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "3.9.0"
+_UA_TOOL = "pubmed-verifier/3.9 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -901,7 +901,12 @@ def parse_citation_context(context: str) -> dict:
         claimed["claimed_journal"] = journal_italic[0].strip().rstrip(".")
     
     # Strategy: find PMID position, work backwards
-    pmid_match = re.search(r'PMID[:\s]*(\d{4,9})', text, re.IGNORECASE)
+    # v3.9.0 strict-round (ub02-style dense lists): anchor on the LAST PMID
+    # in the context — extract_pmids_from_file hands us the 200 chars BEFORE
+    # this record's PMID, so the nearest marker is this record's; re.search
+    # used to grab a NEIGHBOUR's PMID and cross-contaminate claims.
+    _pmid_matches = list(re.finditer(r'PMID[:\s]*(\d{4,9})', text, re.IGNORECASE))
+    pmid_match = _pmid_matches[-1] if _pmid_matches else None
     if not pmid_match:
         # Try to parse without PMID anchor
         _parse_freeform_citation(text, claimed)
@@ -909,6 +914,71 @@ def parse_citation_context(context: str) -> dict:
 
     # Get text before PMID
     pre_text = text[:pmid_match.start()].strip().rstrip(".")
+
+    # v3.9.0 (ub02 B5): GB/T 7714-style Chinese references ("……标题[J]. 刊名, 年…"
+    # with a PMID marker) — the English sentence parser extracts almost nothing
+    # here. Pull the reliably-present fields; the title comparison against
+    # Latin registries is skipped cross-language in cross_check, so a Chinese
+    # title can never manufacture a false mismatch.
+    if any('\u4e00' <= ch <= '\u9fff' for ch in pre_text):
+        claimed["claimed_source_format"] = "gbt7714"
+        # Scope to THIS record: the scan window may span the previous
+        # reference (including its "PMID: xxx." tail). Everything the GB/T
+        # extractor looks at must come after the LAST PMID marker —
+        # otherwise the neighbour's DOI/year leak into this claim and
+        # manufacture false splice accusations (v3.9.0 strict-round P0).
+        work = pre_text
+        for pm in re.finditer(r'PMID[:：]?\s*\d{4,9}', pre_text, re.IGNORECASE):
+            work = pre_text[pm.end():].lstrip(" .。、]　")
+        # drop the previous record's trailing DOI/URL tail: scope from the
+        # last record-start marker ("[2]" / "2.") if one is present
+        rec_start = None
+        for rm in re.finditer(r'(?:^|\n)\s*\[?\d+\]?[.．、]?\s*', work):
+            rec_start = rm
+        if rec_start and rec_start.end() < len(work):
+            work = work[rec_start.end():]
+        # The type tag ([J]/[M]/[R]...) closes the title sentence — take the
+        # LAST sentence-ending before it so ASCII ". " separators (GB/T uses
+        # them too) cannot drag the author segment into the title
+        tag_m = None
+        for tm in re.finditer(r'\[([JMRDSC])\]', work):
+            tag_m = tm
+        sent_ends = [rm.end() for rm in re.finditer(r'[.。．]\s*', work[:tag_m.start()])] if tag_m else []
+        seg_start = max(sent_ends) if sent_ends else 0
+        title_txt = work[seg_start:tag_m.start()].strip() if tag_m else ""
+        title_txt = re.sub(r'^\[?\d+\]?[.．、]?\s*', '', title_txt)
+        if 5 <= len(title_txt) <= 140:
+            claimed["claimed_title"] = " ".join(title_txt.split())
+            head = work[:seg_start].strip()
+            head = re.sub(r'^\s*\[?\d+\]?[.．、]?\s*', '', head)
+            head = head.rstrip("．.。,， ")
+            if head:
+                claimed["claimed_authors"] = [
+                    a.strip() for a in re.split(r"[，,;；]|\s{2,}", head) if a.strip()]
+            if tag_m:
+                j_m = re.search(r'\[[JMRDSC]\][.．]?\s*([^,，.。\[\]]{2,40})', work[tag_m.start():])
+                if j_m:
+                    claimed["claimed_journal"] = j_m.group(1).strip()
+        # greedy: internal dots are part of the DOI; a trailing sentence
+        # period is stripped by _clean_doi. URL forms are unwrapped too.
+        # Scoped to `work` (previous record's tail can never leak) plus the
+        # reference's own tail after the PMID (up to 80 chars, stopping at
+        # the next PMID marker) — GB/T puts the DOI there.
+        doi_m = re.search(
+            r'(?:https?://(?:dx\.)?doi\.org/|\bdoi\s*[:：]?\s*)(10\.\S+)', work)
+        if not doi_m:
+            tail = text[pmid_match.end():pmid_match.end() + 80]
+            tail = re.split(r'PMID[:：]?\s*\d{4,9}', tail)[0]
+            doi_m = re.search(
+                r'(?:https?://(?:dx\.)?doi\.org/|\bdoi\s*[:：]?\s*)(10\.\S+)', tail)
+        if doi_m:
+            cd = _clean_doi(doi_m.group(1))
+            if cd:
+                claimed["claimed_doi"] = cd
+        if claimed.get("claimed_title") or claimed.get("claimed_doi"):
+            return claimed
+        # nothing reliable — fall through to the English heuristics, which
+        # will honestly yield little for Chinese prose (documented)
 
     # Split on ". " — first segment is usually authors, second is title.
     # v3.3.0: sentence-internal abbreviations ("U.S.", "e.g.", "vs.", "Vol.")
@@ -1054,6 +1124,9 @@ def _sequence_similarity(s1: str, s2: str) -> float:
     return SequenceMatcher(None, _clean_for_sequencematch(s1), _clean_for_sequencematch(s2)).ratio()
 
 
+_HAS_CJK = re.compile(r'[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]')
+
+
 def cross_check_citation(claimed: dict, actual: dict) -> dict:
     """Compare claimed citation metadata against PubMed actual metadata.
     
@@ -1097,7 +1170,13 @@ def cross_check_citation(claimed: dict, actual: dict) -> dict:
         checks_run += 1
 
     # --- Title match (dual strategy: word overlap + SequenceMatcher) ---
-    if claimed.get("claimed_title") and actual.get("title"):
+    # v3.9.0: a CJK claimed title against a Latin registry title (or reverse)
+    # carries no signal — skip it honestly (never counted as a miss), so
+    # Chinese-format citations cannot manufacture false mismatches.
+    title_cross_language = (
+        claimed.get("claimed_title") and actual.get("title")
+        and bool(_HAS_CJK.search(claimed["claimed_title"])) != bool(_HAS_CJK.search(actual["title"])))
+    if claimed.get("claimed_title") and actual.get("title") and not title_cross_language:
         claimed_words = _normalize_text(claimed["claimed_title"])
         actual_words = _normalize_text(actual["title"])
         
@@ -1116,6 +1195,9 @@ def cross_check_citation(claimed: dict, actual: dict) -> dict:
         result["title_match"] = word_ratio >= 0.5 or seq_ratio >= 0.90
         result["_title_word_ratio"] = round(word_ratio, 3)
         result["_title_seq_ratio"] = round(seq_ratio, 3)
+        checks_run += 1
+    elif title_cross_language:
+        result["title_check"] = "skipped (cross-language CJK↔Latin)"
         checks_run += 1
 
     # --- Author match ---
@@ -1259,6 +1341,33 @@ def cross_check_citation(claimed: dict, actual: dict) -> dict:
         result["details"] = ("title not claimed; " +
                              ("; ".join(miss) if miss else
                               "all comparable fields match — feed the title for a full verdict"))
+        return result
+
+    # v3.9.0: title skipped (cross-language CJK↔Latin) — never a mismatch
+    # source; the verdict rests on the comparable fields, capped at partial.
+    if result.get("title_check") and checks_run > 0:
+        result["title_match"] = None
+        miss = []
+        journal_cross_language = (
+            claimed.get("claimed_journal") and actual.get("journal")
+            and _HAS_CJK.search(claimed["claimed_journal"]) != bool(_HAS_CJK.search(actual["journal"])))
+        if claimed.get("claimed_authors") and not author_skipped and not result["author_match"]:
+            miss.append("author differs")
+        if claimed.get("claimed_journal") and not result["journal_match"]:
+            if journal_cross_language:
+                # 中文刊名 vs 拉丁注册名不可比——跳过而非判负（与 title/author 同规）
+                miss.append("journal skipped (cross-language)")
+                result["journal_match"] = None
+            else:
+                miss.append("journal differs")
+        if claimed.get("claimed_year") and not result["year_match"]:
+            miss.append("year differs")
+        result["verdict"] = "partial"
+        result["details"] = ("title skipped (cross-language CJK↔Latin); " +
+                             ("; ".join(miss) if miss else
+                              "comparable fields match — an English/romanized title "
+                              "enables full title verification"))
+        result["confidence"] = round(result["confidence"], 2)
         return result
 
     if result["title_match"] and (result["author_match"] or result["journal_match"]):
@@ -2795,6 +2904,41 @@ def lint_claims_ris(path: str) -> list:
     return issues
 
 
+def run_check_net() -> int:
+    """Pre-flight connectivity probe (v3.9.0): 5s per data source, prints
+    reachability + practical next steps. Exit 0 all reachable, 2 otherwise
+    (verification would honestly mark affected citations unknown)."""
+    targets = [
+        ("NCBI E-utilities", "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/einfo.fcgi"),
+        ("Europe PMC", "https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=test&format=json&pageSize=1"),
+        ("Crossref", "https://api.crossref.org/works/10.1038/nature12968"),
+        ("arXiv API", "https://export.arxiv.org/api/query?id_list=1706.03762&max_results=1"),
+    ]
+    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    print("Network pre-flight (5s timeout per source):")
+    print(f"  proxy env: {proxy or 'not set'}")
+    ok = 0
+    for name, url in targets:
+        t0 = time.time()
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": _UA_TOOL})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                code = r.status
+            ok += 1
+            print(f"  OK {name}: HTTP {code} ({time.time() - t0:.1f}s)")
+        except Exception as e:
+            print(f"  X  {name}: {type(e).__name__} {str(e)[:70]} ({time.time() - t0:.1f}s)")
+        time.sleep(0.5)
+    if ok == len(targets):
+        print("All data sources reachable.")
+        return 0
+    print(f"{len(targets) - ok}/{len(targets)} source(s) unreachable — verification "
+          f"marks affected citations as unknown (never invalid). Practical steps: "
+          f"set HTTPS_PROXY/HTTP_PROXY, or --meta-source europepmc when NCBI is "
+          f"blocked; re-run this check to confirm.")
+    return 2
+
+
 def run_claims_lint(path: str) -> int:
     """Print a lint report for a claims file; returns process exit code."""
     print(f"Linting claims file: {path}")
@@ -2871,11 +3015,17 @@ def main():
     parser.add_argument("--bibliography", metavar="FILE",
                         help="Verify a bibliography file (.bib BibTeX / .ris RIS): entries "
                              "route by PMID (field or note) > DOI > arXiv eprint/ID pattern")
+    parser.add_argument("--check-net", action="store_true",
+                        help="Probe the four data sources (5s each) and print "
+                             "reachability + next steps — run this when results "
+                             "come back unknown on a constrained network")
     parser.add_argument("--lint-claims", metavar="FILE",
                         help="Offline lint of a claims file (JSON/CSV/BibTeX/RIS): ID shapes, "
                              "missing titles, unknown columns, duplicate keys — no network")
     parser.add_argument("--version", action="version", version=f"pubmed-verifier {_TOOL_VERSION}")
     args = parser.parse_args()
+    if args.check_net:
+        sys.exit(run_check_net())
     if args.lint_claims:
         sys.exit(run_claims_lint(args.lint_claims))
 

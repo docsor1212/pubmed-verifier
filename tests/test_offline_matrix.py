@@ -1886,5 +1886,68 @@ class TestV380(_Reset):
         self.assertIn("caps at `partial`", text)
 
 
+class TestV390(_Reset):
+    """v3.9.0: GB/T 7714 Chinese reference parsing + title cross-language
+    skip + --check-net."""
+
+    def test_gbt7714_full_extraction(self):
+        c = vp.parse_citation_context(
+            "[1] 张三, 李四. 儿童风湿性疾病的诊断与治疗[J]. 中华儿科杂志, 2019, "
+            "57(4): 261-265. PMID: 31018962. doi:10.1136/annrheumdis-2019-215048")
+        self.assertEqual(c.get("claimed_source_format"), "gbt7714")
+        self.assertEqual(c["claimed_title"], "儿童风湿性疾病的诊断与治疗")
+        self.assertEqual(c["claimed_authors"], ["张三", "李四"])
+        self.assertEqual(c["claimed_journal"], "中华儿科杂志")
+        self.assertEqual(c["claimed_year"], "2019")
+        self.assertEqual(c["claimed_doi"], "10.1136/annrheumdis-2019-215048")
+
+    def test_gbt7714_ascii_period_handled(self):
+        c = vp.parse_citation_context(
+            "Zhang S, Li S. 儿童风湿性疾病的诊断与治疗[J]. 中华儿科杂志, 2019. PMID: 31018962")
+        self.assertEqual(c["claimed_title"], "儿童风湿性疾病的诊断与治疗")
+
+    def test_title_cross_language_skipped_never_mismatch(self):
+        cross = vp.cross_check_citation(
+            {"claimed_title": "儿童风湿性疾病的诊断与治疗",
+             "claimed_journal": "中华儿科杂志", "claimed_year": "2019"},
+            {"title": "Classification criteria for autoinflammatory recurrent fevers",
+             "authors": ["Gattorno"], "journal": "Ann Rheum Dis", "pubdate": "2019"})
+        self.assertEqual(cross.get("title_check"), "skipped (cross-language CJK↔Latin)")
+        self.assertIsNone(cross["title_match"])
+        self.assertEqual(cross["verdict"], "partial")
+        self.assertNotEqual(cross["verdict"], "mismatch")
+
+    def test_same_language_title_unaffected(self):
+        cross = vp.cross_check_citation(
+            {"claimed_title": "Classification criteria for autoinflammatory recurrent fevers",
+             "claimed_journal": "Ann Rheum Dis", "claimed_year": "2019"},
+            {"title": "Classification criteria for autoinflammatory recurrent fevers",
+             "authors": ["Gattorno"], "journal": "Ann Rheum Dis", "pubdate": "2019"})
+        self.assertEqual(cross["verdict"], "correct")
+        self.assertIsNone(cross.get("title_check"))
+
+    def test_check_net_blackhole_exit2(self):
+        import subprocess as _sp, os as _os
+        script = (Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py")
+        env = dict(os.environ)
+        for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
+                  "ALL_PROXY", "all_proxy"):
+            env[k] = "http://127.0.0.1:1"
+        r = _sp.run([sys.executable, str(script), "--check-net"],
+                    capture_output=True, text=True, timeout=120, env=env)
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(out.count(" X  "), 4)
+        self.assertIn("Practical steps", out)
+
+    def test_fields_title_none_when_skipped(self):
+        cross = vp.cross_check_citation(
+            {"claimed_title": "儿童风湿性疾病的诊断与治疗",
+             "claimed_journal": "中华儿科杂志", "claimed_year": "2019"},
+            {"title": "Some English title", "authors": ["A"],
+             "journal": "J", "pubdate": "2019"})
+        self.assertIsNone(cross["title_match"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
