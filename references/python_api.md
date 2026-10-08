@@ -1,7 +1,7 @@
 # Python API — calling pubmed-verifier from your code
 
 The whole tool is one stdlib-only module. Import it directly — no pip, no
-venv (Python 3.8+):
+venv (Python 3.9+):
 
 ```python
 import sys
@@ -67,6 +67,26 @@ cands = vp.suggest_correct_pmid({"claimed_title": "Juvenile idiopathic arthritis
 for c in cands[:3]:
     print(c["pmid"], c["title"][:60])   # abbreviated journal names can return [] — use the full NLM name
 ```
+
+## 6. Plain-text reference lists & formatted output (v4.0.0)
+
+```python
+entries, issues = vp.parse_plaintext_references("refs_list.txt")
+for e in entries:
+    print(e["key"], e["pmid"] or e["doi"] or e["arxiv_id"] or
+          "(title search)", e["claimed_title"][:50])
+
+# One markerless entry, verified by title search (honest route label):
+res, audit = vp.verify_title_entry(entries[0], "refs_list.txt")
+print(res["verdict"], res.get("resolved_by"))   # correct title_search
+
+# Render verified results as a numbered reference list:
+print(vp.generate_reference_list(results, "gbt"))       # also: vancouver / apa / ama
+```
+
+`parse_citation_context` accepts markerless Latin references since v4.0.0
+(returns `claimed_source_format: "plaintext"`); CJK entries without a
+PMID marker stay with the weak-parsing boundary.
 
 ## Notes
 

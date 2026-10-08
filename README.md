@@ -19,6 +19,8 @@ Academic projects routinely contain hundreds of PMID citations. Manual verificat
 - **Three citation types in one audit** — PMIDs, DOIs and arXiv IDs (preprints) verified in a single scan; arXiv IDs checked against the official API (nonexistent = fabrication signal); claims rows keyed by DOI get full verdicts, and preprints surface their published version of record
 - **Claims lint** — `--lint-claims file.csv` validates a claims file offline (ID shapes, missing titles, unknown columns, duplicates) before any verification run
 - **Bibliography audit** — `--bibliography refs.bib` / `refs.ris` verifies BibTeX and RIS files directly (Zotero/EndNote/Mendeley exports; entries route by PMID > DOI > arXiv with full cross-checks); round-trips with `--export-bibtex` / `--export-ris`
+- **Plain-text reference list parsing** — `--parse-text refs.txt` verifies a reference list copied straight out of a manuscript draft: numbered entries (`[1]`, `1.`) split cleanly, inline PMID/DOI/arXiv IDs route exactly, and a title-only entry resolves via PubMed title search (honestly labeled `resolved_by: title_search`, never a mismatch source)
+- **Formatted reference list export** — `--format-references out.txt --citation-style gbt|vancouver|apa|ama` renders verified entries as a ready-to-paste numbered list (GB/T 7714-2015, Vancouver, APA 7th, AMA 11th); partial entries go to a manual-review section, retracted ones are excluded with a warning — formatting that stands on registry-verified records
 - **Retraction detection for every citation** — the registry publication type ("Retracted Publication") flags retracted papers with no DOI or extra flags needed; Crossref `updated-by` adds the retraction-notice DOI
 - **Verified-bibliography export** — `--export-bibtex` writes correct entries as BibTeX, comments partial ones, excludes and counts the rest
 - **Submission-readiness verdict** — every report leads with `SUBMISSION READY` / `NOT SUBMISSION-READY` and per-problem counts
@@ -41,6 +43,12 @@ python3 scripts/verify_pmids.py --source /path/to/project --output report.html
 # Verify specific PMIDs
 python3 scripts/verify_pmids.py --pmids 31018962,22213727,999999999
 
+# Verify a reference list copied from a paper draft
+python3 scripts/verify_pmids.py --parse-text references.txt --no-cache
+
+# Format verified entries as a citation list (gbt | vancouver | apa | ama)
+python3 scripts/verify_pmids.py --parse-text references.txt --format-references refs_gbt.txt --citation-style gbt
+
 # Institutional mode: API key + polite pool
 python3 scripts/verify_pmids.py --source ./papers --verify-doi --ncbi-api-key $NCBI_API_KEY --mailto you@lab.org
 ```
@@ -56,6 +64,7 @@ python3 scripts/verify_pmids.py --source ./papers --verify-doi --ncbi-api-key $N
 | **Paper manuscript check** | Validate every PMID in your draft |
 | **Teaching material review** | Ensure lecture citations are accurate |
 | **Evidence library maintenance** | Periodic batch verification of reference databases |
+| **Draft reference list check & formatting** | Paste a manuscript's reference list, verify it, get a GB/T 7714 / APA list back |
 
 ## Real-World Results
 

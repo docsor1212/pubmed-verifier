@@ -8,6 +8,7 @@ exit 0 only when no FAIL. Uses real APIs (NCBI, Europe PMC, Crossref).
 """
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -350,6 +351,53 @@ with tempfile.TemporaryDirectory() as td:
 record("T21 workers DOI pipeline (fake DOIs invalid, CSV exported)",
        rc == 1 and csv_text.count("10.9999/fake") == 2,
        f"rc={rc} csv_rows={csv_text.count('10.9999/fake')}")
+
+# ── T22: --parse-text end-to-end (v4.0.0): exact routes + title search ──
+# Fixture built from LIVE registry truth (truth[] above) — hand-made titles
+# are fabricated data and the tool would (correctly) flag them as mismatch.
+import tempfile
+t_pmid = GOOD_PMIDS[0]
+t_info = truth[t_pmid]
+t_title = " ".join(t_info["title"].rstrip(".").split())
+t_doi = (t_info.get("doi") or "").split()[0]
+t_year = t_info["pubdate"][:4]
+refs_path = tempfile.mktemp(suffix=".txt")
+with open(refs_path, "w", encoding="utf-8") as tf:
+    tf.write(f"[1] {t_info['authors'][0]}. {t_title}. {t_info['journal']}. "
+             f"{t_year}. PMID: {t_pmid}\n")
+    if t_doi:
+        tf.write(f"[2] {t_info['authors'][0]}. {t_title}. {t_info['journal']}. "
+                 f"{t_year}. https://doi.org/{t_doi}\n")
+    tf.write("[3] Obokata H. Stimulus-triggered fate conversion of somatic "
+             "cells into pluripotency. Nature. 2014;511:540-545.\n")
+rc, so, data = run_cli(["--parse-text", refs_path, "--no-cache"])
+results = (data or {}).get("results", [])
+ok_pm = any(r.get("pmid") == t_pmid and r.get("verdict") == "correct"
+            for r in results)
+ok_doi = (not t_doi) or any(r.get("doi") == t_doi
+                            and r.get("verdict") in ("correct", "unknown")
+                            for r in results)
+t_res = [r for r in results if r.get("resolved_by") == "title_search"]
+ok_ts = bool(t_res) and t_res[0].get("verdict") in ("correct", "partial") \
+        and t_res[0].get("pmid")
+record("T22 parse-text e2e (exact PMID/DOI + title-search resolve)",
+       ok_pm and ok_doi and ok_ts,
+       f"pmid={ok_pm} doi={ok_doi} title_search={ok_ts} "
+       f"ts_verdict={t_res[0].get('verdict') if t_res else '-'} rc={rc}")
+
+# ── T23: --format-references (v4.0.0): GB/T list from the same run ──
+fmt_path = tempfile.mktemp(suffix=".txt")
+rc, so, data = run_cli(["--parse-text", refs_path, "--no-cache",
+                        "--format-references", fmt_path, "--citation-style", "gbt"])
+fmt = Path(fmt_path).read_text(encoding="utf-8") if Path(fmt_path).exists() else ""
+Path(refs_path).unlink(missing_ok=True)
+Path(fmt_path).unlink(missing_ok=True)
+ok1 = "Reference list — GB/T 7714-2015" in fmt
+ok2 = bool(re.search(r"\[1\] [A-Z',\- ]+\.", fmt)) or "[1] " in fmt
+ok3 = "verified" in fmt.splitlines()[1] if len(fmt.splitlines()) > 1 else False
+record("T23 format-references GB/T e2e",
+       rc in (0, 1) and ok1 and ok2 and ok3,
+       f"header={ok1} numbered_entry={ok2} stats_line={ok3}")
 
 # ── 汇总 ──
 passed = sum(1 for r in RESULTS if r["ok"])

@@ -1949,5 +1949,293 @@ class TestV390(_Reset):
         self.assertIsNone(cross["title_match"])
 
 
+
+class TestV400(_Reset):
+    """v4.0.0: plain-text reference list input, title-search verification,
+    formatted reference list export (GB/T 7714 / Vancouver / APA / AMA),
+    markerless Latin segmentation."""
+
+    # ── formatting engine ──
+
+    R1 = {"pmid": "34425842", "verdict": "correct", "valid": True,
+          "title": "Autoinflammatory diseases in practice.",
+          "authors": "Ribeiro LN, Midgley A, Christmas SE",
+          "journal": "Pediatric Rheumatology", "pubdate": "2021 Dec",
+          "volume": "19", "issue": "(1)", "pages": "75",
+          "doi": "10.1186/s12969-021-00566-6"}
+
+    def test_gbt_render_lock(self):
+        out = vp.generate_reference_list([self.R1], "gbt")
+        self.assertIn("[1] RIBEIRO L, MIDGLEY A, CHRISTMAS S. "
+                      "Autoinflammatory diseases in practice[J]. "
+                      "Pediatric Rheumatology, 2021, 19(1): 75. "
+                      "DOI:10.1186/s12969-021-00566-6.", out)
+        self.assertIn("GB/T 7714-2015", out.splitlines()[0])
+
+    def test_vancouver_apa_ama_render(self):
+        v = vp.generate_reference_list([self.R1], "vancouver")
+        self.assertIn("1. Ribeiro L, Midgley A, Christmas S. "
+                      "Autoinflammatory diseases in practice. "
+                      "Pediatric Rheumatology. 2021;19(1):75. "
+                      "doi:10.1186/s12969-021-00566-6", v)
+        a = vp.generate_reference_list([self.R1], "apa")
+        self.assertIn("Ribeiro, L., Midgley, A., & Christmas, S. (2021). "
+                      "Autoinflammatory diseases in practice. Pediatric "
+                      "Rheumatology, 19(1), 75. https://doi.org/"
+                      "10.1186/s12969-021-00566-6", a)
+        self.assertEqual(vp._ref_ama(self.R1, 1), vp._ref_vancouver(self.R1, 1))
+
+    def test_cjk_authors_and_missing_fields(self):
+        rc = {"pmid": "1", "verdict": "correct", "valid": True,
+              "title": "儿童过敏性紫癜诊疗分析", "authors": "王五, 李四明",
+              "journal": "中华儿科杂志", "pubdate": "2020", "volume": "58",
+              "issue": "(3)", "pages": "201-205"}
+        out = vp.generate_reference_list([rc], "gbt")
+        self.assertIn("[1] 王五, 李四明. 儿童过敏性紫癜诊疗分析[J]. "
+                      "中华儿科杂志, 2020, 58(3): 201-205.", out)
+        rmin = {"pmid": "2", "verdict": "correct", "valid": True,
+                "title": "Minimal record", "authors": "Solo A",
+                "journal": "J Mini", "pubdate": "2022"}
+        self.assertIn("[1] SOLO A. Minimal record[J]. J Mini, 2022.",
+                      vp.generate_reference_list([rmin], "gbt"))
+
+    def test_truncated_authors_et_al_per_style(self):
+        rt = dict(self.R1, authors="First A", authors_truncated=True)
+        self.assertIn("FIRST A, et al.",
+                      vp.generate_reference_list([rt], "gbt"))
+        apa = vp.generate_reference_list([rt], "apa")
+        self.assertIn("First, A., et al.", apa)
+        self.assertIn("[registry returned a truncated author list]", apa)
+
+    def test_section_semantics(self):
+        rp = {"pmid": "22213727", "verdict": "partial", "valid": True,
+              "title": "T", "authors": "A B", "journal": "J",
+              "pubdate": "2013", "details": "author set entirely different"}
+        rr = {"pmid": "24476887", "verdict": "partial", "valid": True,
+              "retracted": True, "title": "STAP", "authors": "O H",
+              "journal": "Nature", "pubdate": "2014",
+              "retraction_note": "Retracted by the editors"}
+        ri = {"pmid": "99999999", "verdict": "invalid", "valid": False}
+        out = vp.generate_reference_list([self.R1, rp, rr, ri], "gbt")
+        self.assertIn("1 verified, 1 need manual review, 1 excluded.", out)
+        self.assertIn("## Need manual review", out)
+        self.assertIn("author set entirely different", out)
+        self.assertIn("## Excluded — do not cite", out)
+        self.assertIn("RETRACTED — Retracted by the editors", out)
+        # invalid entries are neither listed nor reviewed — but the partial
+        # review label must not be counted as a list entry
+        body = out.split("## Need manual review")[0]
+        self.assertNotIn("22213727", body)
+        self.assertNotIn("24476887", body)
+
+    def test_duplicate_pmid_rendered_once(self):
+        out = vp.generate_reference_list([self.R1, dict(self.R1)], "gbt")
+        self.assertEqual(out.count("RIBEIRO"), 1)
+
+    # ── plain-text parsing ──
+
+    def test_parse_text_numbered_routing(self):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
+                                         encoding="utf-8") as tf:
+            tf.write("[1] Gattorno M, Sanni K. Development and validation of "
+                     "the effect scale. Annals of the Rheumatic Diseases. "
+                     "2019. PMID: 31018962\n"
+                     "[2] Zaripova LN, Midgley A. Practice of autoinflammatory "
+                     "diseases. Pediatric Rheumatology. 2021;19(1):75. "
+                     "https://doi.org/10.1186/s12969-021-00566-6\n"
+                     "[3] Obokata H. Stimulus-triggered fate conversion of "
+                     "somatic cells into pluripotency. Nature. 2014;511:540-545.\n")
+            path = tf.name
+        try:
+            entries, issues = vp.parse_plaintext_references(path)
+            self.assertEqual(issues, [])
+            self.assertEqual(len(entries), 3)
+            e1, e2, e3 = entries
+            self.assertEqual(e1["pmid"], "31018962")
+            self.assertTrue(e1["routable"])
+            self.assertEqual(e2["doi"], "10.1186/s12969-021-00566-6")
+            self.assertTrue(e2["claimed_title"])
+            # markerless entry: full segmentation, title-search candidate
+            self.assertFalse(e3["routable"])
+            self.assertTrue(e3["title_search_candidate"])
+            self.assertEqual(e3["claimed_title"],
+                             "Stimulus-triggered fate conversion of somatic "
+                             "cells into pluripotency")
+            self.assertEqual(e3["claimed_journal"], "Nature")
+            self.assertEqual(e3["claimed_year"], "2014")
+        finally:
+            os.unlink(path)
+
+    def test_parse_text_garbage_and_line_mode(self):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
+                                         encoding="utf-8") as tf:
+            tf.write("3.11\n\nand a broken fragment without metadata\n")
+            path = tf.name
+        try:
+            entries, issues = vp.parse_plaintext_references(path)
+            self.assertEqual(entries, [])
+            self.assertEqual(len(issues), 2)
+        finally:
+            os.unlink(path)
+
+    def test_parse_text_cjk_no_marker_honest_boundary(self):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
+                                         encoding="utf-8") as tf:
+            tf.write("王五, 李四. 儿童过敏性紫癜的诊疗分析[J]. 中华儿科杂志, 2020.\n")
+            path = tf.name
+        try:
+            entries, issues = vp.parse_plaintext_references(path)
+            self.assertEqual(entries, [])   # no routable ID, no usable title
+            self.assertEqual(len(issues), 1)
+        finally:
+            os.unlink(path)
+
+    def test_parse_text_numbered_multi_line_entry(self):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
+                                         encoding="utf-8") as tf:
+            tf.write("[1] Gattorno M. A long reference that wraps onto a\n"
+                     "second physical line and must stay one entry. PMID: 31018962\n"
+                     "[2] A longer markerless entry about pediatric diseases that "
+                     "parses. Nature. 2020.\n")
+            path = tf.name
+        try:
+            entries, issues = vp.parse_plaintext_references(path)
+            self.assertEqual(len(entries), 2)
+            self.assertIn("second physical line", entries[0]["raw"])
+            self.assertEqual(entries[0]["pmid"], "31018962")
+        finally:
+            os.unlink(path)
+
+    # ── title-search verification (mocked network) ──
+
+    def test_title_search_resolves_correct(self):
+        cand = [{"pmid": "31018962", "valid": True,
+                 "title": "Development and validation of the effect scale",
+                 "authors": "Gattorno M, Sanni K",
+                 "journal": "Annals of the Rheumatic Diseases",
+                 "pubdate": "2019"}]
+        orig = vp.search_pubmed
+        vp.search_pubmed = lambda q, max_results=5, raise_on_error=False: cand
+        try:
+            res, audit = vp.verify_title_entry(
+                {"claimed_title": "Development and validation of the effect scale",
+                 "claimed_authors": ["Gattorno"], "claimed_journal":
+                 "Annals of the Rheumatic Diseases", "claimed_year": "2019"},
+                "refs.txt")
+            self.assertEqual(res["verdict"], "correct")
+            self.assertEqual(res["resolved_by"], "title_search")
+            self.assertEqual(res["pmid"], "31018962")
+            self.assertTrue(audit.get("registered"))
+        finally:
+            vp.search_pubmed = orig
+
+    def test_title_search_never_manufactures_mismatch(self):
+        cand = [{"pmid": "34078778", "valid": True,
+                 "title": "A completely different dental materials paper",
+                 "authors": "Someone Else", "journal": "Dent Mater J",
+                 "pubdate": "2021"}]
+        orig = vp.search_pubmed
+        vp.search_pubmed = lambda q, max_results=5, raise_on_error=False: cand
+        try:
+            res, _ = vp.verify_title_entry(
+                {"claimed_title": "Stimulus-triggered fate conversion of "
+                                  "somatic cells into pluripotency"},
+                "refs.txt")
+            self.assertEqual(res["verdict"], "unknown")
+            self.assertNotEqual(res["verdict"], "mismatch")
+            self.assertIn("supply a PMID or DOI", res["details"])
+        finally:
+            vp.search_pubmed = orig
+
+    def test_title_search_network_failure_is_not_no_match(self):
+        def boom(q, max_results=5, raise_on_error=False):
+            raise vp.CircuitOpenError("circuit open")
+        orig = vp.search_pubmed
+        vp.search_pubmed = boom
+        try:
+            res, audit = vp.verify_title_entry(
+                {"claimed_title": "Some paper title that is long enough"}, "x")
+            self.assertEqual(res["verdict"], "unknown")
+            self.assertTrue(res["network_error"])
+            self.assertIn("retry", res["details"].lower())
+        finally:
+            vp.search_pubmed = orig
+
+    def test_title_search_retracted_candidate_capped(self):
+        cand = [{"pmid": "24476887", "valid": True, "retracted": True,
+                 "retraction_note": "Retracted",
+                 "title": "Stimulus-triggered fate conversion of somatic "
+                          "cells into pluripotency",
+                 "authors": "Obokata H", "journal": "Nature",
+                 "pubdate": "2014"}]
+        orig = vp.search_pubmed
+        vp.search_pubmed = lambda q, max_results=5, raise_on_error=False: cand
+        try:
+            res, _ = vp.verify_title_entry(
+                {"claimed_title": "Stimulus-triggered fate conversion of "
+                                  "somatic cells into pluripotency",
+                 "claimed_authors": ["Obokata"], "claimed_journal": "Nature",
+                 "claimed_year": "2014"}, "refs.txt")
+            self.assertEqual(res["verdict"], "partial")
+            self.assertTrue(res["retracted"])
+        finally:
+            vp.search_pubmed = orig
+
+    def test_markerless_author_leading_reference(self):
+        # B1-shape in the markerless path: an author-leading numbered entry
+        # must keep the author line out of the claimed title
+        c = vp.parse_citation_context(
+            "Zaripova LN, Midgley A, Christmas SE. Autoinflammatory diseases "
+            "in practice. Pediatric Rheumatology. 2021;19(1):75. "
+            "https://doi.org/10.1186/s12969-021-00566-6")
+        self.assertEqual(c["claimed_title"],
+                         "Autoinflammatory diseases in practice")
+        self.assertEqual(c["claimed_authors"], ["Zaripova", "Midgley", "Christmas"])
+        self.assertEqual(c["claimed_journal"], "Pediatric Rheumatology")
+
+    def test_markerless_title_leading_reference(self):
+        c = vp.parse_citation_context(
+            "Stimulus-triggered fate conversion of somatic cells into "
+            "pluripotency. Nature. 2014;511:540-545.")
+        self.assertEqual(c["claimed_title"],
+                         "Stimulus-triggered fate conversion of somatic "
+                         "cells into pluripotency")
+        self.assertEqual(c["claimed_journal"], "Nature")
+        self.assertEqual(c["claimed_year"], "2014")
+
+    def test_markerless_leading_article_title(self):
+        c = vp.parse_citation_context(
+            "A longer markerless entry about pediatric diseases that "
+            "parses. Nature. 2020.")
+        self.assertEqual(c["claimed_title"],
+                         "A longer markerless entry about pediatric "
+                         "diseases that parses")
+        self.assertEqual(c["claimed_journal"], "Nature")
+
+    # ── CLI surface ──
+
+    def test_cli_flags_registered(self):
+        import subprocess, sys
+        out = subprocess.run([sys.executable, vp.SCRIPT_PATH if hasattr(
+            vp, "SCRIPT_PATH") else "scripts/verify_pmids.py", "--help"],
+            capture_output=True, text=True, cwd=os.getcwd()).stdout
+        self.assertIn("--parse-text", out)
+        self.assertIn("--format-references", out)
+        self.assertIn("--citation-style", out)
+
+    def test_fixture_file_exists_and_routes(self):
+        fx = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "examples", "refs_list.sample.txt")
+        self.assertTrue(os.path.exists(fx), fx)
+        entries, _ = vp.parse_plaintext_references(fx)
+        self.assertTrue(any(e["pmid"] == "31018962" for e in entries))
+        self.assertTrue(any(e["doi"] == "10.1186/s12969-021-00566-6"
+                            for e in entries))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -82,8 +82,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "3.9.0"
-_UA_TOOL = "pubmed-verifier/3.9 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "4.0.0"
+_UA_TOOL = "pubmed-verifier/4.0 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -390,7 +390,8 @@ def fetch_doi_metadata(doi: str) -> dict:
         return {"valid": False, "error": str(e)}
 
 
-def search_pubmed(query: str, max_results: int = 5) -> list:
+def search_pubmed(query: str, max_results: int = 5,
+                   raise_on_error: bool = False) -> list:
     """Search PubMed and return article summaries."""
     params = _ncbi_params({"db": "pubmed", "term": query, "retmode": "json",
                            "retmax": str(max_results)})
@@ -401,7 +402,8 @@ def search_pubmed(query: str, max_results: int = 5) -> list:
         if ids:
             return [{"pmid": pid, **fetch_summaries([pid]).get(pid, {})} for pid in ids]
     except Exception:
-        pass
+        if raise_on_error:
+            raise
     return []
 
 
@@ -908,19 +910,30 @@ def parse_citation_context(context: str) -> dict:
     _pmid_matches = list(re.finditer(r'PMID[:\s]*(\d{4,9})', text, re.IGNORECASE))
     pmid_match = _pmid_matches[-1] if _pmid_matches else None
     if not pmid_match:
-        # Try to parse without PMID anchor
-        _parse_freeform_citation(text, claimed)
-        return claimed
-
-    # Get text before PMID
-    pre_text = text[:pmid_match.start()].strip().rstrip(".")
+        # v4.0.0: markerless entries (plain-text reference lists) get the
+        # full Latin sentence segmentation below — the freeform-only early
+        # return under-extracted and starved the title-search leg of usable
+        # titles. CJK markerless entries keep the documented weak-parsing
+        # boundary: the GB/T branch anchors on a PMID marker (it reads
+        # text after the marker for the DOI tail), so it must not run here —
+        # feed a PMID/DOI for exact routing instead.
+        pre_text = text.strip().rstrip(".")
+        if any('\u4e00' <= ch <= '\u9fff' for ch in pre_text):
+            _parse_freeform_citation(text, claimed)
+            return claimed
+        claimed["claimed_source_format"] = "plaintext"
+        _markerless = True
+    else:
+        _markerless = False
+        # Get text before PMID
+        pre_text = text[:pmid_match.start()].strip().rstrip(".")
 
     # v3.9.0 (ub02 B5): GB/T 7714-style Chinese references ("……标题[J]. 刊名, 年…"
     # with a PMID marker) — the English sentence parser extracts almost nothing
     # here. Pull the reliably-present fields; the title comparison against
     # Latin registries is skipped cross-language in cross_check, so a Chinese
     # title can never manufacture a false mismatch.
-    if any('\u4e00' <= ch <= '\u9fff' for ch in pre_text):
+    if pmid_match and any('\u4e00' <= ch <= '\u9fff' for ch in pre_text):
         claimed["claimed_source_format"] = "gbt7714"
         # Scope to THIS record: the scan window may span the previous
         # reference (including its "PMID: xxx." tail). Everything the GB/T
@@ -995,6 +1008,7 @@ def parse_citation_context(context: str) -> dict:
     segments = re.split(r'\.\s+', protected)
     segments = [s.replace('\x00', '.').strip() for s in segments if s.strip()]
 
+
     # v3.8.0 (ub02 B1): when the citation is NOT the first sentence of its
     # block, segments[0] is preceding prose and segments[1] is the AUTHOR
     # line ("Zaripova LN, Midgley A, Christmas SE") — treating it as the
@@ -1007,6 +1021,31 @@ def parse_citation_context(context: str) -> dict:
         r"^[A-ZÀ-ÿ][\w'’.-]+(?:(?-i: [A-Z]{1,3})\b\.?)+"
         r"(?:(?:,| and | &) [A-ZÀ-ÿ][\w'’.-]+(?:(?-i: [A-Z]{1,3})\b\.?)+)*$"
         r"(?:,? (?i:et al))\.?$", re.I)
+    # v4.0.0: markerless numbered references ("[2] Long descriptive title
+    # words here. Journal. Year.") often LEAD with the title — treating
+    # segments[0] as the author line hands the title-search leg a one-word
+    # "title" (the journal). When the first segment is not author-shaped
+    # and carries enough words, it IS the title (same author-shape guards
+    # as the B1 fix, conservative word floor).
+    if _markerless and len(segments) >= 2:
+        seg0 = segments[0].strip().rstrip(".")
+        # the lone-initial probe skips a leading article ("A study of...")
+        seg0_probe = re.sub(r"^A ", "", seg0)
+        seg0_authorish = (bool(_AUTHOR_SEG.match(seg0))
+                          or "et al" in seg0.lower()
+                          or bool(re.search(r"(?:^|[\s,])[A-Z]\.?(?=$|[\s,])", seg0_probe)))
+        seg0_words = len(seg0.replace(",", " ").split())
+        if not seg0_authorish and seg0_words >= 6:
+            claimed["claimed_title"] = seg0
+            claimed["claimed_authors"] = []
+            for seg in segments[1:]:
+                if re.match(r'^\d{4}', seg):
+                    continue
+                if re.search(r'[a-zA-Z]{3,}', seg) and not re.match(r'^\d', seg):
+                    claimed["claimed_journal"] = seg.strip().rstrip(".")
+                    break
+            return claimed
+
     title_idx = 1
     author_seg_idx = 0
     if len(segments) >= 3 and segments[0]:
@@ -1057,6 +1096,9 @@ def _extract_author_surnames(author_str: str) -> list[str]:
     parts = author_str.split(",")
     for part in parts:
         part = part.strip()
+        # v4.0.0: a leading reference number ("[3] Zhang S") must not block
+        # the surname pattern — numbered lists are the common scan shape
+        part = re.sub(r'^\[?\d+\]?[.．、)]?\s*', '', part)
         if part.lower() in ("et al", "et al.", "et"):
             continue
         # Match "Surname Initials" or just "Surname"
@@ -2061,6 +2103,251 @@ def generate_ris(results: list) -> str:
     return "\n".join(lines) + "\n"
 
 
+# ── Formatted reference list export (v4.0.0) ──
+
+_CITATION_STYLES = {
+    "gbt": "GB/T 7714-2015 (numeric)",
+    "vancouver": "Vancouver (ICMJE numeric)",
+    "apa": "APA 7th edition",
+    "ama": "AMA 11th edition (numeric)",
+}
+
+
+def _split_ref_authors(authors_str: str) -> list:
+    return [a.strip() for a in re.split(r"[,;]", (authors_str or "")) if a.strip()]
+
+
+def _author_has_cjk(a: str) -> bool:
+    return any('\u4e00' <= c <= '\u9fff' for c in a)
+
+
+def _fmt_authors_for_style(authors_str: str, style: str, truncated: bool) -> str:
+    """Render the registered author list in a citation style. Formatting never
+    invents names: a registry-truncated list closes with the style's et-al
+    form; APA (which expects complete lists) keeps what the registry returned
+    and the entry discloses the truncation."""
+    authors = _split_ref_authors(authors_str)
+    if not authors:
+        return ""
+    cjk = any(_author_has_cjk(a) for a in authors)
+    if style == "gbt":
+        if cjk:
+            out = list(authors)
+            tail = "等"
+        else:
+            def gbt_one(a):
+                parts = a.split()
+                if len(parts) < 2:
+                    return a.upper()
+                inits = " ".join(p[0].upper() for p in parts[1:] if p)
+                return (parts[0].upper() + " " + inits).strip()
+            out = [gbt_one(a) for a in authors]
+            tail = "et al"
+        if truncated or len(out) > 3:
+            return ", ".join(out[:3]) + ", " + tail
+        return ", ".join(out)
+    if style in ("vancouver", "ama"):
+        def vanc_one(a):
+            parts = a.split()
+            if len(parts) < 2:
+                return a
+            inits = "".join(p[0].upper() for p in parts[1:] if p)
+            return (parts[0] + " " + inits).strip()
+        out = [vanc_one(a) for a in authors]
+        if truncated or len(out) > 6:
+            return ", ".join(out[:6]) + ", et al"
+        return ", ".join(out)
+    # APA 7th: "Surname, L. N." with "&" before the last author
+    def apa_one(a):
+        parts = a.split()
+        if len(parts) < 2:
+            return a
+        inits = ". ".join(p[0].upper() for p in parts[1:] if p)
+        return f"{parts[0]}, {inits}."
+    out = [apa_one(a) for a in authors]
+    if truncated:
+        return ", ".join(out) + ", et al."
+    if len(out) == 1:
+        return out[0]
+    if len(out) == 2:
+        return f"{out[0]}, & {out[1]}"
+    return ", ".join(out[:-1]) + ", & " + out[-1]
+
+
+def _ref_year(r: dict) -> str:
+    m = re.search(r"((?:19|20)\d{2})", str(r.get("pubdate", "")))
+    return m.group(1) if m else ""
+
+
+def _ref_title(r: dict) -> str:
+    return " ".join(str(r.get("title", "")).strip().rstrip(".").split())
+
+
+def _ref_locator(r: dict) -> tuple:
+    vol = " ".join(str(r.get("volume", "") or "").split())
+    issue = " ".join(str(r.get("issue", "") or "").split()).strip("()")
+    pages = " ".join(str(r.get("pages", "") or "").split())
+    return vol, issue, pages
+
+
+def _ref_vancouver_body(r: dict) -> str:
+    """'Journal. 2021;19(1):75.' — shared by the Vancouver and AMA
+    renderers (with full registry journal names, the two numeric styles
+    coincide except for minor punctuation)."""
+    journal = " ".join(str(r.get("journal", "") or "").split())
+    year = _ref_year(r)
+    vol, issue, pages = _ref_locator(r)
+    body = journal
+    if year:
+        body = body + ". " + year if body else year
+    loc = vol
+    if loc and issue:
+        loc += f"({issue})"
+    if loc or pages:
+        body += ";" + loc if loc else ";"
+        if pages:
+            body += ":" + pages
+    if body:
+        body += "."
+    return body
+
+
+def _ref_gbt(r: dict, idx: int) -> str:
+    authors = _fmt_authors_for_style(r.get("authors", ""), "gbt",
+                                     bool(r.get("authors_truncated")))
+    title = _ref_title(r)
+    journal = " ".join(str(r.get("journal", "") or "").split())
+    year = _ref_year(r)
+    vol, issue, pages = _ref_locator(r)
+    parts = []
+    head = f"[{idx}] " + ((authors + ". ") if authors else "")
+    if title:
+        parts.append(head + title + "[J].")
+    mid = journal
+    if year:
+        mid = mid + ", " + year if mid else year
+    if vol:
+        mid += f", {vol}({issue})" if issue else f", {vol}"
+        if pages:
+            mid += ": " + pages
+    elif pages and mid:
+        mid += ": " + pages
+    if mid:
+        parts.append(mid + ".")
+    line = " ".join(parts)
+    if r.get("doi"):
+        line += f" DOI:{r['doi']}."
+    return " ".join(line.split())
+
+
+def _ref_vancouver(r: dict, idx: int) -> str:
+    authors = _fmt_authors_for_style(r.get("authors", ""), "vancouver",
+                                     bool(r.get("authors_truncated")))
+    title = _ref_title(r)
+    body = _ref_vancouver_body(r)
+    line = f"{idx}. "
+    if authors:
+        line += authors + ". "
+    if title:
+        line += title + ". "
+    line += body
+    if r.get("doi"):
+        line += f" doi:{r['doi']}"
+    return " ".join(line.split())
+
+
+def _ref_ama(r: dict, idx: int) -> str:
+    """AMA 11th numeric rendering. With full registry journal names it
+    matches the Vancouver line shape; kept as a distinct style so users can
+    ask for it by the name their journal cites."""
+    return _ref_vancouver(r, idx)
+
+
+def _ref_apa(r: dict, idx: int) -> str:
+    authors = _fmt_authors_for_style(r.get("authors", ""), "apa",
+                                     bool(r.get("authors_truncated")))
+    title = _ref_title(r)
+    journal = " ".join(str(r.get("journal", "") or "").split())
+    year = _ref_year(r)
+    vol, issue, pages = _ref_locator(r)
+    line = ""
+    if authors:
+        line += authors + " "
+    if year:
+        line += f"({year}). "
+    if title:
+        line += title + ". "
+    mid = journal
+    if vol:
+        mid = mid + f", {vol}({issue})" if issue else mid + f", {vol}"
+        if pages:
+            mid += ", " + pages
+    elif pages and mid:
+        mid += ", " + pages
+    if mid:
+        line += mid + "."
+    if r.get("doi"):
+        line += f" https://doi.org/{r['doi']}"
+    if r.get("authors_truncated"):
+        line += " [registry returned a truncated author list]"
+    return " ".join(line.split())
+
+
+_REF_RENDERERS = {"gbt": _ref_gbt, "vancouver": _ref_vancouver,
+                  "apa": _ref_apa, "ama": _ref_ama}
+
+
+def generate_reference_list(results: list, style: str = "gbt") -> str:
+    """Formatted reference list export (v4.0.0): verified (correct) entries
+    rendered as a ready-to-paste numbered list in the requested citation
+    style; partial entries go to a manual-review section (never silently
+    dropped); retracted entries are excluded with a warning. Formatting leg
+    of the verify-then-format loop: every rendered line stands on a
+    registry-verified record — the capability plain text formatters lack."""
+    renderer = _REF_RENDERERS[style]
+    main_list, review, excluded = [], [], []
+    seen = set()
+    for r in results:
+        if r.get("verdict") not in ("correct", "partial") or not r.get("valid"):
+            if r.get("retracted"):
+                excluded.append(r)
+            continue
+        if r.get("retracted"):
+            excluded.append(r)
+            continue
+        key = r.get("pmid") or r.get("doi") or r.get("arxiv_id") or id(r)
+        if key in seen:
+            continue
+        seen.add(key)
+        (main_list if r.get("verdict") == "correct" else review).append(r)
+    lines = [f"Reference list — {_CITATION_STYLES[style]}",
+             f"Generated by pubmed-verifier v{_TOOL_VERSION} — {len(main_list)} verified, "
+             f"{len(review)} need manual review, {len(excluded)} excluded. "
+             "Every entry below was checked against its registry (PubMed / Europe PMC / Crossref).",
+             ""]
+    for i, r in enumerate(main_list, 1):
+        lines.append(renderer(r, i))
+        lines.append("")
+    if review:
+        lines.append("## Need manual review — NOT included in the list above")
+        for r in review:
+            label = r.get("pmid") or r.get("doi") or r.get("arxiv_id") or r.get("source_file", "")
+            lines.append(f"- {label}: partial — "
+                         + " ".join(str(r.get("details", "")).split())[:200])
+        lines.append("")
+    if excluded:
+        lines.append("## Excluded — do not cite")
+        for r in excluded:
+            label = r.get("pmid") or r.get("doi") or r.get("arxiv_id") or r.get("source_file", "")
+            if r.get("retracted"):
+                note = "RETRACTED — " + " ".join(str(r.get("retraction_note", "")).split())[:150]
+            else:
+                note = "verdict: " + str(r.get("verdict", "unknown"))
+            lines.append(f"- {label}: {note}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def readiness_summary(stats: dict) -> tuple:
     """(ready, one-line verdict) for the report header (v2.7.0)."""
     problems = (stats.get("invalid", 0) + stats.get("mismatch", 0)
@@ -2722,6 +3009,185 @@ _LINT_KNOWN_KEYS = {"pmid", "title", "authors", "journal", "year",
                     "doi", "arxiv_id"}
 
 
+# ── Plain-text reference list input (v4.0.0) ──
+
+_TEXT_NUM_RE = re.compile(r'^\s*(?:\[(\d{1,3})\]|(\d{1,3})[.、)．])\s*')
+
+
+def parse_plaintext_references(path: str) -> tuple:
+    """Parse a plain-text reference list copied from a paper draft (v4.0.0).
+
+    Numbered lists ("[1] ...", "1. ...", "1、 ...") are split at each number
+    marker (continuation lines join the current entry); a file with fewer
+    than two number markers falls back to one-entry-per-nonempty-line.
+    Inline PMID / DOI / arXiv IDs are extracted for exact routing; the rest
+    of the entry goes through the citation heuristic parsers (Latin sentence
+    parser + GB/T 7714 CJK branch) for claimed metadata and, with a usable
+    title, becomes a title-search candidate. Parsing never fabricates
+    fields — what the heuristics cannot see stays empty.
+
+    Returns (entries, issues); entries carry pmid/doi/arxiv_id/claimed_*
+    plus routable / title_search_candidate flags."""
+    entries, issues = [], []
+    try:
+        text = open(path, "r", encoding="utf-8", errors="replace").read()
+    except OSError as e:
+        return [], [f"cannot read {path}: {e}"]
+    lines = text.splitlines()
+    numbered_count = sum(1 for ln in lines if _TEXT_NUM_RE.match(ln))
+    numbered_mode = numbered_count >= 2
+    blocks, cur = [], None
+    for ln in lines:
+        s = ln.strip()
+        if not s:
+            continue
+        m = _TEXT_NUM_RE.match(ln) if numbered_mode else None
+        if m:
+            if cur is not None:
+                blocks.append(cur)
+            cur = s
+        elif numbered_mode and cur is not None:
+            cur += " " + s
+        else:
+            blocks.append(s)
+    if cur is not None:
+        blocks.append(cur)
+    if not blocks:
+        return [], ["no reference entries found in the file"]
+    for i, raw in enumerate(blocks, 1):
+        entry_text = (_TEXT_NUM_RE.sub("", raw, count=1).strip()
+                      if _TEXT_NUM_RE.match(raw) else raw)
+        if not entry_text:
+            continue
+        claimed = parse_citation_context(entry_text)
+        e = {"key": f"text{i}", "raw": entry_text,
+             "pmid": "", "doi": "", "arxiv_id": ""}
+        pm = list(re.finditer(r'PMID[:\s]*(\d{4,9})', entry_text, re.IGNORECASE))
+        if pm:
+            e["pmid"] = pm[-1].group(1)
+        dm = re.search(
+            r'(?:https?://(?:dx\.)?doi\.org/|\bdoi\s*[:：]?\s*)(10\.\S+)',
+            entry_text, re.IGNORECASE)
+        if not dm:
+            dm = re.search(r'\b(10\.\d{4,9}/[^\s,;，。]+)', entry_text)
+        if dm:
+            e["doi"] = _clean_doi(dm.group(1))
+        am = re.search(r'arXiv[:\s]*(\d{4}\.\d{4,5})(v\d+)?', entry_text, re.IGNORECASE)
+        if am:
+            e["arxiv_id"] = am.group(1) + (am.group(2) or "")
+        if not e["doi"] and claimed.get("claimed_doi"):
+            e["doi"] = claimed["claimed_doi"]
+        e.update({"claimed_title": claimed.get("claimed_title", ""),
+                  "claimed_authors": claimed.get("claimed_authors", []),
+                  "claimed_journal": claimed.get("claimed_journal", ""),
+                  "claimed_year": claimed.get("claimed_year", ""),
+                  "claimed_source_format": claimed.get("claimed_source_format", "")})
+        e["routable"] = bool(e["pmid"] or e["doi"] or e["arxiv_id"])
+        e["title_search_candidate"] = (not e["routable"]
+                                       and len(e.get("claimed_title", "")) >= 15)
+        if e["routable"] or e["title_search_candidate"]:
+            entries.append(e)
+        else:
+            issues.append(f"text#{i}: no routable ID and no usable title — "
+                          f"skipped ({e['raw'][:48]})")
+    return entries, issues
+
+
+def verify_title_entry(entry: dict, src: str) -> tuple:
+    """Verify a markerless reference entry by PubMed title search (v4.0.0).
+
+    Honest by construction: a candidate that cross-checks clean yields
+    correct with resolved_by=title_search (weaker evidence than a
+    user-supplied ID, and labeled as such); when candidates exist but none
+    matches, the verdict stays unknown — this path never manufactures a
+    mismatch accusation, and a network failure is reported as unreachable,
+    never as 'no match'."""
+    title = entry.get("claimed_title", "")
+    res = {"pmid": "", "doi": "", "arxiv_id": "",
+           "source_file": os.path.basename(src),
+           "claimed_title": title, "valid": False, "entry_kind": "text"}
+    claimed = {"claimed_title": title,
+               "claimed_authors": entry.get("claimed_authors", []),
+               "claimed_journal": entry.get("claimed_journal", ""),
+               "claimed_year": entry.get("claimed_year", "")}
+    audit0 = {"pmid": "", "arxiv_id": "", "doi": "",
+              "source_file": res["source_file"], "claimed": claimed}
+    try:
+        candidates = search_pubmed(title, max_results=3, raise_on_error=True)
+    except CircuitOpenError as e:
+        res["verdict"] = "unknown"
+        res["network_error"] = True
+        res["details"] = ("title search unreachable (circuit open / network) — "
+                          "not judged; retry when the network is up")
+        res["error"] = res["details"]
+        audit0.update({"verdict": "unknown", "network_error": True,
+                       "evidence": {"route": "title_search_unreachable",
+                                    "error": type(e).__name__}})
+        return res, audit0
+    except Exception as e:
+        res["verdict"] = "unknown"
+        res["network_error"] = True
+        res["details"] = (f"title search unreachable ({type(e).__name__}) — "
+                          "not judged; retry when the network is up")
+        res["error"] = res["details"]
+        audit0.update({"verdict": "unknown", "network_error": True,
+                       "evidence": {"route": "title_search_unreachable",
+                                    "error": type(e).__name__}})
+        return res, audit0
+    for cand in candidates:
+        if not cand.get("valid"):
+            continue
+        cross = cross_check_citation(claimed, {
+            "title": cand.get("title", ""), "authors": cand.get("authors", ""),
+            "journal": cand.get("journal", ""), "pubdate": cand.get("pubdate", "")})
+        if cross["verdict"] == "correct":
+            _cand_authors = cand.get("authors", "")
+            if isinstance(_cand_authors, list):
+                _cand_authors = ", ".join(_cand_authors)
+            res.update({"valid": True, "pmid": cand.get("pmid", ""),
+                        "title": cand.get("title", ""),
+                        "authors": _cand_authors,
+                        "journal": cand.get("journal", ""),
+                        "pubdate": cand.get("pubdate", ""),
+                        "verdict": "correct",
+                        "resolved_by": "title_search",
+                        "details": ("Matched by PubMed title search (the claimed "
+                                    "reference carried no PMID/DOI); registered "
+                                    "record attached."),
+                        "confidence": round(cross["confidence"], 2)})
+            if cand.get("retracted"):
+                res["retracted"] = True
+                res["retraction_note"] = cand.get("retraction_note", "")
+                res["verdict"], res["details"] = apply_retraction_cap(
+                    res["verdict"], res["details"])
+            audit = dict(audit0, pmid=res["pmid"],
+                         registered={"title": res["title"], "journal": res["journal"],
+                                     "pubdate": res["pubdate"],
+                                     "authors": cand.get("authors", []),
+                                     "doi": cand.get("doi", ""),
+                                     "registry": "pubmed title search"},
+                         evidence=cross,
+                         retraction={"flagged": res.get("retracted", False),
+                                     "note": res.get("retraction_note", ""),
+                                     "date": "", "source": "registry pubtype"})
+            return res, audit
+    res["verdict"] = "unknown"
+    n_valid = sum(1 for c in candidates if c.get("valid"))
+    if n_valid:
+        res["details"] = (f"Title search returned {n_valid} candidate(s), "
+                          "none matched the claimed metadata — likely a different paper "
+                          "or outside PubMed coverage; supply a PMID or DOI for a "
+                          "decisive verdict.")
+    else:
+        res["details"] = ("No PubMed hit by title — the reference may be "
+                          "non-biomedical, very new, or its title may parse "
+                          "imperfectly; supply a PMID or DOI for a decisive verdict.")
+    res["error"] = res["details"]
+    audit0.update({"verdict": "unknown",
+                   "evidence": {"route": "title_search", "candidates": n_valid}})
+    return res, audit0
+
+
 def lint_claims_json(path: str) -> list:
     """Lint a JSON claims file offline. Returns diagnostic strings."""
     issues = []
@@ -2973,7 +3439,7 @@ def run_claims_lint(path: str) -> int:
 
 def main():
     parser = argparse.ArgumentParser(
-        description=f"PMID Citation Verifier v{_TOOL_VERSION} -- Five-state verification of PMIDs, DOIs and arXiv IDs with retraction detection for every citation, DOI-native verification, delta audits against a baseline, audit/BibTeX/CSV export, and dual-source network hardening")
+        description=f"PMID Citation Verifier v{_TOOL_VERSION} -- Five-state verification of PMIDs, DOIs and arXiv IDs with retraction detection for every citation, DOI-native verification, delta audits against a baseline, audit/BibTeX/CSV export, plain-text reference list parsing, formatted reference list export (GB/T 7714 / Vancouver / APA / AMA), and dual-source network hardening")
     parser.add_argument("--source", help="File or directory to scan for PMIDs")
     parser.add_argument("--pmids", help="Comma-separated PMIDs to verify directly")
     parser.add_argument("--claims", help="JSON string with claimed metadata: [{pmid,title,authors,journal,year},...]")
@@ -3019,6 +3485,19 @@ def main():
                         help="Probe the four data sources (5s each) and print "
                              "reachability + next steps — run this when results "
                              "come back unknown on a constrained network")
+    parser.add_argument("--parse-text", metavar="FILE",
+                        help="Verify a plain-text reference list copied from a paper draft "
+                             "(numbered [1]/1. entries, or one per line): inline PMID/DOI/arXiv "
+                             "IDs route exactly; title-only entries resolve via PubMed title "
+                             "search (results marked resolved_by=title_search)")
+    parser.add_argument("--format-references", metavar="PATH",
+                        help="Write verified entries as a formatted reference list — "
+                             "GB/T 7714-2015 / Vancouver / APA 7 / AMA 11 via --citation-style; "
+                             "correct = numbered list, partial = review section, "
+                             "retracted = excluded with a warning")
+    parser.add_argument("--citation-style", choices=["gbt", "vancouver", "apa", "ama"],
+                        default="gbt",
+                        help="Style for --format-references (default: gbt = GB/T 7714-2015)")
     parser.add_argument("--lint-claims", metavar="FILE",
                         help="Offline lint of a claims file (JSON/CSV/BibTeX/RIS): ID shapes, "
                              "missing titles, unknown columns, duplicate keys — no network")
@@ -3039,6 +3518,7 @@ def main():
     explicit_claims = {}
     explicit_arxiv = {}   # claims keyed by arxiv_id (v3.1.0)
     explicit_doi = {}     # claims keyed by clean DOI (v3.4.0)
+    title_queue = []      # markerless text entries for title search (v4.0.0)
 
     # Load explicit claims from --claims or --claims-file
     if args.claims_file:
@@ -3148,6 +3628,39 @@ def main():
                   f"{bib_routed['arxiv']} arXiv routed"
                   + (f", {len(bib_skipped)} skipped: {', '.join(bib_skipped)}"
                      if bib_skipped else ""), flush=True)
+    # Plain-text reference list input (v4.0.0): a draft reference list copied
+    # out of a manuscript. Inline IDs route exactly (PMID > DOI > arXiv);
+    # markerless entries with a parseable title go through PubMed title
+    # search and carry resolved_by=title_search in their result.
+    if args.parse_text:
+        text_entries, text_issues = parse_plaintext_references(args.parse_text)
+        for msg in text_issues:
+            print(f"  parse-text: {msg}", file=sys.stderr)
+        text_src = os.path.basename(args.parse_text)
+        routed = {"pmid": 0, "doi": 0, "arxiv": 0, "title": 0}
+        for i, e in enumerate(text_entries, 1):
+            claimed = {"claimed_title": e["claimed_title"],
+                       "claimed_authors": e["claimed_authors"],
+                       "claimed_journal": e["claimed_journal"],
+                       "claimed_year": e["claimed_year"]}
+            label = f"{text_src}#{i}"
+            if e["pmid"]:
+                pmid_entries.append((e["pmid"], label, e["raw"], claimed))
+                routed["pmid"] += 1
+            elif e["doi"]:
+                doi_inputs.append((e["doi"], label, claimed))
+                routed["doi"] += 1
+            elif e["arxiv_id"]:
+                arxiv_inputs.append((e["arxiv_id"], label, claimed))
+                routed["arxiv"] += 1
+            else:
+                e["_label"] = label
+                title_queue.append(e)
+                routed["title"] += 1
+        if text_entries:
+            print(f"Text reference list {text_src}: {routed['pmid']} PMID / "
+                  f"{routed['doi']} DOI / {routed['arxiv']} arXiv / "
+                  f"{routed['title']} title-search routed", flush=True)
     if args.pmids:
         for p in args.pmids.split(","):
             p = p.strip()
@@ -3569,6 +4082,33 @@ def main():
     if doi_processed:
         stats["total"] = stats.get("total", 0) + doi_processed
 
+    # Title-search verification for markerless text entries (v4.0.0):
+    # weaker evidence than a supplied ID — a clean cross-check is correct
+    # with resolved_by=title_search; anything else stays honestly unknown.
+    text_processed = 0
+    for te in title_queue:
+        entry, audit_item = verify_title_entry(te, args.parse_text or "text")
+        text_processed += 1
+        if entry["verdict"] == "correct":
+            stats["correct"] = stats.get("correct", 0) + 1
+        elif entry["verdict"] == "partial":
+            stats["partial"] = stats.get("partial", 0) + 1
+            if entry.get("retracted"):
+                stats["retracted"] = stats.get("retracted", 0) + 1
+        elif entry.get("network_error"):
+            stats["unknown"] += 1
+            stats["network_errors"] = stats.get("network_errors", 0) + 1
+        else:
+            stats["unknown"] += 1
+        results.append(entry)
+        audit_entries.append(audit_item)
+    if text_processed:
+        stats["total"] = stats.get("total", 0) + text_processed
+        n_resolved = sum(1 for r in results if r.get("resolved_by") == "title_search")
+        print(f"Title-search leg: {text_processed} entries — {n_resolved} resolved, "
+              f"{text_processed - n_resolved} honestly unknown (supply a PMID/DOI "
+              f"for a decisive verdict)", flush=True)
+
     # Delta audit against a previous working-paper (v2.8.0)
     deltas = None
     if args.diff:
@@ -3626,6 +4166,14 @@ def main():
             generate_ris(results), encoding="utf-8")
         print(f"RIS written to {args.export_ris} "
               f"(correct = TY JOUR, partial = TY DATA)")
+
+    if args.format_references:
+        Path(args.format_references).write_text(
+            generate_reference_list(results, args.citation_style), encoding="utf-8")
+        _n_ok = sum(1 for r in results if r.get("verdict") == "correct")
+        print(f"Reference list ({args.citation_style}) written to "
+              f"{args.format_references} ({_n_ok} verified "
+              f"{'entry' if _n_ok == 1 else 'entries'})")
 
     if args.export_csv:
         Path(args.export_csv).write_text(

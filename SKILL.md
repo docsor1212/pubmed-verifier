@@ -2,25 +2,25 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 3.9.0
+version: 4.0.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
   pointing to a DIFFERENT paper. Five-state citation verification (correct /
   mismatch / partial / invalid / unknown), citation-context parsing, dual
   fuzzy matching, Crossref DOI cross-check, retraction detection (capped at
-  partial), correct-PMID suggestion, arXiv ID verification, SQLite cache,
-  CSV/JSON claims, HTML/JSON/text reports. Dual data sources with automatic
-  Europe PMC fallback, optional NCBI API key, Crossref polite pool,
-  Retry-After backoff, UA rotation, host circuit breaker. Network failures
-  are honestly reported as unverified, never as "not found". Zero
-  dependencies, runs fully local. Triggers: verify PMIDs, check citations,
-  validate references, citation audit, reference check, PMID check, audit
-  references, batch verify references, AI hallucination detection, verify
-  DOI, DOI check, validate citations, PubMed citation verifier, BibTeX audit.
+  partial), correct-PMID suggestion, arXiv ID verification, plain-text
+  reference list parsing, formatted reference lists (GB/T 7714 / Vancouver /
+  APA / AMA), SQLite cache, CSV/JSON claims, HTML/JSON/text reports. Dual data
+  sources with automatic Europe PMC fallback. Network failures are honestly
+  reported as unverified, never as "not found". Zero dependencies, runs fully
+  local. Triggers: verify PMIDs, check citations, validate references,
+  citation audit, reference check, PMID check, batch verify references, AI
+  hallucination detection, verify DOI, DOI check, validate citations, citation
+  formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v3.9.0
+# PubMed Citation Verifier v4.0.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -93,6 +93,14 @@ python3 scripts/verify_pmids.py --check-net
 # Audit a BibTeX or RIS bibliography file directly (PMID > DOI > arXiv routing)
 python3 scripts/verify_pmids.py --bibliography refs.bib --no-cache
 python3 scripts/verify_pmids.py --bibliography refs.ris --no-cache --export-ris verified.ris
+
+# Verify a reference list copied from a paper draft (inline IDs route
+# exactly; title-only entries resolve via PubMed title search)
+python3 scripts/verify_pmids.py --parse-text references.txt --no-cache
+
+# Format the verified entries as a ready-to-paste reference list
+# (--citation-style: gbt | vancouver | apa | ama; default gbt)
+python3 scripts/verify_pmids.py --parse-text references.txt --format-references refs_gbt.txt --citation-style gbt
 
 # Institutional niceties (recommended): NCBI API key + contact email
 python3 scripts/verify_pmids.py --source . --verify-doi --ncbi-api-key $NCBI_API_KEY --mailto you@lab.org
@@ -289,7 +297,7 @@ only the lint runs.
   (~1–2 min per 1000 PMIDs with an API key); DOI resolution adds one
   Crossref call per DOI. One deliberate trade-off: the verifier is a
   single stdlib-only file — copy `scripts/verify_pmids.py` anywhere with
-  Python 3.8+ and it runs, no pip, no venv (that portability is why the
+  Python 3.9+ and it runs, no pip, no venv (that portability is why the
   code is not split into modules).
 
 ## v2.2.0 — network hardening
@@ -571,6 +579,32 @@ three judgment-ladder defects; all three are fixed and locked:
   `verify_doi_entry`, `parse_citation_context`, `suggest_correct_pmid`)
   with copy-paste examples.
 
+## v4.0.0 — plain-text reference lists & formatted reference list export
+
+- **`--parse-text refs.txt`** — verify a reference list copied straight out
+  of a manuscript draft. Numbered entries (`[1]`, `1.`) split cleanly;
+  inline PMID / DOI / arXiv IDs route exactly (full five-state
+  cross-check); a markerless entry with a parseable title resolves via
+  PubMed title search and is marked `resolved_by: title_search` — weaker
+  evidence than a supplied ID, honestly labeled, and never a mismatch
+  source. A network failure stays unknown with a retry hint, never
+  "not found". Entries with no routable ID and no usable title are
+  skipped with a note instead of being guessed.
+- **`--format-references out.txt --citation-style gbt|vancouver|apa|ama`**
+  — the formatting leg of verify-then-format: verified entries rendered as
+  a ready-to-paste numbered reference list (GB/T 7714-2015 numeric for
+  Chinese submissions, Vancouver, APA 7th, AMA 11th). Formatting stands on
+  registry-verified records only: correct entries form the list, partial
+  entries go to a manual-review section (never silently dropped), and
+  retracted entries are excluded with a warning. Author lists are
+  formatted per style without inventing names — a registry-truncated list
+  closes with the style's et-al form, and APA discloses the truncation.
+- Markerless Latin references now parse through the full sentence
+  segmentation (titles feed the title-search leg); CJK entries without a
+  PMID/DOI marker keep the documented weak-parsing boundary — supply a
+  PMID or DOI for exact routing.
+- `examples/refs_list.sample.txt` ships a ready-made parse-text fixture.
+
 ## How it works
 
 1. **Extract + parse context** — finds `PMID: 12345678` / PubMed URLs in
@@ -648,7 +682,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v3.9.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v4.0.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/python_api.md` | Calling the verifier from Python (stable surfaces + examples) |
 | `examples/claims.sample.csv` | Reference format for `--claims-file` (incl. a DOI-only row) |
