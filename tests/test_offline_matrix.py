@@ -722,10 +722,13 @@ class TestExportsAndReadiness(_Reset):
 
     def test_scanned_404_is_suspect_not_invalid(self):
         # compliance P1: auto-extracted DOIs are not user-endorsed — a
-        # Crossref 404 stays a suspect (unknown), never "fabrication"
+        # Crossref 404 stays a suspect (unknown), never "fabrication".
+        # v4.1.0: the OpenAlex fallback is mocked empty here (offline rule);
+        # its hit/miss semantics are covered in TestV410.
         with mock.patch.object(vp, "resolve_doi",
                                return_value={"status": "not_found", "meta": None,
-                                             "error": "404"}):
+                                             "error": "404"}), \
+             mock.patch.object(vp, "fetch_openalex_doi", return_value={}):
             entry, _ = vp.verify_doi_entry("10.5281/zenodo.12146", "scanned.html")
         self.assertEqual(entry["verdict"], "unknown")
         self.assertTrue(entry.get("suspect"))
@@ -820,7 +823,8 @@ class TestDoiNative(_Reset):
     def test_verify_entry_semantics(self):
         with mock.patch.object(vp, "resolve_doi",
                                return_value={"status": "not_found", "meta": None,
-                                             "error": "404"}):
+                                             "error": "404"}), \
+             mock.patch.object(vp, "fetch_openalex_doi", return_value={}):
             entry, _ = vp.verify_doi_entry("10.1/fake", "cli")
         self.assertEqual(entry["verdict"], "invalid")
         with mock.patch.object(vp, "resolve_doi",
@@ -1410,9 +1414,10 @@ class TestV340(_Reset):
         # a claims-file DOI is user-endorsed just like --dois: a Crossref
         # 404 is a fabrication signal (was suspect/unknown before v3.4.0
         # fixed the src gate — the doc boundary had promised this)
-        e, _ = vp.verify_doi_entry("10.9999/fake.does.not.exist", "claims",
-                                   resolution={"status": "not_found",
-                                               "error": "HTTP Error 404"})
+        with mock.patch.object(vp, "fetch_openalex_doi", return_value={}):
+            e, _ = vp.verify_doi_entry("10.9999/fake.does.not.exist", "claims",
+                                       resolution={"status": "not_found",
+                                                   "error": "HTTP Error 404"})
         self.assertEqual(e["verdict"], "invalid")
         self.assertIn("fabrication", e["details"])
 
@@ -1937,7 +1942,7 @@ class TestV390(_Reset):
                     capture_output=True, text=True, timeout=120, env=env)
         out = r.stdout + r.stderr
         self.assertEqual(r.returncode, 2)
-        self.assertEqual(out.count(" X  "), 4)
+        self.assertEqual(out.count(" X  "), 5)  # five probes since v4.1.0
         self.assertIn("Practical steps", out)
 
     def test_fields_title_none_when_skipped(self):
@@ -2081,6 +2086,9 @@ class TestV400(_Reset):
             os.unlink(path)
 
     def test_parse_text_cjk_no_marker_honest_boundary(self):
+        # v4.1.0: a CJK entry without routable IDs now JOINS the title-search
+        # queue (the OpenAlex CJK leg searches the cleaned raw text) — the
+        # v4.0 behavior (silent skip) applied before this source existed.
         import tempfile, os
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
                                          encoding="utf-8") as tf:
@@ -2088,8 +2096,9 @@ class TestV400(_Reset):
             path = tf.name
         try:
             entries, issues = vp.parse_plaintext_references(path)
-            self.assertEqual(entries, [])   # no routable ID, no usable title
-            self.assertEqual(len(issues), 1)
+            self.assertEqual(len(entries), 1)
+            self.assertTrue(entries[0]["title_search_candidate"])
+            self.assertEqual(issues, [])
         finally:
             os.unlink(path)
 
@@ -2235,6 +2244,196 @@ class TestV400(_Reset):
         self.assertTrue(any(e["pmid"] == "31018962" for e in entries))
         self.assertTrue(any(e["doi"] == "10.1186/s12969-021-00566-6"
                             for e in entries))
+
+
+
+class TestV410(_Reset):
+    """v4.1.0: OpenAlex as the fourth metadata source — Crossref-404 DOI
+    fallback (DataCite/Zenodo become decidable) + CJK title-search leg."""
+
+    OA_META = {"title": "A dataset of peripheral rainfall measurements",
+               "journal": "Zenodo", "year": "2023",
+               "authors": ["Smith J"], "type": "dataset",
+               "retracted": False, "retraction_note": "",
+               "registry": "openalex"}
+
+    def test_doi_fallback_hit_resolves(self):
+        # Crossref 404 + OpenAlex hit = resolved via OpenAlex, full path
+        with mock.patch.object(vp, "resolve_doi",
+                               return_value={"status": "not_found", "meta": None,
+                                             "error": "404"}), \
+             mock.patch.object(vp, "fetch_openalex_doi",
+                               return_value=dict(self.OA_META)):
+            entry, audit = vp.verify_doi_entry("10.5281/zenodo.99999", "cli")
+        self.assertTrue(entry["valid"])
+        self.assertEqual(entry["meta_source"], "openalex")
+        self.assertEqual(entry["title"], self.OA_META["title"])
+        self.assertIn("OpenAlex", entry["details"])
+        self.assertEqual(audit["registered"].get("registry"), "openalex")
+
+    def test_doi_fallback_hit_with_claims_cross_check(self):
+        # explicit claims DOI that Crossref 404s but OpenAlex resolves:
+        # claimed metadata gets the full cross-check (correct here)
+        claims = {"claimed_title": self.OA_META["title"],
+                  "claimed_authors": ["Smith"], "claimed_journal": "Zenodo",
+                  "claimed_year": "2023"}
+        with mock.patch.object(vp, "resolve_doi",
+                               return_value={"status": "not_found", "meta": None,
+                                             "error": "404"}), \
+             mock.patch.object(vp, "fetch_openalex_doi",
+                               return_value=dict(self.OA_META)), \
+             mock.patch.object(vp, "find_pmid_by_doi", return_value=""):
+            entry, _ = vp.verify_doi_entry("10.5281/zenodo.99999", "claims",
+                                           claimed=claims)
+        self.assertEqual(entry["verdict"], "correct")
+        self.assertEqual(entry["meta_source"], "openalex")
+
+    def test_doi_fallback_miss_keeps_404_semantics(self):
+        # OpenAlex also empty → original 404 semantics untouched
+        with mock.patch.object(vp, "resolve_doi",
+                               return_value={"status": "not_found", "meta": None,
+                                             "error": "404"}), \
+             mock.patch.object(vp, "fetch_openalex_doi", return_value={}):
+            e1, _ = vp.verify_doi_entry("10.9999/fake.x", "cli")
+        self.assertEqual(e1["verdict"], "invalid")
+        self.assertNotIn("openalex", str(e1.get("meta_source")))
+        with mock.patch.object(vp, "resolve_doi",
+                               return_value={"status": "not_found", "meta": None,
+                                             "error": "404"}), \
+             mock.patch.object(vp, "fetch_openalex_doi", return_value={}):
+            e2, _ = vp.verify_doi_entry("10.9999/fake.x", "scanned.html")
+        self.assertEqual(e2["verdict"], "unknown")
+        self.assertTrue(e2.get("suspect"))
+
+    def test_doi_fallback_silent_on_network_error(self):
+        # OpenAlex unreachable → {} → 404 semantics stand (a fallback
+        # failure never manufactures evidence)
+        def boom(doi, timeout=None):
+            raise vp.CircuitOpenError("circuit open")
+        with mock.patch.object(vp, "resolve_doi",
+                               return_value={"status": "not_found", "meta": None,
+                                             "error": "404"}), \
+             mock.patch.object(vp, "fetch_openalex_doi", side_effect=None):
+            pass  # fetch_openalex_doi itself swallows errors → {} — simulate:
+        with mock.patch.object(vp, "resolve_doi",
+                               return_value={"status": "not_found", "meta": None,
+                                             "error": "404"}), \
+             mock.patch.object(vp, "fetch_openalex_doi",
+                               side_effect=lambda doi, timeout=None: {}):
+            e, _ = vp.verify_doi_entry("10.9999/fake.x", "cli")
+        self.assertEqual(e["verdict"], "invalid")
+
+    def test_doi_fallback_retracted_cap(self):
+        meta = dict(self.OA_META, retracted=True,
+                    retraction_note="retracted (OpenAlex retraction state)")
+        with mock.patch.object(vp, "resolve_doi",
+                               return_value={"status": "not_found", "meta": None,
+                                             "error": "404"}), \
+             mock.patch.object(vp, "fetch_openalex_doi", return_value=meta), \
+             mock.patch.object(vp, "find_pmid_by_doi", return_value=""):
+            entry, _ = vp.verify_doi_entry("10.5281/zenodo.88888", "cli")
+        self.assertTrue(entry["retracted"])
+        self.assertEqual(entry["verdict"], "unknown")   # no claims → unknown + flag
+        self.assertIn("retracted", (entry.get("retraction_note") or "").lower())
+
+    # ── CJK title-search leg ──
+
+    def _cjk_entry(self, raw, **kw):
+        return dict({"key": "text1", "raw": raw, "pmid": "", "doi": "",
+                     "arxiv_id": "", "claimed_title": "",
+                     "claimed_authors": [], "claimed_journal": "",
+                     "claimed_year": "", "routable": False,
+                     "title_search_candidate": True}, **kw)
+
+    def test_cjk_leg_resolves_verbatim_title(self):
+        raw = ("[1] 王五, 李四. 儿童过敏性紫癜临床分析[J]. 中华儿科杂志, 2009.")
+        w = {"display_name": "儿童过敏性紫癜临床分析", "publication_year": 2009,
+             "authorships": [{"author": {"display_name": "王五"}},
+                             {"author": {"display_name": "李四"}}],
+             "primary_location": {"source": {"display_name": "中华儿科杂志"}},
+             "is_retracted": False, "doi": "https://doi.org/10.3969/x.123"}
+        with mock.patch.object(vp, "search_openalex_title",
+                               side_effect=lambda q, max_results=3,
+                               raise_on_error=False: [w]):
+            res, audit = vp.verify_title_entry(self._cjk_entry(raw), "refs.txt")
+        self.assertEqual(res["verdict"], "correct")
+        self.assertEqual(res["resolved_by"], "openalex_cjk_search")
+        self.assertEqual(res["meta_source"], "openalex")
+        self.assertEqual(audit["registered"]["registry"], "openalex title search")
+
+    def test_cjk_leg_retracted_candidate_capped(self):
+        raw = "撤稿的中文论文标题测试样例文本. 期刊名. 2015."
+        w = {"display_name": "撤稿的中文论文标题测试样例文本",
+             "publication_year": 2015, "authorships": [],
+             "primary_location": {"source": {"display_name": "某刊"}},
+             "is_retracted": True, "doi": ""}
+        with mock.patch.object(vp, "search_openalex_title",
+                               side_effect=lambda q, max_results=3,
+                               raise_on_error=False: [w]):
+            res, _ = vp.verify_title_entry(self._cjk_entry(raw), "refs.txt")
+        self.assertEqual(res["verdict"], "partial")
+        self.assertTrue(res["retracted"])
+
+    def test_cjk_leg_year_mismatch_is_skipped(self):
+        raw = "[1] 某某. 儿童过敏性紫癜临床分析. 中华儿科杂志, 2009."
+        w = {"display_name": "儿童过敏性紫癜临床分析", "publication_year": 2019,
+             "authorships": [], "is_retracted": False,
+             "primary_location": {"source": {"display_name": "中华儿科杂志"}}}
+        # claimed_year="2009" mirrors the real parse-text pipeline (the year
+        # is extracted from the raw text before the leg runs)
+        with mock.patch.object(vp, "search_openalex_title",
+                               side_effect=lambda q, max_results=3,
+                               raise_on_error=False: [w]):
+            res, _ = vp.verify_title_entry(
+                self._cjk_entry(raw, claimed_year="2009"), "refs.txt")
+        # title appears verbatim but the year disagrees → honest unknown
+        self.assertEqual(res["verdict"], "unknown")
+        self.assertNotEqual(res.get("resolved_by"), "openalex_cjk_search")
+
+    def test_cjk_leg_never_manufactures_mismatch(self):
+        raw = "王五. 一篇完全不相关的中文论文标题关于材料科学. 某学报. 2018."
+        w = {"display_name": "儿童过敏性紫癜临床分析", "publication_year": 2009,
+             "authorships": [], "is_retracted": False,
+             "primary_location": {"source": {"display_name": "中华儿科杂志"}}}
+        with mock.patch.object(vp, "search_openalex_title",
+                               side_effect=lambda q, max_results=3,
+                               raise_on_error=False: [w]):
+            res, _ = vp.verify_title_entry(self._cjk_entry(raw), "refs.txt")
+        self.assertEqual(res["verdict"], "unknown")
+        self.assertNotEqual(res["verdict"], "mismatch")
+
+    def test_cjk_leg_network_error_honest(self):
+        def boom(q, max_results=3, raise_on_error=False):
+            raise vp.CircuitOpenError("circuit open")
+        with mock.patch.object(vp, "search_openalex_title", side_effect=boom):
+            res, _ = vp.verify_title_entry(
+                self._cjk_entry("中文标题足够长的测试条目样例文本. 某刊. 2020."), "x")
+        self.assertEqual(res["verdict"], "unknown")
+        self.assertTrue(res["network_error"])
+        self.assertIn("retry", res["details"].lower())
+
+    def test_latin_entries_still_take_pubmed_leg(self):
+        # a CJK-free entry must NOT detour into the OpenAlex CJK leg
+        captured = {}
+        orig = vp.search_pubmed
+        def spy(q, max_results=5, raise_on_error=False):
+            captured["called"] = True
+            return []
+        vp.search_pubmed = spy
+        try:
+            res, _ = vp.verify_title_entry(
+                self._cjk_entry("A purely Latin title about rainfall patterns "
+                                "in small catchments. J Hydrol. 2010."), "x")
+        finally:
+            vp.search_pubmed = orig
+        self.assertTrue(captured.get("called"))
+        self.assertNotIn("openalex", str(res.get("resolved_by")))
+
+    def test_check_net_has_five_probes(self):
+        # the fifth probe (OpenAlex) must be part of the pre-flight
+        import inspect
+        body = inspect.getsource(vp.run_check_net)
+        self.assertIn("api.openalex.org", body)
 
 
 if __name__ == "__main__":

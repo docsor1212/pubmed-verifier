@@ -4,6 +4,15 @@
 
 Batch-verify PMID citations against PubMed API. Built for researchers, medical writers, and evidence-based medicine teams.
 
+## 简介（中文）
+
+**PubMed 文献引用批量验证工具**——把引用列表交给它，逐条核验 PMID/DOI/arXiv ID 是否真实存在、是否指向你声称的那篇论文（AI 幻觉引用最常见的形态就是「真 PMID 指向别的论文」）。五态判定（正确/不匹配/部分匹配/无效/待确认），撤稿检测全覆盖，网络故障如实标注「未判定」、绝不误报「不存在」。零依赖、纯本地运行。
+
+- **中文文献**：GB/T 7714 格式参考文献可解析（`……标题[J]. 刊名, 年… PMID: xxx`）；`--parse-text` 粘贴即核验整张文献表——行内 PMID/DOI 精确路由，中文条目经 OpenAlex 标题检索判定（无编号 ID 也能核）
+- **参考文献格式化**：`--format-references --citation-style gbt`（另支持 Vancouver/APA/AMA），先验证后排版，只排已验真的条目
+- **四数据源**：NCBI PubMed、Europe PMC 自动兜底、Crossref、OpenAlex（DataCite/Zenodo 等非 Crossref 注册的 DOI 也可判定）
+- **投稿就绪判定 + 审计底稿**：每份报告自带证据链，`--export-audit` 输出可复放的 JSON 工作底稿
+
 ## Why?
 
 Academic projects routinely contain hundreds of PMID citations. Manual verification is tedious and error-prone. During our own 225-reference audit, we found 3 invalid PMIDs and 6 cross-domain mismatches — errors that would have undermined the entire project.
@@ -36,6 +45,12 @@ Academic projects routinely contain hundreds of PMID citations. Manual verificat
 ```bash
 # Install
 openclaw skills install docsor1212/pubmed-verifier
+
+# 中文场景速览
+python3 scripts/verify_pmids.py --parse-text references.txt --no-cache          # 核验整张参考文献表
+python3 scripts/verify_pmids.py --parse-text references.txt --format-references out.txt --citation-style gbt
+python3 scripts/verify_pmids.py --pmids 31018962,22213727                       # 批量验证 PMID
+python3 scripts/verify_pmids.py --check-net                                     # 网络预检（五源）
 
 # Verify all PMIDs in a project
 python3 scripts/verify_pmids.py --source /path/to/project --output report.html

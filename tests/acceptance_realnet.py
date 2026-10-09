@@ -399,6 +399,45 @@ record("T23 format-references GB/T e2e",
        rc in (0, 1) and ok1 and ok2 and ok3,
        f"header={ok1} numbered_entry={ok2} stats_line={ok3}")
 
+# ── T24: OpenAlex DOI fallback (v4.1.0): a real DataCite/Zenodo DOI that
+# Crossref does not know becomes decidable, with claimed cross-check ──
+import verify_pmids as _vpmod
+sys.path.insert(0, str(ROOT / "scripts"))
+OA_DDOI = "10.5281/zenodo.10035872"
+oa_meta = _vpmod.fetch_openalex_doi(OA_DDOI)
+if not oa_meta or not oa_meta.get("title"):
+    record("T24 OpenAlex DOI fallback", False, "OpenAlex unreachable or DOI missing — environment")
+else:
+    oa_claims = [{"doi": OA_DDOI, "title": oa_meta["title"],
+                  "authors": [a.split()[0] for a in oa_meta.get("authors", [])[:1]],
+                  "journal": oa_meta.get("journal", ""), "year": oa_meta.get("year", "")}]
+    rc, so, data = run_cli(["--claims", json.dumps(oa_claims), "--no-cache"])
+    r = ((data or {}).get("results") or [{}])[0]
+    record("T24 OpenAlex DOI fallback (Crossref-404 DOI decidable)",
+           r.get("meta_source") == "openalex" and r.get("valid") is True,
+           f"meta_source={r.get('meta_source')} verdict={r.get('verdict')}")
+
+# ── T25: fake DOI stays invalid with BOTH sources consulted (v4.1.0) ──
+rc, so, data = run_cli(["--dois", "10.9999/fake.123456", "--no-cache"])
+r = ((data or {}).get("results") or [{}])[0]
+record("T25 fake DOI invalid after OpenAlex fallback",
+       rc == 1 and r.get("verdict") == "invalid",
+       f"verdict={r.get('verdict')} rc={rc}")
+
+# ── T26: CJK title-search leg (v4.1.0): a markerless Chinese reference ──
+with tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="w",
+                                 encoding="utf-8") as tf:
+    tf.write("[1] 王五, 李四. 儿童过敏性紫癜临床分析. 中华儿科杂志, 2009.\n")
+    cjk_path = tf.name
+rc, so, data = run_cli(["--parse-text", cjk_path, "--no-cache"])
+Path(cjk_path).unlink(missing_ok=True)
+t_res = [r for r in (data or {}).get("results", [])
+         if r.get("resolved_by") == "openalex_cjk_search"]
+record("T26 OpenAlex CJK title-search leg",
+       bool(t_res) and t_res[0].get("verdict") in ("correct", "partial"),
+       f"verdict={t_res[0].get('verdict') if t_res else '-'} "
+       f"title={((t_res[0].get('title') if t_res else '') or '')[:40]}")
+
 # ── 汇总 ──
 passed = sum(1 for r in RESULTS if r["ok"])
 failed = sum(1 for r in RESULTS if not r["ok"])

@@ -2,25 +2,25 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 4.0.0
+version: 4.1.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
   pointing to a DIFFERENT paper. Five-state citation verification (correct /
-  mismatch / partial / invalid / unknown), citation-context parsing, dual
-  fuzzy matching, Crossref DOI cross-check, retraction detection (capped at
-  partial), correct-PMID suggestion, arXiv ID verification, plain-text
-  reference list parsing, formatted reference lists (GB/T 7714 / Vancouver /
-  APA / AMA), SQLite cache, CSV/JSON claims, HTML/JSON/text reports. Dual data
-  sources with automatic Europe PMC fallback. Network failures are honestly
-  reported as unverified, never as "not found". Zero dependencies, runs fully
-  local. Triggers: verify PMIDs, check citations, validate references,
-  citation audit, reference check, PMID check, batch verify references, AI
-  hallucination detection, verify DOI, DOI check, validate citations, citation
-  formatting, reference formatter, GB/T 7714.
+  mismatch / partial / invalid / unknown), citation-context parsing, Crossref
+  DOI cross-check, retraction detection (capped at partial), correct-PMID
+  suggestion, arXiv ID verification, plain-text reference list parsing,
+  formatted reference lists (GB/T 7714 / Vancouver / APA / AMA), OpenAlex DOI
+  fallback for non-Crossref registries, Chinese-reference title search,
+  CSV/JSON claims, HTML/JSON/text reports. Four data sources: NCBI, Europe PMC
+  fallback, Crossref, OpenAlex. Network failures are honestly reported as
+  unverified, never as "not found". Zero dependencies, runs fully local.
+  Triggers: verify PMIDs, check citations, citation audit, reference check,
+  PMID check, batch verify references, AI hallucination detection, verify DOI,
+  DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v4.0.0
+# PubMed Citation Verifier v4.1.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -87,7 +87,7 @@ python3 scripts/verify_pmids.py --source /path/to/project --diff audit.json --ou
 # Verify arXiv IDs (preprints) — mixed audits supported
 python3 scripts/verify_pmids.py --arxivs "2401.12345,cs/0211004" --no-cache
 
-# Pre-flight: are the four data sources reachable right now?
+# Pre-flight: are the five data sources reachable right now?
 python3 scripts/verify_pmids.py --check-net
 
 # Audit a BibTeX or RIS bibliography file directly (PMID > DOI > arXiv routing)
@@ -105,6 +105,37 @@ python3 scripts/verify_pmids.py --parse-text references.txt --format-references 
 # Institutional niceties (recommended): NCBI API key + contact email
 python3 scripts/verify_pmids.py --source . --verify-doi --ncbi-api-key $NCBI_API_KEY --mailto you@lab.org
 ```
+
+## What the output looks like
+
+Terminal text report (verdict line, then per-citation evidence):
+
+```
+Readiness: NOT SUBMISSION-READY — 1 invalid, 1 mismatched
+Results: 1/3 correct, 1 mismatch, 1 invalid, 0 partial, 0 unknown
+============================================================
+
+✅ PMID 31018962 (claims) [correct]
+   Actual: Classification criteria for autoinflammatory recurrent fevers
+   Claimed: Classification criteria for autoinflammatory recurrent fevers
+   Evidence: title ✓ · author ✓ · journal ✓ · year ✓
+
+⚠️ PMID 34078778 (claims) [mismatch]
+   Actual: Effect of CAD/CAM materials on the marginal fit of crowds
+   Claimed: JIA pathogenesis and treatment
+   → Suggest: PMID 34425842 - Juvenile idiopathic arthritis: from aetio...
+   Evidence: title ✗ · author ✗ · journal ✗ · year —
+
+❌ PMID 99999999 (cli) [invalid]
+   Error: PMID not found in API response
+```
+
+`--output report.json` carries the same verdicts plus the full evidence
+chain per citation (`evidence.title_match / author_match / journal_match /
+year_match`, `fields` tri-state, `meta_source` naming which registry
+answered, `resolved_by` when the title-search/OpenAlex legs matched) and a
+`stats` block with the submission-readiness verdict. `--format-references`
+writes the ready-to-paste citation list shown in the v4.0.0 section.
 
 ## FAQ & common mistakes
 
@@ -191,6 +222,26 @@ match the version-of-record DOI registered on that arXiv entry — a typo,
 or a DOI from a different paper. The registered DOI is in `details`;
 fix the claim or drop the `doi` cell.
 
+### Worked scenarios
+
+- **"The reviewer asked how I checked my references."** — run the audit
+  with `--export-audit audit.json --verify-doi`: the JSON working-paper
+  contains tool identity, version, the exact (API-key-redacted) invocation,
+  and the per-citation evidence chain a reviewer or editor can replay.
+  Submit it alongside the manuscript.
+- **"Checking the reference list of my thesis."** — copy the list into a
+  plain-text file (one reference per line, or keep the `[1]` numbering) and
+  run `--parse-text refs.txt`: inline PMIDs/DOIs route exactly; English
+  entries resolve via PubMed title search; Chinese entries resolve via the
+  OpenAlex CJK leg. Finish with
+  `--format-references refs_clean.txt --citation-style gbt` for a corrected,
+  uniformly formatted list.
+- **"Screening a systematic review's bibliography (PRISMA)."** — verify the
+  full list once, export the audit as the baseline, then re-run
+  `--diff audit.json` before each resubmission: newly retracted, degraded
+  and new citations are reported as deltas, so you only re-read what
+  changed.
+
 ## Anti-patterns — things done WRONG
 
 Each entry: the mistake → why it fails → the right way.
@@ -204,10 +255,11 @@ Each entry: the mistake → why it fails → the right way.
 3. **Trusting a cached verdict right after publication day** — a brand-new
    PMID may have been cached as not-found by an earlier run, and retraction
    status is as of cache time. → Final pre-submission check: `--no-cache`.
-4. **Assuming "not found" always means fabricated** — auto-extracted DOIs
-   that 404 stay *suspects* (DataCite DOIs don't live in Crossref); arXiv
-   IDs removed by moderators also return empty. → Check doi.org / arxiv.org
-   by hand before accusing.
+4. **Assuming "not found" always means fabricated** — a Crossref 404 is
+   re-checked at OpenAlex (DataCite/Zenodo/Chinese-registry DOIs live
+   there), so "unknown in both registries" is now the bar; auto-extracted
+   DOIs that 404 in both stay *suspects*. arXiv IDs removed by moderators
+   also return empty. → Check doi.org / arxiv.org by hand before accusing.
 5. **Copying the leading `'` from CSV cells** — that apostrophe is the
    formula-injection guard, not data corruption. → Strip it after import.
 6. **Reading the READY line as a quality score** — it only means "no
@@ -225,10 +277,11 @@ What this tool can NOT do, consolidated in one place:
 - **Context parsing is heuristic** — v3.3.0 keeps common abbreviations
   (U.S., e.g., vs., St., Vol., No.) from splitting a title, but exotic
   formatting can still mis-split; for exact metadata use `--claims-file`.
-- **DataCite/repository DOIs are not in Crossref** — an auto-extracted
-  or bibliography-sourced DOI missing from Crossref stays a *suspect*
-  (`.bib` files commonly hold DataCite/repository DOIs — check doi.org
-  by hand); only `--dois`/claims DOIs count a Crossref 404 as invalid.
+- **DataCite/repository DOIs are not in Crossref — OpenAlex covers them**
+  (v4.1.0): a Crossref 404 now gets a second look at OpenAlex; only when
+  BOTH registries report the DOI unknown do the 404 semantics apply
+  (`--dois`/claims = invalid, auto-extracted = suspect). Resolved-via-
+  OpenAlex entries carry `meta_source: openalex`.
 - **arXiv moderator removals also return "not found"** — the invalid
   verdict carries that caveat in its details.
 - **Retraction status is as-of-cache-time** — final pre-submission
@@ -364,7 +417,8 @@ otherwise-unverifiable citation (the DOI mismatch is an independent fact).
   library, zero dependencies).
 - Network access is limited to these official academic registries, always
   over HTTPS: `eutils.ncbi.nlm.nih.gov`, `www.ebi.ac.uk` (Europe PMC),
-  `api.crossref.org`, `export.arxiv.org`. No other hosts are contacted; no telemetry, no
+  `api.crossref.org`, `api.openalex.org`, `export.arxiv.org` — no other
+  hosts are contacted; no telemetry, no
   analytics, no data collection — the only outbound payloads are the PMIDs,
   DOIs and titles you asked to verify.
 - Your files and reports stay on your machine. Writes are limited to the
@@ -570,7 +624,7 @@ three judgment-ladder defects; all three are fixed and locked:
   (never a mismatch source); a DOI in the reference is cross-checked
   against the registry like any claims DOI. Requires a PMID marker per
   reference.
-- **`--check-net`** — probes the four data sources (5 s each), shows your
+- **`--check-net`** — probes the data sources (5 s each), shows your
   proxy state and prints practical next steps when something is
   unreachable. Run it when results come back unknown on a constrained
   network.
@@ -604,6 +658,26 @@ three judgment-ladder defects; all three are fixed and locked:
   PMID/DOI marker keep the documented weak-parsing boundary — supply a
   PMID or DOI for exact routing.
 - `examples/refs_list.sample.txt` ships a ready-made parse-text fixture.
+
+## v4.1.0 — OpenAlex fallback & Chinese-reference title search
+
+- **OpenAlex is now the fourth data source** — a DOI that Crossref reports
+  404 gets a second look at OpenAlex before any verdict: DataCite, Zenodo,
+  SSRN and Chinese-registry DOIs (which do not live in Crossref) become
+  fully decidable — resolved, metadata attached, claims cross-checked,
+  retractions flagged (`is_retracted`). Only when OpenAlex also comes up
+  empty do the original 404 semantics stand (explicit DOI = invalid,
+  scanned DOI = suspect). `--check-net` probes five sources now.
+- **Chinese references without any ID can now be verified** — a markerless
+  CJK entry in `--parse-text` searches OpenAlex by its title (the query is
+  the title-shaped segment of the entry, not the whole line); a candidate
+  counts only when its registered title appears **verbatim** in your entry
+  text with an agreeing year, and the verdict carries
+  `resolved_by: openalex_cjk_search`. No hit = honestly unknown; this leg
+  never manufactures a mismatch, and a network failure stays unknown.
+- Docs: the reports' actual shape is now shown in "What the output looks
+  like"; three worked scenarios added to the FAQ (reviewer evidence,
+  thesis citation check, PRISMA screening).
 
 ## How it works
 
@@ -682,7 +756,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v4.0.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v4.1.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/python_api.md` | Calling the verifier from Python (stable surfaces + examples) |
 | `examples/claims.sample.csv` | Reference format for `--claims-file` (incl. a DOI-only row) |

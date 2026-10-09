@@ -82,8 +82,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "4.0.0"
-_UA_TOOL = "pubmed-verifier/4.0 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "4.1.0"
+_UA_TOOL = "pubmed-verifier/4.1 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -490,6 +490,206 @@ def resolve_doi(doi: str, timeout=None) -> dict:
         return {"status": "error", "meta": None, "error": str(e)}
 
 
+# ── OpenAlex fallback (v4.1.0, fourth metadata source) ──
+
+_OPENALEX_BASE = "https://api.openalex.org"
+
+
+def fetch_openalex_doi(doi: str, timeout=None) -> dict:
+    """Resolve a DOI against OpenAlex (v4.1.0) — the fallback for DOIs that
+    do not live in Crossref (DataCite, Zenodo, SSRN, Chinese registries).
+
+    Returns a meta dict shaped like resolve_doi's, or {} when OpenAlex also
+    reports the DOI unknown (404) or is unreachable — a fallback failure
+    never manufactures evidence, it just leaves the Crossref-404 semantics
+    untouched."""
+    url = f"{_OPENALEX_BASE}/works/https://doi.org/{urllib.parse.quote(_clean_doi(doi), safe='')}"
+    if _OPTS["mailto"]:
+        url += f"?mailto={urllib.parse.quote(_OPTS['mailto'])}"
+    try:
+        data = json.loads(_api_get(url, timeout=timeout if timeout is not None else _OPTS["timeout"]))
+    except urllib.error.HTTPError:
+        return {}
+    except (urllib.error.URLError, OSError, TimeoutError, http.client.HTTPException,
+            json.JSONDecodeError, ValueError, CircuitOpenError):
+        return {}
+    authors = [a.get("author", {}).get("display_name", "")
+               for a in data.get("authorships", []) if isinstance(a, dict)]
+    src_obj = (data.get("primary_location") or {}).get("source") or {}
+    meta = {
+        "title": data.get("display_name", "") or data.get("title", ""),
+        "journal": src_obj.get("display_name", "") or "",
+        "year": str(data.get("publication_year") or ""),
+        "authors": [a for a in authors if a],
+        "type": data.get("type", ""),
+        "retracted": bool(data.get("is_retracted")),
+        "retraction_note": "retracted (OpenAlex retraction state)" if data.get("is_retracted") else "",
+        "registry": "openalex",
+    }
+    return meta
+
+
+def search_openalex_title(query: str, max_results: int = 3,
+                          raise_on_error: bool = False,
+                          timeout=None) -> list:
+    """Search OpenAlex works by free-text title (v4.1.0). Raises on network
+    failure (callers decide honesty), returns a list of work dicts."""
+    params = urllib.parse.quote(query, safe="")
+    url = f"{_OPENALEX_BASE}/works?search={params}&per-page={max_results}"
+    if _OPTS["mailto"]:
+        url += f"&mailto={urllib.parse.quote(_OPTS['mailto'])}"
+    try:
+        data = json.loads(_api_get(url, timeout=timeout if timeout is not None else _OPTS["timeout"]))
+    except Exception:
+        if raise_on_error:
+            raise
+        return []
+    return data.get("results", []) or []
+
+
+def _cjk_query_from_raw(raw: str) -> str:
+    """Heuristic CJK title query from a plain-text reference entry.
+
+    Academic reference lines follow "作者. 标题. 刊名, 年." — so after
+    stripping numbering / PMID / DOI / URL noise, the title is the first
+    sentence-sized segment: skip a short comma-bearing leading segment
+    (the author list) and take the next one; a comma-free leading segment
+    IS the title (author-less entries). Quoted via chr() to survive every
+    patching/quoting layer."""
+    _punct = r"[\[\]{}()（）<>《》;;,，.。:：!！?？|/" + chr(34) + chr(39) + "]"
+    t = _TEXT_NUM_RE.sub("", raw or "", count=1)
+    t = re.sub(r'PMID[\s]*\d{4,9}', ' ', t, flags=re.IGNORECASE)
+    t = re.sub(r'(?:https?://\S+|\bdoi\s*[:：]?\s*10\.\S+|10\.\d{4,9}/\S+)',
+               ' ', t, flags=re.IGNORECASE)
+    t = re.sub(r'arXiv[\s]*\S+', ' ', t, flags=re.IGNORECASE)
+    # segment on sentence periods BEFORE stripping them (the title is a
+    # segment, not the whole line)
+    segments = [s.strip() for s in re.split(r'[.。]', t) if s.strip()]
+    if not segments:
+        return ""
+    title_seg = segments[0]
+    # author-like: short (a bare Chinese name is <=6 chars) or comma-bearing
+    if len(segments) >= 2 and len(title_seg) <= 20 and (
+            "，" in title_seg or "," in title_seg
+            or len(title_seg.replace(" ", "")) <= 6):
+        title_seg = segments[1]
+    title_seg = re.sub(_punct + "+", " ", title_seg)
+    title_seg = re.sub(r'\b[JMRDSC]\b', ' ', title_seg)   # GB/T type tags
+    title_seg = " ".join(title_seg.split())
+    return title_seg[:40].strip()
+
+
+
+def _verify_cjk_openalex(entry: dict, src: str) -> tuple:
+    """Verify a CJK-bearing, ID-less reference entry via OpenAlex title
+    search (v4.1.0).
+
+    Gates are strict: a candidate counts only when its registered title is
+    an exact substring of the user's own entry text (the user endorsed that
+    string) AND the year agrees. A match re-fills the claimed fields from
+    the OpenAlex record and runs the normal cross-check; anything else
+    stays honestly unknown — this path never manufactures a mismatch, and
+    a network failure is reported as unreachable, never as "no match"."""
+    raw = entry.get("raw", "")
+    title = entry.get("claimed_title", "") or _cjk_query_from_raw(raw)
+    res = {"pmid": "", "doi": "", "arxiv_id": "",
+           "source_file": os.path.basename(src),
+           "claimed_title": title, "valid": False, "entry_kind": "text"}
+    audit0 = {"pmid": "", "arxiv_id": "", "doi": "",
+              "source_file": res["source_file"],
+              "claimed": {"claimed_title": title,
+                          "claimed_authors": entry.get("claimed_authors", []),
+                          "claimed_journal": entry.get("claimed_journal", ""),
+                          "claimed_year": entry.get("claimed_year", "")}}
+    try:
+        hits = search_openalex_title(title, max_results=3, raise_on_error=True)
+    except CircuitOpenError as e:
+        res["verdict"] = "unknown"
+        res["network_error"] = True
+        res["details"] = ("OpenAlex title search unreachable (circuit open / "
+                          "network) — not judged; retry when the network is up")
+        res["error"] = res["details"]
+        audit0.update({"verdict": "unknown", "network_error": True,
+                       "evidence": {"route": "openalex_cjk_search_unreachable",
+                                    "error": type(e).__name__}})
+        return res, audit0
+    except Exception as e:
+        res["verdict"] = "unknown"
+        res["network_error"] = True
+        res["details"] = (f"OpenAlex title search unreachable "
+                          f"({type(e).__name__}) — not judged; retry when the "
+                          f"network is up")
+        res["error"] = res["details"]
+        audit0.update({"verdict": "unknown", "network_error": True,
+                       "evidence": {"route": "openalex_cjk_search_unreachable",
+                                    "error": type(e).__name__}})
+        return res, audit0
+    for w in hits:
+        if not isinstance(w, dict):
+            continue
+        dn = (w.get("display_name") or "").strip()
+        w_year = str(w.get("publication_year") or "")
+        if not dn or len(dn) < 6:
+            continue
+        if dn not in raw:
+            continue
+        claimed_year = entry.get("claimed_year", "")
+        if claimed_year and w_year and claimed_year != w_year:
+            continue
+        authors = [a.get("author", {}).get("display_name", "")
+                   for a in w.get("authorships", []) if isinstance(a, dict)]
+        authors = [a for a in authors if a]
+        journal = ((w.get("primary_location") or {}).get("source") or {}).get("display_name", "")
+        claimed = {"claimed_title": dn,
+                   "claimed_authors": entry.get("claimed_authors") or authors[:3],
+                   "claimed_journal": entry.get("claimed_journal") or journal,
+                   "claimed_year": entry.get("claimed_year") or w_year}
+        cross = cross_check_citation(claimed, {
+            "title": dn, "authors": ", ".join(authors),
+            "journal": journal, "pubdate": w_year})
+        if cross["verdict"] == "correct":
+            res.update({"valid": True, "title": dn,
+                        "authors": ", ".join(authors),
+                        "journal": journal, "pubdate": w_year,
+                        "verdict": "correct",
+                        "resolved_by": "openalex_cjk_search",
+                        "meta_source": "openalex",
+                        "details": ("Matched by OpenAlex CJK title search "
+                                    "(registered title appears verbatim in the "
+                                    "entry text); registered record attached."),
+                        "confidence": round(cross["confidence"], 2)})
+            if w.get("is_retracted"):
+                res["retracted"] = True
+                res["retraction_note"] = "retracted (OpenAlex retraction state)"
+                res["verdict"], res["details"] = apply_retraction_cap(
+                    res["verdict"], res["details"])
+            audit = dict(audit0, claimed=claimed,
+                         registered={"title": dn, "journal": journal,
+                                     "pubdate": w_year, "authors": authors,
+                                     "doi": (w.get("doi") or "").replace("https://doi.org/", ""),
+                                     "registry": "openalex title search"},
+                         evidence=cross,
+                         retraction={"flagged": res.get("retracted", False),
+                                     "note": res.get("retraction_note", ""),
+                                     "date": "", "source": "openalex"})
+            return res, audit
+    res["verdict"] = "unknown"
+    if hits:
+        res["details"] = ("OpenAlex returned candidate(s) but none had a "
+                          "registered title appearing verbatim in the entry "
+                          "(with a matching year) — supply a PMID or DOI for "
+                          "a decisive verdict.")
+    else:
+        res["details"] = ("No OpenAlex hit for this Chinese reference — it may "
+                          "be too new, very local, or outside OpenAlex coverage; "
+                          "supply a PMID or DOI for a decisive verdict.")
+    res["error"] = res["details"]
+    audit0.update({"verdict": "unknown",
+                   "evidence": {"route": "openalex_cjk_search",
+                                "candidates": len(hits)}})
+    return res, audit0
+
+
 def find_pmid_by_doi(doi: str) -> str:
     """Europe PMC DOI field query (v2.9.0): link a DOI back to its PMID.
     Returns the PMID string, or "" when unlinked/failed (never a verdict)."""
@@ -525,6 +725,17 @@ def verify_doi_entry(doi: str, src: str, resolution: dict = None,
     entry = {"pmid": "", "doi": doi, "source_file": os.path.basename(src),
              "claimed_title": "", "valid": False, "entry_kind": "doi"}
     res = resolution if resolution is not None else resolve_doi(doi)
+    # v4.1.0: a Crossref 404 is no longer the last word — DataCite, Zenodo,
+    # SSRN and Chinese-registry DOIs live outside Crossref. OpenAlex gets a
+    # second look; when it resolves the DOI the whole resolved path below
+    # (claimed cross-check, PMID link, retraction cap) applies unchanged,
+    # and when it also comes up empty the original 404 semantics stand.
+    oa_fallback = False
+    if res["status"] == "not_found":
+        oa_meta = fetch_openalex_doi(doi)
+        if oa_meta:
+            res = {"status": "resolved", "meta": oa_meta, "error": ""}
+            oa_fallback = True
     if res["status"] == "resolved":
         meta = res["meta"]
         entry["resolved"] = True
@@ -533,9 +744,11 @@ def verify_doi_entry(doi: str, src: str, resolution: dict = None,
         entry["journal"] = meta["journal"]
         entry["pubdate"] = meta["year"]
         entry["authors"] = ", ".join(meta["authors"][:3])
-        entry["meta_source"] = "crossref"
+        entry["meta_source"] = "openalex" if oa_fallback else "crossref"
         entry["verdict"] = "unknown"
-        entry["details"] = (f"DOI resolves — registered: {meta['title'][:100]} "
+        _reg_label = "OpenAlex" if oa_fallback else "Crossref"
+        entry["details"] = (f"DOI resolves — registered via {_reg_label}: "
+                            f"{meta['title'][:100]} "
                             f"({meta['journal']}, {meta['year']}). No claimed "
                             f"metadata to cross-verify.")
         if meta.get("retracted"):
@@ -2561,7 +2774,7 @@ def generate_audit_report(entries: list, stats: dict, args, deltas: dict = None)
                 "mailto_configured": bool(_OPTS["mailto"]),
             },
             "data_sources": ["eutils.ncbi.nlm.nih.gov", "www.ebi.ac.uk/europepmc",
-                             "api.crossref.org", "export.arxiv.org"],
+                             "api.crossref.org", "api.openalex.org", "export.arxiv.org"],
             "verdict_ladder": _VERDICT_LADDER,
         },
         "summary": stats,
@@ -3083,8 +3296,13 @@ def parse_plaintext_references(path: str) -> tuple:
                   "claimed_year": claimed.get("claimed_year", ""),
                   "claimed_source_format": claimed.get("claimed_source_format", "")})
         e["routable"] = bool(e["pmid"] or e["doi"] or e["arxiv_id"])
+        # v4.1.0: CJK entries join the title-search queue too — the OpenAlex
+        # CJK leg searches the cleaned raw text, so a parseable title is not
+        # required (the Latin freeform parser under-extracts Chinese).
         e["title_search_candidate"] = (not e["routable"]
-                                       and len(e.get("claimed_title", "")) >= 15)
+                                       and (len(e.get("claimed_title", "")) >= 15
+                                            or (_HAS_CJK.search(entry_text)
+                                                and len(entry_text) >= 12)))
         if e["routable"] or e["title_search_candidate"]:
             entries.append(e)
         else:
@@ -3106,6 +3324,12 @@ def verify_title_entry(entry: dict, src: str) -> tuple:
     res = {"pmid": "", "doi": "", "arxiv_id": "",
            "source_file": os.path.basename(src),
            "claimed_title": title, "valid": False, "entry_kind": "text"}
+    # v4.1.0: CJK-bearing, ID-less entries route to the OpenAlex CJK leg —
+    # PubMed's esearch is Latin-oriented and would honestly return nothing.
+    raw_text = entry.get("raw", "")
+    if ('\u4e00' <= (title[:1] or ' ') <= '\u9fff') or \
+            any('\u4e00' <= ch <= '\u9fff' for ch in raw_text):
+        return _verify_cjk_openalex(entry, src)
     claimed = {"claimed_title": title,
                "claimed_authors": entry.get("claimed_authors", []),
                "claimed_journal": entry.get("claimed_journal", ""),
@@ -3371,7 +3595,7 @@ def lint_claims_ris(path: str) -> list:
 
 
 def run_check_net() -> int:
-    """Pre-flight connectivity probe (v3.9.0): 5s per data source, prints
+    """Pre-flight connectivity probe (v3.9.0, five sources since v4.1.0): 5s per data source, prints
     reachability + practical next steps. Exit 0 all reachable, 2 otherwise
     (verification would honestly mark affected citations unknown)."""
     targets = [
@@ -3379,6 +3603,7 @@ def run_check_net() -> int:
         ("Europe PMC", "https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=test&format=json&pageSize=1"),
         ("Crossref", "https://api.crossref.org/works/10.1038/nature12968"),
         ("arXiv API", "https://export.arxiv.org/api/query?id_list=1706.03762&max_results=1"),
+        ("OpenAlex (fallback)", "https://api.openalex.org/works?search=test&per-page=1"),
     ]
     proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
     print("Network pre-flight (5s timeout per source):")
@@ -3705,7 +3930,7 @@ def main():
             arxiv_inputs.append((aid, "claims", claimed))
         for cd, claimed in explicit_doi.items():
             doi_inputs.append((cd, "claims", claimed))
-    elif not pmid_entries and not doi_inputs and not arxiv_inputs:
+    elif not pmid_entries and not doi_inputs and not arxiv_inputs and not title_queue:
         if explicit_claims is not None or explicit_doi is not None:
             print("No usable claims in the input — check the claims payload "
                   "or file (--lint-claims validates files offline).",
@@ -3721,7 +3946,7 @@ def main():
                  [t for t in doi_inputs if t[1] not in ("cli", "claims")]
     arxiv_inputs = [t for t in arxiv_inputs if t[1] in ("cli", "claims")] + \
                    [t for t in arxiv_inputs if t[1] not in ("cli", "claims")]
-    if not pmid_entries and not doi_inputs and not arxiv_inputs:
+    if not pmid_entries and not doi_inputs and not arxiv_inputs and not title_queue:
         print("No PMIDs, DOIs or arXiv IDs found.")
         sys.exit(0)
 
@@ -4125,7 +4350,7 @@ def main():
     repro = {
         "command": "verify_pmids.py " + " ".join(_redacted_argv()),
         "version": _TOOL_VERSION,
-        "sources": "eutils.ncbi.nlm.nih.gov · www.ebi.ac.uk (Europe PMC) · api.crossref.org · export.arxiv.org — all HTTPS",
+        "sources": "eutils.ncbi.nlm.nih.gov · www.ebi.ac.uk (Europe PMC) · api.crossref.org · api.openalex.org · export.arxiv.org — all HTTPS",
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
