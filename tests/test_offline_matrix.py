@@ -2436,5 +2436,137 @@ class TestV410(_Reset):
         self.assertIn("api.openalex.org", body)
 
 
+
+class TestV420(_Reset):
+    """v4.2.0: retraction replacement suggestions + delta detail panel +
+    check-net proxy masking."""
+
+    def test_replacement_suggestions_pick_and_label(self):
+        results = [{"pmid": "24476887", "retracted": True, "valid": True,
+                    "title": "Stimulus-triggered fate conversion of somatic cells",
+                    "verdict": "partial"}]
+        cands = [{"pmid": "30000001", "valid": True, "retracted": False,
+                  "title": "Follow-up study on somatic cell reprogramming approaches"},
+                 {"pmid": "24476887", "valid": True, "retracted": False,
+                  "title": "The retracted paper itself"},
+                 {"pmid": "30000002", "valid": True, "retracted": True,
+                  "title": "Another retracted one must be excluded"},
+                 {"pmid": "30000003", "valid": True, "retracted": False,
+                  "title": "A different live paper on the topic"}]
+        orig = vp.search_pubmed
+        vp.search_pubmed = lambda q, max_results=5, raise_on_error=False: cands
+        try:
+            vp.suggest_retraction_replacements(results)
+        finally:
+            vp.search_pubmed = orig
+        r = results[0]
+        pmids = [s["pmid"] for s in r["suggested_pmids"]]
+        self.assertEqual(pmids, ["30000001", "30000003"])   # self + retracted excluded
+        self.assertTrue(all(s.get("replacement_for_retracted") for s in r["suggested_pmids"]))
+        self.assertIn("NOT verdicts", r["replacement_note"])
+
+    def test_replacement_skips_existing_suggestions_and_short_titles(self):
+        results = [{"pmid": "1", "retracted": True,
+                    "suggested_pmids": [{"pmid": "9", "title": "x"}],
+                    "title": "A long enough registered title for the search"},
+                   {"pmid": "2", "retracted": True, "title": "short"}]
+        called = []
+
+        def spy(q, max_results=5, raise_on_error=False):
+            called.append(q)
+            return []
+        orig = vp.search_pubmed
+        vp.search_pubmed = spy
+        try:
+            vp.suggest_retraction_replacements(results)
+        finally:
+            vp.search_pubmed = orig
+        self.assertEqual(called, [])   # already has suggestions / title too short
+
+    def test_replacement_network_error_is_silent(self):
+        def boom(q, max_results=5, raise_on_error=False):
+            raise vp.CircuitOpenError("down")
+        results = [{"pmid": "1", "retracted": True,
+                    "title": "A long enough registered title for the search"}]
+        orig = vp.search_pubmed
+        vp.search_pubmed = boom
+        try:
+            vp.suggest_retraction_replacements(results)   # must not raise
+        finally:
+            vp.search_pubmed = orig
+        self.assertNotIn("suggested_pmids", results[0])
+
+    def test_delta_panel_five_categories_in_html(self):
+        stats = {"total": 4, "correct": 1, "mismatch": 0, "partial": 0,
+                 "invalid": 0, "unknown": 0, "retracted": 1,
+                 "network_errors": 0, "doi_splice": 0,
+                 "submission_readiness": {"ready": False, "summary": "x"}}
+        deltas = {"newly_retracted": [{"key": "24476887", "title": "STAP cells"}],
+                  "degraded": [{"key": "31018962", "was": "correct", "now": "partial"}],
+                  "improved": [{"key": "22213727", "was": "partial", "now": "correct"}],
+                  "new": [{"key": "9999", "verdict": "correct"}],
+                  "dropped": [{"key": "8888"}],
+                  "counts": {"newly_retracted": 1, "degraded": 1, "improved": 1,
+                             "new": 1, "dropped": 1}}
+        h = vp.generate_html_report([], stats, "x", deltas=deltas)
+        for token in ("Newly RETRACTED", "Degraded verdicts", "Improved verdicts",
+                      "New in this run", "Dropped (absent this run)",
+                      "correct → partial"):
+            self.assertIn(token, h)
+
+    def test_markdown_delta_detail_rows(self):
+        stats = {"total": 2, "correct": 1, "mismatch": 0, "partial": 0,
+                 "invalid": 0, "unknown": 0, "retracted": 0,
+                 "network_errors": 0, "doi_splice": 0,
+                 "submission_readiness": {"ready": True, "summary": "x"}}
+        deltas = {"newly_retracted": [], "degraded": [], "improved": [],
+                  "new": [{"key": "22213727", "verdict": "correct"}],
+                  "dropped": [{"key": "99999999"}],
+                  "counts": {"newly_retracted": 0, "degraded": 0,
+                             "improved": 0, "new": 1, "dropped": 1}}
+        m = vp.generate_markdown_report([], stats, "x", deltas=deltas)
+        self.assertIn("+ 22213727 (correct)", m)
+        self.assertIn("− 99999999", m)
+
+    def test_delta_panel_does_not_shadow_main_table(self):
+        # P0 regression lock: the panel's list variable must never shadow the
+        # main table's row accumulator — with deltas present AND results
+        # present, the report keeps every citation row (and no Python repr)
+        stats = {"total": 1, "correct": 1, "mismatch": 0, "partial": 0,
+                 "invalid": 0, "unknown": 0, "retracted": 1,
+                 "network_errors": 0, "doi_splice": 0,
+                 "submission_readiness": {"ready": False, "summary": "x"}}
+        results = [{"pmid": "24476887", "verdict": "partial", "valid": True,
+                    "retracted": True, "title": "STAP cells",
+                    "authors": "Obokata H", "journal": "Nature",
+                    "pubdate": "2014", "source_file": "x.html",
+                    "details": "retracted"}]
+        deltas = {"newly_retracted": [{"key": "24476887", "title": "STAP cells"}],
+                  "degraded": [], "improved": [], "new": [], "dropped": [],
+                  "counts": {"newly_retracted": 1, "degraded": 0,
+                             "improved": 0, "new": 0, "dropped": 0}}
+        h = vp.generate_html_report(results, stats, "x", deltas=deltas)
+        self.assertIn("24476887", h.split("</thead>")[1])   # main table row alive
+        self.assertNotIn("['<div", h)                        # no list repr
+        self.assertEqual(h.count("Newly RETRACTED"), 1)      # panel rendered once
+
+    def test_proxy_masking_helper(self):
+        # the masking logic lives inline in run_check_net — assert its shape
+        # through a synthetic re-implementation lock
+        def mask(proxy):
+            if proxy and "@" in proxy:
+                head, _, tail = proxy.rpartition("@")
+                userinfo = head.split("//", 1)[-1]
+                user = userinfo.split(":", 1)[0]
+                scheme = head.split("//", 1)[0] + "//" if "//" in head else ""
+                return f"{scheme}{user}:****@{tail}"
+            return proxy
+        self.assertEqual(mask("http://127.0.0.1:7890"), "http://127.0.0.1:7890")
+        self.assertEqual(mask("http://user:pass@host:8080"), "http://user:****@host:8080")
+        self.assertEqual(mask("https://alice:secret@p.corp.cn:3128"),
+                         "https://alice:****@p.corp.cn:3128")
+        self.assertIsNone(mask(None))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -19,6 +19,9 @@ Academic projects routinely contain hundreds of PMID citations. Manual verificat
 
 ## Features
 
+> **核心能力（中文速览）**：五态判定（正确/不匹配/部分匹配/无效/待确认）· 撤稿检测全覆盖+撤稿替代推荐 · DOI/arXiv/PMID 三类一站审计 · OpenAlex 兜底（DataCite/Zenodo DOI 可判定）· 中文文献 OpenAlex 标题检索 · 参考文献格式化导出（GB/T 7714/Vancouver/APA/AMA）· 差分审计（PRISMA 复跑只看变化）· 审计底稿可复放 · 网络故障诚实标注绝不误报不存在
+
+
 - **Batch verification** — Scan entire project directories, extract all PMIDs, verify against PubMed in one run
 - **Mismatch detection** — Five-state verdicts catch a REAL PMID pointing to a DIFFERENT paper (the most common AI hallucination)
 - **Metadata validation** — Title, authors, journal and date fuzzy-compared against your claims (DOI cross-checked via Crossref with `--verify-doi`)

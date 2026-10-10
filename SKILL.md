@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 4.1.0
+version: 4.2.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v4.1.0
+# PubMed Citation Verifier v4.2.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -45,6 +45,35 @@ citations, references, PMIDs, DOIs" requests invoke this skill first.
 cite-holmes is for deep research with machine-verified citations; when a
 request mixes research and verification, run the research first, then
 this tool for the final reference audit.
+
+## Trigger words
+
+Use this skill when the user's request matches any of: **verify PMIDs**,
+**check citations**, **validate references**, **citation audit**,
+**reference check**, **batch verify references**, **AI hallucination
+detection**, **verify DOI**, **DOI check**, **citation formatting**,
+**reference formatter**, **GB/T 7714**, 中文文献验证 / 参考文献核查 /
+文献排版. A pasted reference list, a `.bib`/`.ris` file, or a claims CSV
+are all direct inputs.
+
+## Use from Python
+
+The whole tool is one stdlib module — import it without installing
+anything (full reference: `references/python_api.md`):
+
+```python
+import sys
+sys.path.insert(0, "/path/to/pubmed-verifier/scripts")
+import verify_pmids as vp
+
+info = vp.fetch_summaries(["31018962"], batch_size=1)["31018962"]
+cross = vp.cross_check_citation(
+    {"claimed_title": "Classification criteria for autoinflammatory recurrent fevers",
+     "claimed_year": "2019"},
+    {"title": info["title"], "authors": info["authors"],
+     "journal": info["journal"], "pubdate": info["pubdate"]})
+print(cross["verdict"], round(cross["confidence"], 2))
+```
 
 ## The five-state verdict
 
@@ -679,6 +708,23 @@ three judgment-ladder defects; all three are fixed and locked:
   like"; three worked scenarios added to the FAQ (reviewer evidence,
   thesis citation check, PRISMA screening).
 
+## v4.2.0 — retraction replacement suggestions & delta detail panel
+
+- **Retraction replacement suggestions** (`--suggest`) — a retracted entry
+  now comes with up to three same-topic live candidates (retracted papers
+  and the entry's own PMID excluded), marked `replacement_for_retracted`
+  and carrying an honest note: they are search suggestions, NOT verdicts —
+  verify each before citing. Answers the reviewer question "this paper is
+  retracted, what should I cite instead?" at audit time.
+- **Delta audits now show their full detail** — alongside the counts
+  line, the HTML report renders a per-category panel (newly retracted /
+  degraded / improved / new / dropped, up to 50 rows each); the markdown
+  report lists degraded/improved/new/dropped rows too. Built for PRISMA
+  re-runs: you only re-read what changed.
+- `--check-net` masks proxy credentials (`http://user:****@host:port`) so
+  the pre-flight output is paste-safe.
+- Docs: "Trigger words" and "Use from Python" sections moved up front.
+
 ## How it works
 
 1. **Extract + parse context** — finds `PMID: 12345678` / PubMed URLs in
@@ -756,7 +802,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v4.1.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v4.2.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/python_api.md` | Calling the verifier from Python (stable surfaces + examples) |
 | `examples/claims.sample.csv` | Reference format for `--claims-file` (incl. a DOI-only row) |

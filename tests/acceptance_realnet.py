@@ -438,6 +438,21 @@ record("T26 OpenAlex CJK title-search leg",
        f"verdict={t_res[0].get('verdict') if t_res else '-'} "
        f"title={((t_res[0].get('title') if t_res else '') or '')[:40]}")
 
+# ── T27: retraction replacement suggestions (v4.2.0): STAP retracted
+# paper + --suggest → live same-topic candidates appear, retracted ones
+# excluded, honest label attached ──
+wake = [{"pmid": "24476887",
+         "title": "Stimulus-triggered fate conversion of somatic cells into pluripotency",
+         "authors": ["Obokata"], "journal": "Nature", "year": "2014"}]
+rc, so, data = run_cli(["--claims", json.dumps(wake), "--no-cache", "--suggest"])
+r = ((data or {}).get("results") or [{}])[0]
+sugg = r.get("suggested_pmids") or []
+ok_repl = bool(sugg) and all(s.get("replacement_for_retracted") for s in sugg)
+ok_live = all(str(s["pmid"]) != "24476887" for s in sugg)
+record("T27 retraction replacement suggestions (real, retracted excluded)",
+       r.get("retracted") is True and bool(r.get("replacement_note")) and ok_repl and ok_live,
+       f"n={len(sugg)} first={sugg[0]['pmid'] if sugg else '-'} note={bool(r.get('replacement_note'))}")
+
 # ── 汇总 ──
 passed = sum(1 for r in RESULTS if r["ok"])
 failed = sum(1 for r in RESULTS if not r["ok"])
