@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v4.2.0
+PMID Citation Verifier -- PubMed E-utilities API v4.3.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -82,8 +82,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "4.2.0"
-_UA_TOOL = "pubmed-verifier/4.2 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "4.3.0"
+_UA_TOOL = "pubmed-verifier/4.3 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -616,9 +616,10 @@ def _verify_cjk_openalex(entry: dict, src: str) -> tuple:
     except Exception as e:
         res["verdict"] = "unknown"
         res["network_error"] = True
+        _why = str(e)[:60] or type(e).__name__
         res["details"] = (f"OpenAlex title search unreachable "
-                          f"({type(e).__name__}) — not judged; retry when the "
-                          f"network is up")
+                          f"({type(e).__name__}: {_why}) — not judged; retry "
+                          f"when the network is up")
         res["error"] = res["details"]
         audit0.update({"verdict": "unknown", "network_error": True,
                        "evidence": {"route": "openalex_cjk_search_unreachable",
@@ -1182,9 +1183,14 @@ def parse_citation_context(context: str) -> dict:
                 claimed["claimed_authors"] = [
                     a.strip() for a in re.split(r"[，,;；]|\s{2,}", head) if a.strip()]
             if tag_m:
-                j_m = re.search(r'\[[JMRDSC]\][.．]?\s*([^,，.。\[\]]{2,40})', work[tag_m.start():])
-                if j_m:
-                    claimed["claimed_journal"] = j_m.group(1).strip()
+                # v4.3.0: only [J] (journal article) carries a journal name —
+                # for [M] monographs / [R] reports / [D] theses the segment
+                # after the tag is the PUBLISHER, and using it as the claimed
+                # journal manufactured false journal mismatches
+                if tag_m.group(1) == "J":
+                    j_m = re.search(r'\[[J]\][.．]?\s*([^,，.。\[\]]{2,40})', work[tag_m.start():])
+                    if j_m:
+                        claimed["claimed_journal"] = j_m.group(1).strip()
         # greedy: internal dots are part of the DOI; a trailing sentence
         # period is stripped by _clean_doi. URL forms are unwrapped too.
         # Scoped to `work` (previous record's tail can never leak) plus the
@@ -2363,6 +2369,7 @@ def generate_ris(results: list) -> str:
 
 _CITATION_STYLES = {
     "gbt": "GB/T 7714-2015 (numeric)",
+    "gbty": "GB/T 7714-2015 (author-date, unnumbered, sorted by first author)",
     "vancouver": "Vancouver (ICMJE numeric)",
     "apa": "APA 7th edition",
     "ama": "AMA 11th edition (numeric)",
@@ -2549,7 +2556,19 @@ def _ref_apa(r: dict, idx: int) -> str:
     return " ".join(line.split())
 
 
-_REF_RENDERERS = {"gbt": _ref_gbt, "vancouver": _ref_vancouver,
+def _ref_gbty(r: dict, idx: int) -> str:
+    """GB/T 7714-2015 author-date rendering (v4.3.0): same entry shape as
+    the numeric style minus the [n] index and the [J] type tag — the
+    in-text citation is (Author, Year) and the list is sorted by first
+    author (see generate_reference_list)."""
+    out = _ref_gbt(r, idx)
+    out = out.replace(f"[{idx}] ", "", 1)
+    out = out.replace("[J]. ", ". ", 1)
+    return out
+
+
+_REF_RENDERERS = {"gbt": _ref_gbt, "gbty": _ref_gbty,
+                  "vancouver": _ref_vancouver,
                   "apa": _ref_apa, "ama": _ref_ama}
 
 
@@ -2581,6 +2600,14 @@ def generate_reference_list(results: list, style: str = "gbt") -> str:
              f"{len(review)} need manual review, {len(excluded)} excluded. "
              "Every entry below was checked against its registry (PubMed / Europe PMC / Crossref).",
              ""]
+    if style == "gbty":
+        # author-date lists sort by first author (Latin casefold; CJK stays
+        # in Unicode order — true pinyin sorting needs an external lib and is
+        # documented as a manual step)
+        def _first_author_key(r):
+            a = (r.get("authors") or "；".split("，")[0]).split(",")[0].strip()
+            return a.casefold()
+        main_list.sort(key=_first_author_key)
     for i, r in enumerate(main_list, 1):
         lines.append(renderer(r, i))
         lines.append("")
@@ -3799,9 +3826,11 @@ def main():
                              "GB/T 7714-2015 / Vancouver / APA 7 / AMA 11 via --citation-style; "
                              "correct = numbered list, partial = review section, "
                              "retracted = excluded with a warning")
-    parser.add_argument("--citation-style", choices=["gbt", "vancouver", "apa", "ama"],
+    parser.add_argument("--citation-style",
+                        choices=["gbt", "gbty", "vancouver", "apa", "ama"],
                         default="gbt",
-                        help="Style for --format-references (default: gbt = GB/T 7714-2015)")
+                        help="Style for --format-references (default: gbt = GB/T 7714-2015 "
+                             "numeric; gbty = GB/T author-date, unnumbered, sorted by first author)")
     parser.add_argument("--lint-claims", metavar="FILE",
                         help="Offline lint of a claims file (JSON/CSV/BibTeX/RIS): ID shapes, "
                              "missing titles, unknown columns, duplicate keys — no network")

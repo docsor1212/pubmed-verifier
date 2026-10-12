@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 4.2.0
+version: 4.3.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v4.2.0
+# PubMed Citation Verifier v4.3.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -56,6 +56,10 @@ detection**, **verify DOI**, **DOI check**, **citation formatting**,
 文献排版. A pasted reference list, a `.bib`/`.ris` file, or a claims CSV
 are all direct inputs.
 
+Three quick mappings: "帮我验证这几个 PMID 31018962、22213727" →
+`--pmids`; "检查我论文参考文献" + a pasted list → `--parse-text`;
+"这篇撤稿了该引什么" → `--suggest` on a retracted entry.
+
 ## Use from Python
 
 The whole tool is one stdlib module — import it without installing
@@ -74,6 +78,19 @@ cross = vp.cross_check_citation(
      "journal": info["journal"], "pubdate": info["pubdate"]})
 print(cross["verdict"], round(cross["confidence"], 2))
 ```
+
+## Know before you run
+
+Four limits cover 95% of surprises — each has a one-flag workaround:
+
+| Limit | Workaround |
+|---|---|
+| Citation-context parsing is heuristic (exotic formatting can mis-split) | `--claims-file` for exact metadata |
+| Chinese references without a PMID/DOI marker parse weakly | `--parse-text` (OpenAlex CJK leg) or supply an ID |
+| Network failures stay `unknown` — never silently "not found" | `--check-net` first, retry when reachable |
+| Retraction/DOI status is as of cache time (30 days) | `--no-cache` for the final pre-submission pass |
+
+Everything else below expands on these.
 
 ## The five-state verdict
 
@@ -725,6 +742,22 @@ three judgment-ladder defects; all three are fixed and locked:
   the pre-flight output is paste-safe.
 - Docs: "Trigger words" and "Use from Python" sections moved up front.
 
+## v4.3.0 — GB/T author-date style & monograph journal fix
+
+- **`--citation-style gbty`** — the second GB/T 7714-2015 form Chinese
+  journals and theses actually ask for: unnumbered entries, no [J] type
+  tag, sorted by first author (Latin casefold; CJK stays in Unicode order
+  — true pinyin sorting needs an external library and is a documented
+  manual step). Verified entries only, exactly like the numeric style.
+- **Monographs no longer fake a journal** — GB/T parsing extracted the
+  segment after the type tag for every entry, so `[M]` (monograph),
+  `[R]` (report) and `[D]` (thesis) records picked up the PUBLISHER as
+  the claimed journal and manufactured false journal mismatches. Only
+  `[J]` entries yield a journal now; the others leave it empty.
+- Docs: a "Know before you run" four-limit digest sits at the top of
+  SKILL.md (each limit with its one-flag workaround), and the Trigger
+  words section gained three request-to-action mappings.
+
 ## How it works
 
 1. **Extract + parse context** — finds `PMID: 12345678` / PubMed URLs in
@@ -802,7 +835,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v4.2.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v4.3.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/python_api.md` | Calling the verifier from Python (stable surfaces + examples) |
 | `examples/claims.sample.csv` | Reference format for `--claims-file` (incl. a DOI-only row) |

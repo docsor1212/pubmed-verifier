@@ -81,7 +81,7 @@ res, audit = vp.verify_title_entry(entries[0], "refs_list.txt")
 print(res["verdict"], res.get("resolved_by"))   # correct title_search
 
 # Render verified results as a numbered reference list:
-print(vp.generate_reference_list(results, "gbt"))       # also: vancouver / apa / ama
+print(vp.generate_reference_list(results, "gbt"))       # also: gbty / vancouver / apa / ama
 ```
 
 `parse_citation_context` accepts markerless Latin references since v4.0.0

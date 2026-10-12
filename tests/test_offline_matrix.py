@@ -2568,5 +2568,63 @@ class TestV420(_Reset):
         self.assertIsNone(mask(None))
 
 
+
+class TestV430(_Reset):
+    """v4.3.0: GB/T author-date style (gbty) + monograph journal fix."""
+
+    R_CN = {"pmid": "1", "verdict": "correct", "valid": True,
+            "title": "儿童过敏性紫癜临床分析", "authors": "王五, 李四",
+            "journal": "中华儿科杂志", "pubdate": "2020", "volume": "58",
+            "issue": "(3)", "pages": "201-205", "doi": "10.3969/x.1"}
+    R_LAT = {"pmid": "2", "verdict": "correct", "valid": True,
+             "title": "Autoinflammatory diseases in practice",
+             "authors": "Ribeiro LN, Midgley A",
+             "journal": "Pediatric Rheumatology", "pubdate": "2021",
+             "volume": "19", "issue": "(1)", "pages": "75",
+             "doi": "10.1186/x.2"}
+
+    def test_gbty_unnumbered_tagfree_sorted(self):
+        r_b = {"pmid": "3", "verdict": "correct", "valid": True,
+               "title": "Another study", "authors": "Alvarez M",
+               "journal": "J X", "pubdate": "2019"}
+        out = vp.generate_reference_list([self.R_CN, self.R_LAT, r_b], "gbty")
+        self.assertNotIn("[1]", out)
+        self.assertNotIn("[J]", out)
+        self.assertIn("author-date", out.splitlines()[0])
+        # sorted by first author: Latin casefold, then CJK Unicode order
+        self.assertLess(out.index("ALVAREZ"), out.index("RIBEIRO"))
+        self.assertLess(out.index("RIBEIRO"), out.index("王五"))
+        # entry shape: author. title. journal, year, vol(issue): pages. DOI:...
+        self.assertIn("RIBEIRO L, MIDGLEY A. Autoinflammatory diseases in "
+                      "practice. Pediatric Rheumatology, 2021, 19(1): 75. "
+                      "DOI:10.1186/x.2.", out)
+
+    def test_gbty_still_only_verified_entries(self):
+        rp = {"pmid": "22213727", "verdict": "partial", "valid": True,
+              "title": "T", "authors": "A B", "journal": "J",
+              "pubdate": "2013", "details": "author set entirely different"}
+        out = vp.generate_reference_list([self.R_CN, rp], "gbty")
+        self.assertIn("Need manual review", out)
+        body = out.split("## Need manual review")[0]
+        self.assertNotIn("22213727", body)
+
+    def test_monograph_no_publisher_journal(self):
+        c = vp.parse_citation_context(
+            "[1] 张三. 医学免疫学[M]. 北京: 人民卫生出版社, 2019. PMID: 31018962")
+        self.assertEqual(c["claimed_title"], "医学免疫学")
+        self.assertEqual(c.get("claimed_journal", ""), "")
+        # journals keep their extraction
+        c2 = vp.parse_citation_context(
+            "[2] 李四. 儿童哮喘的诊治[J]. 中华儿科杂志, 2020. PMID: 31018962")
+        self.assertEqual(c2["claimed_journal"], "中华儿科杂志")
+
+    def test_style_registry_and_cli_list_gbty(self):
+        self.assertIn("gbty", vp._CITATION_STYLES)
+        self.assertIn("gbty", vp._REF_RENDERERS)
+        import inspect
+        main_src = inspect.getsource(vp.main)
+        self.assertIn('"gbty"', main_src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
