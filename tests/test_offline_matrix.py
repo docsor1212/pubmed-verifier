@@ -2626,5 +2626,101 @@ class TestV430(_Reset):
         self.assertIn('"gbty"', main_src)
 
 
+
+class TestV440(_Reset):
+    """v4.4.0: submission evidence pack (--report-bundle) + OpenAlex 429
+    floor + version-history migration."""
+
+    def _args_stub(self):
+        import argparse
+        # any flag the audit serializer reads defaults to False — the real
+        # CLI Namespace always carries them; the stub only feeds the writer
+        class _A(argparse.Namespace):
+            def __getattr__(self, name):
+                return False
+        a = _A()
+        a.ncbi_api_key = ""
+        a.mailto = ""
+        a.output = None
+        a.export_audit = None
+        a.source = None
+        a.pmids = "31018962"
+        a.diff = None
+        return a
+
+    def test_bundle_writes_seven_files_with_manifest(self):
+        import tempfile, os, json
+        results = [{"pmid": "31018962", "verdict": "correct", "valid": True,
+                    "title": "Classification criteria for autoinflammatory "
+                             "recurrent fevers",
+                    "authors": "Gattorno M", "journal": "Ann Rheum Dis",
+                    "pubdate": "2019", "source_file": "x.html",
+                    "details": "matched"}]
+        stats = {"total": 1, "correct": 1, "mismatch": 0, "partial": 0,
+                 "invalid": 0, "unknown": 0, "retracted": 0,
+                 "network_errors": 0, "doi_splice": 0,
+                 "submission_readiness": {"ready": True, "summary": "x"}}
+        with tempfile.TemporaryDirectory() as td:
+            written = vp.write_report_bundle(results, stats, self._args_stub(),
+                                             None, [], td)
+            self.assertEqual(len(written), 7)
+            names = sorted(os.path.basename(p) for p in written)
+            self.assertEqual(names, ["audit-table.csv", "audit.json",
+                                     "manifest.txt", "references-gbt.txt",
+                                     "report.html", "verified-refs.bib",
+                                     "verified-refs.ris"])
+            man = open(os.path.join(td, "manifest.txt"),
+                       encoding="utf-8").read()
+            self.assertIn("submission evidence pack", man)
+            self.assertIn(vp._TOOL_VERSION, man)
+            self.assertIn("1 correct", man)
+            audit = json.load(open(os.path.join(td, "audit.json"),
+                                   encoding="utf-8"))
+            self.assertIn("tool", audit)
+            # byte identity with the single export generator
+            bib_direct = vp.generate_bibtex(results)
+            bib_bundle = open(os.path.join(td, "verified-refs.bib"),
+                              encoding="utf-8").read()
+            self.assertEqual(bib_direct, bib_bundle)
+
+    def test_bundle_stats_line_counts_retracted(self):
+        import tempfile
+        results = [{"pmid": "24476887", "verdict": "partial", "valid": True,
+                    "retracted": True, "title": "STAP cells",
+                    "authors": "O H", "journal": "Nature", "pubdate": "2014",
+                    "source_file": "x", "details": "retracted",
+                    "retraction_note": "r"}]
+        stats = {"total": 1, "correct": 0, "mismatch": 0, "partial": 1,
+                 "invalid": 0, "unknown": 0, "retracted": 1,
+                 "network_errors": 0, "doi_splice": 0,
+                 "submission_readiness": {"ready": False, "summary": "x"}}
+        with tempfile.TemporaryDirectory() as td:
+            vp.write_report_bundle(results, stats, self._args_stub(),
+                                   None, [], td)
+            man = open(os.path.join(td, "manifest.txt"),
+                       encoding="utf-8").read()
+            self.assertIn("1 RETRACTED", man)
+            gbt = open(os.path.join(td, "references-gbt.txt"),
+                       encoding="utf-8").read()
+            self.assertIn("Excluded — do not cite", gbt)   # retracted kept out
+
+    def test_openalex_429_floor_present(self):
+        import inspect
+        body = inspect.getsource(vp._api_get)
+        self.assertIn("api.openalex.org", body)
+        self.assertIn("Retry-After", body)
+
+    def test_changelog_migrated_and_skill_points_to_it(self):
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cl = open(os.path.join(root, "references", "CHANGELOG.md"),
+                  encoding="utf-8").read()
+        self.assertIn("## v2.2.0", cl)
+        self.assertIn("## v4.3.0", cl)
+        skill = open(os.path.join(root, "SKILL.md"), encoding="utf-8").read()
+        self.assertIn("references/CHANGELOG.md", skill)
+        self.assertNotIn("## v2.2.0", skill)   # history lives in the reference
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

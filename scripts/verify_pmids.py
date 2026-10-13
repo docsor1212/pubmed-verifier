@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v4.3.0
+PMID Citation Verifier -- PubMed E-utilities API v4.4.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -82,8 +82,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "4.3.0"
-_UA_TOOL = "pubmed-verifier/4.3 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "4.4.0"
+_UA_TOOL = "pubmed-verifier/4.4 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -153,6 +153,8 @@ def _api_get(url: str, max_retries: int = 3, timeout=None) -> bytes:
                     wait = min(5.0, max(1.0, float(e.headers.get("Retry-After", 2.0))))
                 except (TypeError, ValueError):
                     pass
+                if "api.openalex.org" in url:
+                    wait = max(wait, 5.0)   # OpenAlex common pool refills slower
                 time.sleep(wait)
             elif e.code in (403, 406) and attempt < max_retries - 1:
                 time.sleep(0.8)
@@ -2631,6 +2633,67 @@ def generate_reference_list(results: list, style: str = "gbt") -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def write_report_bundle(results: list, stats: dict, args, deltas: dict,
+                        audit_entries: list, out_dir: str) -> list:
+    """Submission evidence pack (v4.4.0): one command writes every artifact a
+    reviewer or co-author may ask for into one directory, plus a manifest
+    that makes the pack self-describing. Reuses the single-export generators
+    — a bundle file is byte-identical to its --export-* counterpart.
+
+    Returns the list of written paths (also printed to stdout)."""
+    outp = Path(out_dir)
+    outp.mkdir(parents=True, exist_ok=True)
+    repro = {
+        "command": "verify_pmids.py " + " ".join(_redacted_argv()),
+        "version": _TOOL_VERSION,
+        "sources": "eutils.ncbi.nlm.nih.gov · www.ebi.ac.uk (Europe PMC) · "
+                   "api.crossref.org · api.openalex.org · export.arxiv.org — all HTTPS",
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    written = []
+
+    def _write(name, text):
+        p = outp / name
+        p.write_text(text, encoding="utf-8")
+        written.append(str(p))
+
+    _write("audit.json", generate_audit_report(audit_entries, stats, args, deltas))
+    _write("report.html", generate_html_report(results, stats,
+                                               args.source or args.pmids or "claims",
+                                               repro, deltas))
+    _write("verified-refs.bib", generate_bibtex(results))
+    _write("verified-refs.ris", generate_ris(results))
+    _write("audit-table.csv", generate_csv_report(results))
+    _write("references-gbt.txt", generate_reference_list(results, "gbt"))
+
+    n_ok = sum(1 for r in results if r.get("verdict") == "correct")
+    manifest = [
+        "pubmed-verifier submission evidence pack",
+        f"generated: {repro['generated_at']}",
+        f"tool: pubmed-verifier v{_TOOL_VERSION} (zero dependencies, stdlib-only)",
+        f"invocation: {repro['command']}",
+        f"data sources: {repro['sources']}",
+        f"verdicts: {n_ok} correct / {stats.get('mismatch', 0)} mismatch / "
+        f"{stats.get('partial', 0)} partial / {stats.get('invalid', 0)} invalid / "
+        f"{stats.get('unknown', 0)} unknown"
+        + (f" / {stats.get('retracted', 0)} RETRACTED" if stats.get("retracted") else ""),
+        "",
+        "files:",
+        "  audit.json         — replayable working-paper (per-citation evidence chain)",
+        "  report.html        — human-readable report (same data, filterable)",
+        "  verified-refs.bib  — verified bibliography, correct entries as @article",
+        "  verified-refs.ris  — verified bibliography (Zotero/EndNote/Mendeley)",
+        "  audit-table.csv    — spreadsheet audit table",
+        "  references-gbt.txt — ready-to-paste GB/T 7714-2015 list (verified only)",
+        "",
+        "Every file above stands on registry-verified records (PubMed / Europe PMC / "
+        "Crossref / OpenAlex). Network-failed citations are honest unknowns — re-run "
+        "with --no-cache when the network is up before final submission.",
+    ]
+    _write("manifest.txt", "\n".join(manifest) + "\n")
+    return written
+
+
 def readiness_summary(stats: dict) -> tuple:
     """(ready, one-line verdict) for the report header (v2.7.0)."""
     problems = (stats.get("invalid", 0) + stats.get("mismatch", 0)
@@ -3826,6 +3889,11 @@ def main():
                              "GB/T 7714-2015 / Vancouver / APA 7 / AMA 11 via --citation-style; "
                              "correct = numbered list, partial = review section, "
                              "retracted = excluded with a warning")
+    parser.add_argument("--report-bundle", metavar="DIR",
+                        help="Write the complete submission evidence pack into DIR: "
+                             "audit.json + report.html + verified-refs.bib/.ris + "
+                             "audit-table.csv + references-gbt.txt + manifest.txt — "
+                             "one command, everything a reviewer may ask for")
     parser.add_argument("--citation-style",
                         choices=["gbt", "gbty", "vancouver", "apa", "ama"],
                         default="gbt",
@@ -4512,6 +4580,18 @@ def main():
         print(f"Reference list ({args.citation_style}) written to "
               f"{args.format_references} ({_n_ok} verified "
               f"{'entry' if _n_ok == 1 else 'entries'})")
+
+    if args.report_bundle:
+        try:
+            _bundle_files = write_report_bundle(results, stats, args, deltas,
+                                                audit_entries, args.report_bundle)
+            print(f"Evidence pack written to {args.report_bundle} "
+                  f"({len(_bundle_files)} files):")
+            for _bf in _bundle_files:
+                print(f"  {_bf}")
+        except OSError as e:
+            print(f"report-bundle failed: {e}", file=sys.stderr)
+            sys.exit(1)
 
     if args.export_csv:
         Path(args.export_csv).write_text(

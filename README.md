@@ -15,6 +15,8 @@ Batch-verify PMID citations against PubMed API. Built for researchers, medical w
 
 ## Why?
 
+**为什么要核验引用（中文）**：学术项目的参考文献动辄数百条，人工核对既繁琐又易漏。在我们自己一次 225 条参考文献的审计中，发现了 3 个无效 PMID 和 6 条跨领域错配——任何一条混进稿件都足以动摇整项工作。AI 生成内容的高频问题是「真 PMID 指向别的论文」，存在性检查根本查不出来。
+
 Academic projects routinely contain hundreds of PMID citations. Manual verification is tedious and error-prone. During our own 225-reference audit, we found 3 invalid PMIDs and 6 cross-domain mismatches — errors that would have undermined the entire project.
 
 ## Features
