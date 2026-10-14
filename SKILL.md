@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 4.5.0
+version: 4.6.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v4.5.0
+# PubMed Citation Verifier v4.6.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -152,6 +152,10 @@ python3 scripts/verify_pmids.py --parse-text references.txt --format-references 
 # BibTeX/RIS + CSV + GB/T list + manifest)
 python3 scripts/verify_pmids.py --parse-text references.txt --report-bundle evidence_pack
 
+# Turn a copied reference list into a claims CSV skeleton (fill the gaps,
+# then run --claims-file for exact five-state verification)
+python3 scripts/verify_pmids.py --claims-template references.txt,claims_skeleton.csv
+
 # Institutional niceties (recommended): NCBI API key + contact email
 python3 scripts/verify_pmids.py --source . --verify-doi --ncbi-api-key $NCBI_API_KEY --mailto you@lab.org
 ```
@@ -228,69 +232,7 @@ Standard `HTTPS_PROXY`/`HTTP_PROXY` env vars are honored natively; raise
 unreachable (per-entry `meta_source` shows which was used); cached results
 are reused for 30 days.
 
-**❓ unknown vs ❌ invalid?**
-`unknown` (exit 2) = "could not verify, sources unreachable" — retry later;
-`invalid` (exit 1) = "verified not-found". Network failures are never
-reported as not-found and never cached.
-
-**What does RETRACTED mean in a report?**
-The registry itself lists the paper's publication type as "Retracted
-Publication" (checked for every citation since v2.7.0 — no DOI or flags
-needed), and/or Crossref records a retraction. The verdict is capped at
-partial and a human review note is attached — citing it would propagate
-withdrawn science. A retraction *notice* is never flagged; papers under
-*Expression of Concern* (an editorial note, not a retraction) are not
-flagged either. Retraction status reflects the registry at cache time — for
-a final pre-submission check, run with `--no-cache`.
-
-**Mismatch reported but the title looks similar?**
-Check `details` for which field diverged; thresholds are strict on purpose.
-Feed the full citation via `--claims-file` for a precise verdict.
-
-**Can I audit my .bib or .ris file directly?**
-Yes — `--bibliography refs.bib` (BibTeX) and `--bibliography refs.ris`
-(RIS/Zotero/EndNote/Mendeley) route each entry by PMID > DOI > arXiv
-and cross-check the claimed metadata. `--lint-claims` validates either
-format offline first. The round trip works both ways: `--export-bibtex`
-and `--export-ris` output can be fed back after edits.
-
-**My claims file seems to lose rows / verdicts look weaker than expected?**
-Lint it offline first: `python3 scripts/verify_pmids.py --lint-claims
-claims.csv` reports unusable rows, ID shape errors, unknown columns
-(typo'd headers like "titel"), missing titles and DOI prefix problems —
-no network, exit 1 on errors.
-
-**Can I verify a DOI with claimed metadata (full verdict)?**
-Yes — since v3.4.0 a claims row keyed by `doi` (with `title`, optionally
-`authors`/`journal`/`year`) gets the same cross-check as PMID claims:
-correct / mismatch / partial against the registered metadata. A DOI row
-without claims stays `unknown` (existence only).
-
-**Why did my arXiv citation drop from correct to partial?**
-Your claims row paired an `arxiv_id` with a `doi`, and the DOI does not
-match the version-of-record DOI registered on that arXiv entry — a typo,
-or a DOI from a different paper. The registered DOI is in `details`;
-fix the claim or drop the `doi` cell.
-
-### Worked scenarios
-
-- **"The reviewer asked how I checked my references."** — run the audit
-  with `--export-audit audit.json --verify-doi`: the JSON working-paper
-  contains tool identity, version, the exact (API-key-redacted) invocation,
-  and the per-citation evidence chain a reviewer or editor can replay.
-  Submit it alongside the manuscript.
-- **"Checking the reference list of my thesis."** — copy the list into a
-  plain-text file (one reference per line, or keep the `[1]` numbering) and
-  run `--parse-text refs.txt`: inline PMIDs/DOIs route exactly; English
-  entries resolve via PubMed title search; Chinese entries resolve via the
-  OpenAlex CJK leg. Finish with
-  `--format-references refs_clean.txt --citation-style gbt` for a corrected,
-  uniformly formatted list.
-- **"Screening a systematic review's bibliography (PRISMA)."** — verify the
-  full list once, export the audit as the baseline, then re-run
-  `--diff audit.json` before each resubmission: newly retracted, degraded
-  and new citations are reported as deltas, so you only re-read what
-  changed.
+More FAQs, the three worked scenarios and the complete tuning playbook live in [references/usage_guide.md](references/usage_guide.md).
 
 ## Anti-patterns — things done WRONG
 
@@ -317,40 +259,18 @@ Each entry: the mistake → why it fails → the right way.
 
 ## Boundaries — declared limits
 
-What this tool can NOT do, consolidated in one place:
+The capability×limit pairs — what each promise covers, where it stops, and
+the one-flag workaround:
 
-- **Splice/mismatch signals report disagreement, never pick a side** —
-  when claim and registry disagree, a human reads the evidence line.
-- **Cross-language authors are skipped, not failed** — CJK↔Latin author
-  names are never compared (`author_check: skipped`); the verdict rests
-  on title/journal/year alone.
-- **Context parsing is heuristic** — v3.3.0 keeps common abbreviations
-  (U.S., e.g., vs., St., Vol., No.) from splitting a title, but exotic
-  formatting can still mis-split; for exact metadata use `--claims-file`.
-- **DataCite/repository DOIs are not in Crossref — OpenAlex covers them**
-  (v4.1.0): a Crossref 404 now gets a second look at OpenAlex; only when
-  BOTH registries report the DOI unknown do the 404 semantics apply
-  (`--dois`/claims = invalid, auto-extracted = suspect). Resolved-via-
-  OpenAlex entries carry `meta_source: openalex`.
-- **arXiv moderator removals also return "not found"** — the invalid
-  verdict carries that caveat in its details.
-- **Retraction status is as-of-cache-time** — final pre-submission
-  checks should run with `--no-cache`.
-- **Single-letter initials never match** — "Smith J" vs "Smith John" is
-  not counted as a miss.
-- **unknown ≠ invalid** — unreachable sources yield exit 2 and
-  `unknown`; network failures are never reported as "not found" and
-  never cached.
-- **arXiv pacing is deliberate** — the official API asks for ≥3 s
-  between calls; large arXiv batches are slow by design (progress + ETA
-  on stderr). Entries that register a version-of-record DOI add one
-  Europe PMC lookup each for the PMID link.
-- **DOI claims compare against the registry that actually answered** —
-  the linked PubMed record when the DOI resolves to one, Crossref
-  otherwise (Crossref author fields are sparser, so the author mark is
-  more often "—"); a DOI row without a claimed title stays `unknown`,
-  not partial; an explicitly user-provided DOI (`--dois` or claims) that
-  is missing from Crossref counts as invalid.
+| Capability | What it does | Where it stops | Workaround |
+|---|---|---|---|
+| Context parsing | Splits reference text into claimed metadata; common abbreviations (U.S., e.g., vs.) protected | Exotic formatting can still mis-split; CJK without a PMID/DOI marker parses weakly | `--claims-file` for exact metadata; `--parse-text` adds the OpenAlex CJK leg |
+| Five-state verdicts | correct / mismatch / partial / invalid / unknown with per-field evidence | Heuristic — a verdict is evidence-weighted, never absolute proof | Audit trail (`--export-audit`) keeps the chain replayable |
+| Retraction detection | Registry pubtype + Crossref `updated-by`, capped at partial | Status is as of cache time (30 days) | `--no-cache` for the final pass |
+| DOI verification | Crossref first, OpenAlex fallback for non-Crossref registries | DOIs absent from BOTH registries stay suspect/invalid by the 404 rule | Cross-check at doi.org before accusing |
+| Title-search legs (Latin + CJK) | Markerless entries resolved by PubMed/OpenAlex title search, honestly labeled | Never a mismatch source; no hit = unknown | Supply a PMID/DOI for a decisive verdict |
+| Formatted reference lists | GB/T (numeric + author-date), Vancouver, APA, AMA — verified entries only | Registry-truncated author lists close with et-al, not invented names | Verify first, then format (`--format-references`) |
+| Network honesty | Failures are unknown + retry hints, never "not found"; nothing cached on failure | Cannot verify anything while registries are unreachable | `--check-net` first |
 
 ## Claims reference format
 
@@ -371,40 +291,19 @@ unusable rows, ID shape errors, unknown columns, duplicates and missing
 titles (no network). Lint wins when combined with verification flags —
 only the lint runs.
 
+
 ## Best practices & tuning
 
-- **Speed up large batches** — request an NCBI API key (see
-  https://ncbiinsights.ncbi.nlm.nih.gov/api-keys/): batches of 50 IDs run
-  at 0.12 s spacing instead of 0.4 s; cached re-runs take seconds.
-- **Parallel DOI verification** — `--workers` (default 4, cap 8) applies to
-  Crossref resolution and Europe PMC linking; arXiv stays serial by
-  official etiquette (≥3 s between calls).
-- **Two-phase workflow** — sweep with metadata-only verification first
-  (no `--verify-doi`, no `--suggest`), then deep-verify only the flagged
-  subset; each deep flag adds one API call per citation.
-- **Round-trip bibliographies** — `--export-bibtex` / `--export-ris`
-  write verified entries; after edits, `--bibliography refs.bib` /
-  `refs.ris` re-audits the file (the PMID re-links the full record).
-- **Claims over context parsing** — whenever you know the expected titles,
-  feed `--claims-file`: it enables the full verdict ladder and the DOI /
-  arXiv pairing checks. Validate the file offline first:
-  `python3 scripts/verify_pmids.py --lint-claims claims.csv` reports ID
-  shape errors, missing titles, unknown columns and duplicates without any
-  network access.
-- **Flaky networks** — raise `--timeout`; HTTPS_PROXY/HTTP_PROXY are
-  honored natively; unreachable NCBI falls back to Europe PMC
-  automatically (`meta_source` shows which answered).
-- **Cache policy** — results cache 30 days, negative entries 3 days;
-  `--cache-days` to tune; `--no-cache` for the final pre-submission pass.
-- **Scale expectations** — metadata-only throughput is API-bound
-  (~1–2 min per 1000 PMIDs with an API key); DOI resolution adds one
-  Crossref call per DOI. One deliberate trade-off: the verifier is a
-  single stdlib-only file — copy `scripts/verify_pmids.py` anywhere with
-  Python 3.9+ and it runs, no pip, no venv (that portability is why the
-  code is not split into modules).
+Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, batching, proxies, CI usage).
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v4.6.0** — finding ledger in every report (answered / partially /
+  unresolved, with the next action); `--claims-template` turns a copied
+  reference list into a claims CSV skeleton; usage guide + task INDEX land
+  in references/.
+- **v4.5.0** — card conversion: skill icon live; description covers five
+  more search intents verbatim.
 - **v4.4.0** — `--report-bundle DIR` writes the complete submission
   evidence pack (audit + HTML + BibTeX/RIS + CSV + GB/T list + manifest)
   in one command; version history moved to references/CHANGELOG.md.
@@ -511,8 +410,10 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v4.5.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v4.6.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
+| `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
+| `references/INDEX.md` | 任务→文档 30 秒路由表 |
 | `references/python_api.md` | Calling the verifier from Python (stable surfaces + examples) |
 | `examples/claims.sample.csv` | Reference format for `--claims-file` (incl. a DOI-only row) |
 | `examples/refs.sample.bib` | Sample bibliography for `--bibliography` (DOI/PMID/arXiv routing) |

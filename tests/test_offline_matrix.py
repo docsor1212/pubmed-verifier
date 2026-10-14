@@ -494,7 +494,7 @@ class TestAuthorVerification(_Reset):
         self.assertEqual(r.get("author_check"), "skipped (cross-language CJK↔Latin)")
         self.assertTrue(r["journal_match"] and r["year_match"])
         # review P1: comparable fields unanimous -> never mismatch
-        # v3.8.0 (ub02 B3): title-less claims cap at partial per the docs
+        # v3.8.0 (external real-data audit B3): title-less claims cap at partial per the docs
         self.assertEqual(r["verdict"], "partial")
 
     def test_claimed_full_name_token_extracted(self):
@@ -887,7 +887,7 @@ class TestAttackRegressions(_Reset):
 
     def test_authors_only_correct_claim_not_mismatch(self):
         # attacker P0: title omitted, authors correct -> was accused "mismatch"
-        # v3.8.0 (ub02 B3): still never mismatch, but now capped at partial —
+        # v3.8.0 (external real-data audit B3): still never mismatch, but now capped at partial —
         # the documented ladder promises title-less claims never reach correct
         claimed = {"claimed_title": "", "claimed_authors": ["Gattorno", "Hofer"],
                    "claimed_journal": "", "claimed_year": ""}
@@ -1808,7 +1808,7 @@ ER  -
 
 class TestV380(_Reset):
     """v3.8.0: verdict-ladder corrections from the independent external
-    audit (ub02 note_1791303399_57cf48) — B1/B2/B3 locked."""
+    audit (external real-data audit note_1791303399_57cf48) — B1/B2/B3 locked."""
 
     def test_b1_author_line_not_taken_as_title(self):
         # wrapped citation after preceding prose: segments[1] is the author
@@ -2720,6 +2720,127 @@ class TestV440(_Reset):
         skill = open(os.path.join(root, "SKILL.md"), encoding="utf-8").read()
         self.assertIn("references/CHANGELOG.md", skill)
         self.assertNotIn("## v2.2.0", skill)   # history lives in the reference
+
+
+
+class TestCardConversion(_Reset):
+    """Module-2 locks: the SH card (frontmatter description) must keep
+    intent-word coverage up front, brand words out of the lead, honest Skip
+    when triggers, and stay within the folded 1024 limit — plus the
+    ZH/meta dual-source sync that v4.5.x let drift once."""
+
+    def _desc(self):
+        import yaml
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        fm = open(os.path.join(root, "SKILL_ZH.md"),
+                  encoding="utf-8").read().split("---")[1]
+        return yaml.safe_load(fm)["description"]
+
+    def test_folded_length_within_limit(self):
+        self.assertLessEqual(len(self._desc()), 1024)
+
+    def test_intent_words_lead_first_120_chars(self):
+        d = self._desc()
+        head = d[:120]
+        core = [w for w in ("参考文献", "AI幻觉", "PMID", "引用") if w in head]
+        self.assertGreaterEqual(len(core), 3, f"头 120 字符意图词不足: {core}")
+
+    def test_no_brand_word_in_first_60_chars(self):
+        d = self._desc()[:60]
+        for brand in ("pubmed-verifier", "SorSor", "docsor", "Docsor"):
+            self.assertNotIn(brand, d)
+
+    def test_skip_when_negative_trigger_present(self):
+        self.assertIn("仅验证不生成", self._desc())
+        self.assertIn("拒绝编造", self._desc())
+
+    def test_zh_meta_dual_source_sync(self):
+        import json
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        zh = self._desc()
+        meta = json.load(open(os.path.join(root, "skillhub-meta.json"),
+                              encoding="utf-8"))["description"]
+        self.assertEqual(zh, meta, "SH desc 双源漂移——meta 必须与 ZH frontmatter 逐字一致")
+
+    def test_trigger_on_block_present(self):
+        self.assertIn("Trigger on：", self._desc())
+
+
+
+class TestV460(_Reset):
+    """v4.6.0: finding ledger (module 3.5) + claims-template generator."""
+
+    def test_finding_ledger_buckets(self):
+        results = [{"pmid": "1", "verdict": "correct"},
+                   {"pmid": "2", "verdict": "mismatch"},
+                   {"pmid": "3", "verdict": "partial", "details": "d"},
+                   {"pmid": "4", "verdict": "unknown",
+                    "network_error": True, "details": "down"}]
+        stats = {"total": 4, "network_errors": 1}
+        led = vp.finding_ledger(results, stats)
+        self.assertEqual(len(led["answered"]), 2)
+        self.assertEqual(len(led["partially"]), 1)
+        self.assertEqual(len(led["unresolved"]), 1)
+        self.assertEqual(led["unresolved"][0]["why"], "network — retry when reachable")
+        self.assertEqual(led["budget"]["citations_checked"], 4)
+        self.assertEqual(led["budget"]["network_errors"], 1)
+
+    def test_claims_template_from_bib(self):
+        import tempfile, os, csv
+        with tempfile.TemporaryDirectory() as td:
+            bib = os.path.join(td, "in.bib")
+            open(bib, "w", encoding="utf-8").write(
+                "@article{k1, title={Some verified study}, journal={J of Tests}, "
+                "year={2021}, pmid={31018962}}")
+            out = os.path.join(td, "out.csv")
+            rc = vp.run_claims_template(bib, out)
+            self.assertEqual(rc, 0)
+            rows = list(csv.DictReader(open(out, encoding="utf-8")))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["title"], "Some verified study")
+            self.assertEqual(rows[0]["pmid"], "31018962")
+
+    def test_claims_template_empty_input_is_honest(self):
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as td:
+            txt = os.path.join(td, "in.txt")
+            open(txt, "w", encoding="utf-8").write("3.11\n")
+            out = os.path.join(td, "out.csv")
+            rc = vp.run_claims_template(txt, out)
+            self.assertEqual(rc, 1)
+            self.assertFalse(os.path.exists(out))
+
+    def test_ledger_renders_in_text_and_html(self):
+        import tempfile
+        stats = {"total": 2, "correct": 1, "mismatch": 0, "partial": 0,
+                 "invalid": 0, "unknown": 1, "retracted": 0,
+                 "network_errors": 1, "doi_splice": 0,
+                 "submission_readiness": {"ready": False, "summary": "x"}}
+        results = [{"pmid": "31018962", "verdict": "correct", "valid": True,
+                    "title": "T", "authors": "A B", "journal": "J",
+                    "pubdate": "2019", "source_file": "x", "details": "ok"},
+                   {"pmid": "", "verdict": "unknown", "valid": False,
+                    "network_error": True, "claimed_title": "Some unknown ref",
+                    "source_file": "x", "details": "unreachable"}]
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tf:
+            hpath = tf.name
+        try:
+            html = vp.generate_html_report(results, stats, "x")
+            self.assertIn("Finding ledger", html)
+            self.assertIn("unresolved 1", html)
+        finally:
+            os.unlink(hpath)
+        # text ledger is printed by main — verify via the ledger builder only
+        led = vp.finding_ledger(results, stats)
+        self.assertEqual(led["unresolved"][0]["why"], "network — retry when reachable")
+
+    def test_claims_template_bad_args_exit(self):
+        import subprocess, sys
+        r = subprocess.run([sys.executable, "scripts/verify_pmids.py",
+                            "--claims-template", "only-one-arg"],
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("SRC,OUT", r.stderr)
 
 
 if __name__ == "__main__":

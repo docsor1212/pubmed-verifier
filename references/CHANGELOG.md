@@ -1,3 +1,7 @@
+> **何时读我**：想知道某版本改了什么、或对照旧版行为时。
+> **最短路径**：SKILL.md 只保留最近三版摘要；完整 20 版历史在本文件逐字保留。
+> **回 INDEX**：[INDEX.md](INDEX.md)
+
 # pubmed-verifier — full release history
 
 Complete version history. The SKILL.md "Recent releases" section keeps the
@@ -345,6 +349,38 @@ three judgment-ladder defects; all three are fixed and locked:
 - `--check-net` masks proxy credentials (`http://user:****@host:port`) so
   the pre-flight output is paste-safe.
 - Docs: "Trigger words" and "Use from Python" sections moved up front.
+
+## v4.6.0 — finding ledger & claims skeleton generator
+
+- **Finding ledger** — text and HTML reports close with an explicit
+  bookkeeping page: every planned citation is answered (correct / mismatch
+  / invalid), partially answered (partial — the manual-review pool), or
+  unresolved (unknown) with the reason and the next action, plus a budget
+  line (citations checked / network errors).
+- **`--claims-template SRC,OUT`** — reverse-generates a claims CSV
+  skeleton from a plain-text reference list, .bib or .ris: every routable
+  field the parsers can see (PMID, DOI, arXiv ID, title, authors, journal,
+  year) is filled; fill the gaps and run `--claims-file` for the exact
+  five-state path.
+- Docs: capability×limit boundary table; FAQ slimmed to the top-4 with the
+  full list in references/usage_guide.md; 30-second entry blocks on every
+  reference file; references/INDEX.md task router; anti-pattern table
+  gains the don't-repeat-burned-calls row; Skip-when negative triggers in
+  the description.
+
+## v4.5.0 — card conversion: icon + search-intent coverage
+
+A proper skill icon (the splice-detection visual) went live with this
+release, and the description now covers five more search intents verbatim
+(参考文献生成 / 文献真伪 / 文献核对 / 引用核查 / 论文引用), first line
+leading on citation authenticity. No code changes.
+
+## v4.4.0 — submission evidence pack & leaner main doc
+
+`--report-bundle DIR` — one command writes the complete evidence pack
+(audit + HTML + BibTeX/RIS + CSV + GB/T list + self-describing manifest).
+Full version history moved here from SKILL.md; OpenAlex 429 retries back
+off at least 5s.
 
 ## v4.3.0 — GB/T author-date style & monograph journal fix
 

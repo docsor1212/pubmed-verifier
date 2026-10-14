@@ -1,3 +1,7 @@
+> **何时读我**：需要完整 API 调用示例与返回字段说明时。
+> **最短路径**：SKILL.md 的「What the output looks like」先看输出形态，再来这里对字段。
+> **回 INDEX**：[INDEX.md](INDEX.md)
+
 # PubMed E-utilities API Quick Reference
 
 ## esummary — Article Metadata

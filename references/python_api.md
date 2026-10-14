@@ -1,3 +1,7 @@
+> **何时读我**：要在 Python 代码里直接调验证能力（批量管线/自建服务）时。
+> **最短路径**：复制第 1 节的 import 模板即可跑通；第 6 节覆盖 v4.0+ 的新接口。
+> **回 INDEX**：[INDEX.md](INDEX.md)
+
 # Python API — calling pubmed-verifier from your code
 
 The whole tool is one stdlib-only module. Import it directly — no pip, no

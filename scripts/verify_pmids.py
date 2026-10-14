@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v4.5.0
+PMID Citation Verifier -- PubMed E-utilities API v4.6.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -82,8 +82,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "4.5.0"
-_UA_TOOL = "pubmed-verifier/4.5 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "4.6.0"
+_UA_TOOL = "pubmed-verifier/4.6 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -1119,7 +1119,7 @@ def parse_citation_context(context: str) -> dict:
         claimed["claimed_journal"] = journal_italic[0].strip().rstrip(".")
     
     # Strategy: find PMID position, work backwards
-    # v3.9.0 strict-round (ub02-style dense lists): anchor on the LAST PMID
+    # v3.9.0 strict-round (external-audit-style dense lists): anchor on the LAST PMID
     # in the context — extract_pmids_from_file hands us the 200 chars BEFORE
     # this record's PMID, so the nearest marker is this record's; re.search
     # used to grab a NEIGHBOUR's PMID and cross-contaminate claims.
@@ -1144,7 +1144,7 @@ def parse_citation_context(context: str) -> dict:
         # Get text before PMID
         pre_text = text[:pmid_match.start()].strip().rstrip(".")
 
-    # v3.9.0 (ub02 B5): GB/T 7714-style Chinese references ("……标题[J]. 刊名, 年…"
+    # v3.9.0 (external-audit B5): GB/T 7714-style Chinese references ("……标题[J]. 刊名, 年…"
     # with a PMID marker) — the English sentence parser extracts almost nothing
     # here. Pull the reliably-present fields; the title comparison against
     # Latin registries is skipped cross-language in cross_check, so a Chinese
@@ -1230,7 +1230,7 @@ def parse_citation_context(context: str) -> dict:
     segments = [s.replace('\x00', '.').strip() for s in segments if s.strip()]
 
 
-    # v3.8.0 (ub02 B1): when the citation is NOT the first sentence of its
+    # v3.8.0 (external-audit B1): when the citation is NOT the first sentence of its
     # block, segments[0] is preceding prose and segments[1] is the AUTHOR
     # line ("Zaripova LN, Midgley A, Christmas SE") — treating it as the
     # claimed title mis-reported correct references as mismatch. If
@@ -1569,7 +1569,7 @@ def cross_check_citation(claimed: dict, actual: dict) -> dict:
     author_skipped = bool(result.get("author_check"))
 
     # Cross-language author skip + no claimed title + all comparable fields
-    # match. v3.8.0 (ub02 B3): the documented ladder caps title-less claims
+    # match. v3.8.0 (external real-data audit B3): the documented ladder caps title-less claims
     # at partial — same author+journal+year can cover several papers — so
     # the former "correct" here becomes an encouraging partial.
     if author_skipped and not claimed.get("claimed_title") \
@@ -1587,7 +1587,7 @@ def cross_check_citation(claimed: dict, actual: dict) -> dict:
     # to the mismatch ladder accused perfectly-cited references of being
     # hallucinations when the user simply omitted the title column.
     if not claimed.get("claimed_title") and checks_run > 0:
-        # v3.8.0 (ub02 B3): the FAQ, anti-patterns and boundaries all promise
+        # v3.8.0 (external real-data audit B3): the FAQ, anti-patterns and boundaries all promise
         # that title-less claims never reach correct — the former
         # all-fields-match shortcut contradicted the docs and the five-state
         # definition. Everything here now caps at partial.
@@ -1634,7 +1634,7 @@ def cross_check_citation(claimed: dict, actual: dict) -> dict:
         return result
 
     if result["title_match"] and (result["author_match"] or result["journal_match"]):
-        # v3.8.0 (ub02 B2): an ENTIRELY different author set (comparison ran,
+        # v3.8.0 (external real-data audit B2): an ENTIRELY different author set (comparison ran,
         # zero surname hits) is a real mis-attribution — cap at partial even
         # when title and journal match. Partial surname overlap (abbreviated
         # or reordered names) keeps correct, guarding against noise.
@@ -2694,6 +2694,32 @@ def write_report_bundle(results: list, stats: dict, args, deltas: dict,
     return written
 
 
+def finding_ledger(results: list, stats: dict) -> dict:
+    """Finding ledger (v4.6.0): every planned citation accounted for as
+    answered / partially answered / unresolved, with the next action for the
+    unresolved bucket — the report's honest bookkeeping page."""
+    answered, partially, unresolved = [], [], []
+    for r in results:
+        label = (r.get("pmid") or r.get("doi") or r.get("arxiv_id")
+                 or str(r.get("claimed_title", ""))[:40])
+        v = r.get("verdict")
+        if v in ("correct", "mismatch", "invalid"):
+            answered.append({"key": label, "verdict": v})
+        elif v == "partial":
+            partially.append({"key": label, "details": str(r.get("details", ""))[:100]})
+        else:
+            unresolved.append({"key": label,
+                               "why": ("network — retry when reachable"
+                                       if r.get("network_error")
+                                       else str(r.get("details", ""))[:100]),
+                               "next": "supply a PMID/DOI, or re-run --no-cache "
+                                       "when the network is up"})
+    return {"answered": answered, "partially": partially,
+            "unresolved": unresolved,
+            "budget": {"citations_checked": stats.get("total", len(results)),
+                       "network_errors": stats.get("network_errors", 0)}}
+
+
 def readiness_summary(stats: dict) -> tuple:
     """(ready, one-line verdict) for the report header (v2.7.0)."""
     problems = (stats.get("invalid", 0) + stats.get("mismatch", 0)
@@ -3038,6 +3064,22 @@ def generate_html_report(results: list[dict], stats: dict, source: str, repro: d
     ready, ready_line = readiness_summary(stats)
     banner = (f'<div class="ready ok">{ready_line}</div>' if ready
               else f'<div class="ready notok">{ready_line}</div>')
+    # Finding ledger panel (v4.6.0)
+    try:
+        ledger = finding_ledger(results, stats)
+        _unres = "".join(
+            f'<li>{html.escape(str(u["key"]))} — {html.escape(str(u["why"]))}'
+            f' <i>next: {html.escape(str(u["next"]))}</i></li>'
+            for u in ledger["unresolved"][:20])
+        ledger_html = (
+            f'<div class="repro"><b>Finding ledger</b> — '
+            f'✓ answered {len(ledger["answered"])} · '
+            f'◐ partially {len(ledger["partially"])} · '
+            f'✗ unresolved {len(ledger["unresolved"])}'
+            + (f'<ul style="margin:6px 0 0 18px;">{_unres}</ul>'
+               if _unres else "") + "</div>")
+    except Exception:
+        ledger_html = ""
 
     delta_html = ""
     if deltas and "error" not in deltas:
@@ -3107,7 +3149,7 @@ tr.splice{{background:#fdecea;box-shadow:inset 3px 0 0 #c0392b;}}
 .legend{{margin:10px 0;font-size:.82rem;color:#6b6560;}}
 </style></head><body>
 <h1>📋 PMID Citation Verification Report</h1>
-{banner}
+{banner}{ledger_html}
 <p>Source: <code>{html.escape(source)}</code></p>
 {delta_html}
 <div class="filters">
@@ -3755,6 +3797,70 @@ def lint_claims_ris(path: str) -> list:
     return issues
 
 
+def write_claims_template(src_path: str, out_path: str) -> tuple:
+    """Claims skeleton generator (v4.6.0): read any supported input (plain-text
+    reference list, .bib, .ris) and write a claims CSV with every routable
+    field the parsers could extract — the user fills the gaps and runs the
+    exact --claims-file path. Lowercase header row matches _load_csv_claims.
+    Returns (rows_written, notes)."""
+    lower = src_path.lower()
+    if lower.endswith(".bib"):
+        entries, issues = parse_bibtex(src_path)
+        rows = []
+        for e in entries:
+            f = e["fields"]
+            kind, ident, _ = bib_entry_route(f)
+            rows.append({"pmid": f.get("pmid", ""),
+                         "doi": ident if kind == "doi" else f.get("doi", ""),
+                         "arxiv_id": ident if kind == "arxiv" else "",
+                         "title": f.get("title", ""),
+                         "authors": "; ".join(f.get("authors", []))
+                         if isinstance(f.get("authors"), list) else f.get("authors", ""),
+                         "journal": f.get("journal", ""), "year": f.get("year", "")})
+    elif lower.endswith(".ris"):
+        raw, issues = parse_ris(src_path)
+        rows = []
+        for e in raw:
+            f = ris_to_bib_fields(e["fields"])
+            kind, ident, _ = bib_entry_route(f)
+            rows.append({"pmid": f.get("pmid", ""),
+                         "doi": ident if kind == "doi" else f.get("doi", ""),
+                         "arxiv_id": ident if kind == "arxiv" else "",
+                         "title": f.get("title", ""),
+                         "authors": "; ".join(f.get("authors", []))
+                         if isinstance(f.get("authors"), list) else f.get("authors", ""),
+                         "journal": f.get("journal", ""), "year": f.get("year", "")})
+    else:
+        entries, issues = parse_plaintext_references(src_path)
+        rows = [{"pmid": e["pmid"], "doi": e["doi"], "arxiv_id": e["arxiv_id"],
+                 "title": e["claimed_title"],
+                 "authors": "; ".join(e["claimed_authors"]),
+                 "journal": e["claimed_journal"], "year": e["claimed_year"]}
+                for e in entries]
+    notes = list(issues)
+    if not rows:
+        return 0, notes + ["no parseable entries — nothing written"]
+    import csv as _csv
+    with open(out_path, "w", newline="", encoding="utf-8") as fh:
+        w = _csv.DictWriter(fh, fieldnames=["pmid", "doi", "arxiv_id", "title",
+                                            "authors", "journal", "year"])
+        w.writeheader()
+        w.writerows(rows)
+    notes.append(f"{len(rows)} skeleton row(s) written — fill the empty cells, "
+                 "then run with --claims-file")
+    return len(rows), notes
+
+
+def run_claims_template(src_path: str, out_path: str) -> int:
+    rows, notes = write_claims_template(src_path, out_path)
+    for n in notes:
+        print(f"  claims-template: {n}")
+    if not rows:
+        return 1
+    print(f"Claims template written to {out_path}")
+    return 0
+
+
 def run_check_net() -> int:
     """Pre-flight connectivity probe (v3.9.0, five sources since v4.1.0): 5s per data source, prints
     reachability + practical next steps. Exit 0 all reachable, 2 otherwise
@@ -3889,6 +3995,12 @@ def main():
                              "GB/T 7714-2015 / Vancouver / APA 7 / AMA 11 via --citation-style; "
                              "correct = numbered list, partial = review section, "
                              "retracted = excluded with a warning")
+    parser.add_argument("--claims-template", metavar="SRC,OUT",
+                        help="Reverse-generate a claims CSV skeleton from a "
+                             "plain-text reference list, .bib or .ris: every "
+                             "routable field the parsers can see is filled, you "
+                             "fill the gaps, then run --claims-file for exact "
+                             "five-state verification (format: SRC,OUT)")
     parser.add_argument("--report-bundle", metavar="DIR",
                         help="Write the complete submission evidence pack into DIR: "
                              "audit.json + report.html + verified-refs.bib/.ris + "
@@ -3908,6 +4020,12 @@ def main():
         sys.exit(run_check_net())
     if args.lint_claims:
         sys.exit(run_claims_lint(args.lint_claims))
+    if args.claims_template:
+        parts = args.claims_template.split(",", 1)
+        if len(parts) != 2:
+            print("--claims-template needs SRC,OUT (comma-separated)", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(run_claims_template(parts[0].strip(), parts[1].strip()))
 
     _OPTS["ncbi_key"] = args.ncbi_api_key or os.environ.get("NCBI_API_KEY", "")
     _OPTS["mailto"] = args.mailto or os.environ.get("PUBMED_VERIFIER_MAILTO", "")
@@ -4534,6 +4652,24 @@ def main():
         "sources": "eutils.ncbi.nlm.nih.gov · www.ebi.ac.uk (Europe PMC) · api.crossref.org · api.openalex.org · export.arxiv.org — all HTTPS",
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
+
+    # Finding ledger (v4.6.0): explicit bookkeeping before the report files
+    ledger = finding_ledger(results, stats)
+    if results:
+        print("\n" + "=" * 60)
+        print(f"Finding ledger — {len(results)} findings")
+        print(f"  ✓ answered:          {len(ledger['answered'])} "
+              f"(correct/mismatch/invalid)")
+        print(f"  ◐ partially answered: {len(ledger['partially'])} "
+              f"(partial — manual review items)")
+        print(f"  ✗ unresolved:         {len(ledger['unresolved'])}")
+        for u in ledger["unresolved"][:5]:
+            print(f"      - {u['key']}: {u['why']}")
+            print(f"        next: {u['next']}")
+        if len(ledger["unresolved"]) > 5:
+            print(f"      … +{len(ledger['unresolved']) - 5} more (see report)")
+        print(f"  budget: {ledger['budget']['citations_checked']} citations checked, "
+              f"{ledger['budget']['network_errors']} network errors")
 
     # Output
     if args.output:
