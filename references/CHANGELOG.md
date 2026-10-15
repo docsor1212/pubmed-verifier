@@ -350,6 +350,24 @@ three judgment-ladder defects; all three are fixed and locked:
   the pre-flight output is paste-safe.
 - Docs: "Trigger words" and "Use from Python" sections moved up front.
 
+## v4.7.0 — real medical-document fixes (literature-export testing)
+
+Found by running the verifier against a real rheumatology literature
+export (385-entry file, 2026-10-14): 17 of 20 citations were false
+mismatches because registry-metadata list lines ("- DOI: ...") directly
+above a PMID were taken as the claimed title.
+
+- Metadata list lines and "Year | Journal | Authors" table rows are now
+  stripped before citation segmentation; when a flattened export leaves a
+  single "## Title" line, that line IS the claim.
+- A live PMID with no claimed metadata is an explicit **existence
+  confirmation** (`existence_confirmed: true`, counted in the finding
+  ledger as answered) — the old "Insufficient claimed metadata" wording
+  treated the user's existence check like an error.
+- `--source` merges a scanned DOI into its already-verified PMID (one
+  paper, one finding; explicit `--dois`/claims are never merged).
+- `--parse-text` reads "## Title" heading exports as entry boundaries.
+
 ## v4.6.0 — finding ledger & claims skeleton generator
 
 - **Finding ledger** — text and HTML reports close with an explicit

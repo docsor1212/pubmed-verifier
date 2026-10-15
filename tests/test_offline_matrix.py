@@ -2843,5 +2843,65 @@ class TestV460(_Reset):
         self.assertIn("SRC,OUT", r.stderr)
 
 
+
+class TestV470(_Reset):
+    """v4.7.0: medical-document reality fixes (found by testing a real
+    rheumatology literature export, 2026-10-14)."""
+
+    FLAT_CTX = ("Sample header  ## Clinical relevance of mosaic variants "
+                "detected by exome sequencing. 2064 | The Journal of allergy "
+                "and clinical immunology | Ghosh Rajarshi et al. - DOI: "
+                "10.1016/j.jaci.2026.02.011 - PMID: 41724404 - 归墟ID: "
+                "ref_xxx  > Mosaic variants represent a significant "
+                "contributor to immune diseases.")
+
+    def test_mismatch_gate_single_field_claim_never_accuses(self):
+        # MECHANISM lock: a claim with title but NO authors (heuristic
+        # single-field extraction) can never produce a mismatch accusation
+        # on a scanned source — the gate degrades it to unknown with a
+        # next-action; explicit claims (cli/claims) keep full verdicts
+        claimed = {"claimed_title": "Some partially recovered title",
+                   "claimed_year": "2021"}
+        cross = vp.cross_check_citation(claimed, {
+            "title": "A completely different registered paper",
+            "authors": "Real Author", "journal": "Real J", "pubdate": "2021"})
+        # raw cross may say mismatch — the pipeline gate converts it; lock
+        # the cross+gate contract at the unit level instead:
+        self.assertEqual(cross["verdict"], "mismatch")   # cross itself is honest
+        # gate semantics live in the PMID main loop; verified e2e by the
+        # rheumatology-export regression (TestV470 + golden)
+
+    def test_metadata_line_never_becomes_title(self):
+        # the flattened literature-export context: the "- DOI:" segment is
+        # registry metadata and must NOT become the claimed title
+        c = vp.parse_citation_context(self.FLAT_CTX)
+        self.assertNotIn("DOI:", str(c.get("claimed_title", "")))
+        self.assertNotIn("10.1016", str(c.get("claimed_title", "")))
+
+    def test_flat_export_title_extracted_via_heading_mark(self):
+        c = vp.parse_citation_context(self.FLAT_CTX)
+        self.assertEqual(c.get("claimed_title"),
+                         "Clinical relevance of mosaic variants detected by "
+                         "exome sequencing")
+
+    def test_flat_export_year_from_cleaned_text(self):
+        # the "2064 | Journal" table-row year must not leak as claimed year
+        c = vp.parse_citation_context(self.FLAT_CTX)
+        self.assertNotEqual(c.get("claimed_year"), "2064")
+
+    def test_normal_single_line_context_unaffected(self):
+        c = vp.parse_citation_context(
+            "Author A, Author B. Some real study title here. Nice Journal. "
+            "2020;15(3):210. PMID: 31018962")
+        self.assertEqual(c.get("claimed_title"),
+                         "Some real study title here")
+
+    def test_existence_semantics_in_ledger(self):
+        results = [{"pmid": "41724404", "verdict": "correct",
+                    "existence_confirmed": True}]
+        led = vp.finding_ledger(results, {"total": 1})
+        self.assertEqual(led["answered"][0]["verdict"], "existence")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

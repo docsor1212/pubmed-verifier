@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 4.6.0
+version: 4.7.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v4.6.0
+# PubMed Citation Verifier v4.7.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -298,6 +298,13 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v4.7.0** — medical-document reality fixes: registry-metadata lines in
+  literature exports ("- DOI: ...", "2025 | Journal | Authors") can no
+  longer become the claimed title (an 85% false-mismatch rate on a real
+  rheumatology export dropped to zero); a live PMID with no claimed
+  metadata is an explicit existence confirmation; --source merges a DOI
+  into its already-verified PMID; --parse-text reads "## Title" heading
+  exports.
 - **v4.6.0** — finding ledger in every report (answered / partially /
   unresolved, with the next action); `--claims-template` turns a copied
   reference list into a claims CSV skeleton; usage guide + task INDEX land
@@ -410,7 +417,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v4.6.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v4.7.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
 | `references/INDEX.md` | 任务→文档 30 秒路由表 |

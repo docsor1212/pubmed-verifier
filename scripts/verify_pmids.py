@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v4.6.0
+PMID Citation Verifier -- PubMed E-utilities API v4.7.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -82,8 +82,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "4.6.0"
-_UA_TOOL = "pubmed-verifier/4.6 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "4.7.0"
+_UA_TOOL = "pubmed-verifier/4.7 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -101,6 +101,18 @@ _HOST_OPENED_AT = {}
 class CircuitOpenError(RuntimeError):
     """Host circuit breaker is open after repeated transport failures."""
 
+
+
+CT_KEY = "claimed_title"
+CT_SEP = " "
+CT_NL = chr(10)
+_META_LINE_RE = re.compile(r"^[-\u2022*]?\s*(?:DOI|PMID|arXiv|\u5f52\u5729ID|url)\s*[:\uff1a]", re.I)
+_TABLE_ROW_RE = re.compile(r"^(?:19|20)\d{2}\s*\|")
+_HEADING_MARK_RE = re.compile(r"^#{1,6}\s+")
+_QUOTE_MARK_RE = re.compile(r"^>\s?")
+_META_SEG_RE = re.compile(r"(?:[-\u2022*]\s*)?(?:DOI|PMID|arXiv|\u5f52\u5729ID|url)\s*[:\uff1a]\s*\S+", re.I)
+_TABLE_SEG_RE = re.compile(r"(?:19|20)\d{2}\s*\|[^|]*\|[^|]*(?:\||$)")
+_MD_TITLE_RE = re.compile(r"##\s+([^.]{10,240}\.)")
 
 def _host_key(url: str) -> str:
     """'https://eutils.ncbi.nlm.nih.gov' from a full URL (scheme://host granularity)."""
@@ -1086,6 +1098,50 @@ def verify_arxiv_entry(arxiv_id: str, src: str, claimed: dict = None,
 
 # ── Citation context parsing ──
 
+def _strip_metadata_lines(text: str, out_claimed: dict = None) -> str:
+    """Strip bibliography-database export lines before citation
+    segmentation (v4.7.0). "- DOI: 10.x/...", "PMID: ...",
+    "归墟ID: ...", "2025 | Journal | Authors" table rows are registry
+    metadata, not claims — the last such line before a PMID used to be
+    taken as the claimed title and manufactured mass false mismatches
+    on real literature exports (85% of rows in a rheumatology export
+    sample, found 2026-10-14). Markdown heading/quote markers are
+    unwrapped so a surviving title line reads clean."""
+    if "\n" not in text:
+        # flattened single-line context (extract_pmids_from_file joins the
+        # window with spaces): strip metadata SEGMENTS inline, and a "## "
+        # residue mark yields the entry title directly — anything else stays
+        # honestly empty (existence path)
+        t = _META_SEG_RE.sub(" ", text)
+        t = _TABLE_SEG_RE.sub(" ", t)
+        m = _MD_TITLE_RE.search(t)
+        if m:
+            if out_claimed is not None:
+                out_claimed["claimed_title"] = m.group(1).strip().rstrip(".")
+                yr = re.search(r"\b((?:19|20)\d{2})\b", t)
+                out_claimed["claimed_year"] = yr.group(1) if yr else ""
+            return m.group(1).strip().rstrip(".")
+        # the year must come from the CLEANED text — the "2064 | Journal"
+        # table-row year was leaking in as a claimed year
+        yr = re.search(r"\b((?:19|20)\d{2})\b", t)
+        if out_claimed is not None:
+            out_claimed["claimed_year"] = yr.group(1) if yr else ""
+        return t
+    out = []
+    for ln in text.splitlines():
+        t = ln.strip()
+        if _META_LINE_RE.match(t) or t in ("-", "\u2022", "*"):
+            continue
+        if _TABLE_ROW_RE.match(t):
+            continue
+        ln = _HEADING_MARK_RE.sub("", ln)
+        ln = _QUOTE_MARK_RE.sub("", ln)
+        if t and not ln.strip():
+            continue
+        out.append(ln)
+    return chr(10).join(out)
+
+
 def parse_citation_context(context: str) -> dict:
     """Parse a citation context string to extract claimed metadata.
     
@@ -1143,6 +1199,29 @@ def parse_citation_context(context: str) -> dict:
         _markerless = False
         # Get text before PMID
         pre_text = text[:pmid_match.start()].strip().rstrip(".")
+
+    # v4.7.0: registry metadata rows are not claims — strip them before
+    # any segmentation, and when a single title line survives it IS the
+    # claim (bibliography-export reality fix, 2026-10-14)
+    if claimed.get("claimed_title"):
+        return claimed   # flattened-export title already extracted
+    _pre_lines = _strip_metadata_lines(pre_text, claimed)
+    _pre_clean = [l.strip() for l in _pre_lines.splitlines() if l.strip()]
+    # single-title shortcut ONLY when the raw context was multi-line and
+    # metadata stripping left one line (bibliography-export shape) — a
+    # normal single-line citation (authors. title. journal. PMID) keeps
+    # the regular segmentation path
+    _raw_nonempty = [l for l in pre_text.splitlines() if l.strip()]
+    if len(_pre_clean) == 1 and len(_raw_nonempty) >= 2:
+        _t0 = _pre_clean[0].rstrip(".")
+        if len(_t0.split()) >= 4:
+            claimed[CT_KEY] = CT_SEP.join(_t0.split())
+            return claimed
+        pre_text = _t0
+    elif len(_pre_clean) == 1:
+        pre_text = _pre_clean[0]
+    elif _pre_clean:
+        pre_text = CT_NL.join(_pre_clean).strip().rstrip(".")
 
     # v3.9.0 (external-audit B5): GB/T 7714-style Chinese references ("……标题[J]. 刊名, 年…"
     # with a PMID marker) — the English sentence parser extracts almost nothing
@@ -2703,7 +2782,9 @@ def finding_ledger(results: list, stats: dict) -> dict:
         label = (r.get("pmid") or r.get("doi") or r.get("arxiv_id")
                  or str(r.get("claimed_title", ""))[:40])
         v = r.get("verdict")
-        if v in ("correct", "mismatch", "invalid"):
+        if r.get("existence_confirmed"):
+            answered.append({"key": label, "verdict": "existence"})
+        elif v in ("correct", "mismatch", "invalid"):
             answered.append({"key": label, "verdict": v})
         elif v == "partial":
             partially.append({"key": label, "details": str(r.get("details", ""))[:100]})
@@ -3452,17 +3533,27 @@ def parse_plaintext_references(path: str) -> tuple:
     lines = text.splitlines()
     numbered_count = sum(1 for ln in lines if _TEXT_NUM_RE.match(ln))
     numbered_mode = numbered_count >= 2
+    # v4.7.0: bibliography-export files use "## Title" headings as entry
+    # boundaries — a heading-mode file beats numbering (its "[n]" rows
+    # are metadata lines, not entry starts)
+    heading_mode = (sum(1 for ln in lines if re.match(r'\s*#{1,6}\s+\S', ln)) >= 2
+                    and not numbered_mode)
     blocks, cur = [], None
     for ln in lines:
         s = ln.strip()
         if not s:
             continue
         m = _TEXT_NUM_RE.match(ln) if numbered_mode else None
-        if m:
+        _is_head = bool(re.match(r'\s*#{1,6}\s+\S', ln))
+        if _is_head:
+            if cur is not None:
+                blocks.append(cur)
+            cur = re.sub(r'\s*#{1,6}\s+', '', ln).strip()
+        elif m:
             if cur is not None:
                 blocks.append(cur)
             cur = s
-        elif numbered_mode and cur is not None:
+        elif (numbered_mode or heading_mode) and cur is not None:
             cur += " " + s
         else:
             blocks.append(s)
@@ -4354,13 +4445,62 @@ def main():
                     entry["retraction_note"] = info.get("retraction_note", "")
                     entry["retraction_source"] = "registry pubtype"
 
-                # Cross-check claimed vs actual
-                cross = cross_check_citation(claimed, {
-                    "title": info["title"],
+                # v4.7.0: a live PMID with no usable claimed metadata
+                # (title/authors) is an EXISTENCE check — registry record
+                # attached, answered (existence), never "insufficient"
+                if not (claimed.get("claimed_title") or claimed.get("claimed_authors")):
+                    entry["valid"] = True
+                    entry["verdict"] = "correct"
+                    entry["existence_confirmed"] = True
+                    entry["details"] = ("PMID exists — no claimed metadata to "
+                                        "cross-check; registry record attached "
+                                        "(existence confirmation only)")
+                    entry["title"] = info.get("title", "")
+                    entry["journal"] = info.get("journal", "")
+                    entry["pubdate"] = info.get("pubdate", "")
+                    entry["authors"] = info.get("authors", "")
+                    entry["meta_source"] = info.get("source", "")
+                    # full-shape cross so the common post-checks pass unchanged
+                    cross = {"verdict": "correct", "details": entry["details"],
+                             "confidence": 1.0, "title_match": None,
+                             "author_match": None, "journal_match": None,
+                             "year_match": None,
+                             "route": "existence_only"}
+                    if info.get("retracted") and not entry.get("retracted"):
+                        entry["retracted"] = True
+                        entry["retraction_note"] = info.get("retraction_note", "")
+                        entry["retraction_source"] = "registry pubtype"
+                        entry["verdict"], entry["details"] = apply_retraction_cap(
+                            entry["verdict"], entry["details"])
+                    stats["existence_only"] = stats.get("existence_only", 0) + 1
+                else:
+                    # Cross-check claimed vs actual
+                    cross = cross_check_citation(claimed, {
+                        "title": info["title"],
                     "authors": info["authors"],
                     "journal": info["journal"],
                     "pubdate": info["pubdate"],
                 })
+                # v4.7.0 MECHANISM — mismatch accusation gate: a mismatch is
+                # an accusation; it requires the parser to have recovered a
+                # STRUCTURED claim (title AND authors co-present) or the user
+                # to have explicitly endorsed the metadata. Any heuristic
+                # single-field claim (unknown export shapes, fragments,
+                # metadata residue) degrades to unknown with a next action —
+                # so NO future export format can manufacture false
+                # mismatches the way the "- DOI:" rows did.
+                if (cross["verdict"] == "mismatch"
+                        and not (claimed.get("claimed_title")
+                                 and claimed.get("claimed_authors"))
+                        and src not in ("cli", "claims")):
+                    cross["verdict"] = "unknown"
+                    cross["details"] = (
+                        cross["details"] + "; claimed metadata incomplete "
+                        "(title/authors not both recoverable from this "
+                        "context) — no mismatch accusation from heuristic "
+                        "parsing; feed --claims-file for a decisive verdict")
+                    stats["mismatch_gated"] = stats.get("mismatch_gated", 0) + 1
+
                 if entry.get("doi_splice_suspect"):
                     splice_note = ("claimed DOI differs from the DOI registered for this PMID "
                                    "（声称DOI与该PMID登记DOI不符——拼接伪造信号）")
@@ -4515,6 +4655,21 @@ def main():
     linked_pmids = sorted({p for p in pmid_map.values() if p})
     pmid_info_map = fetch_summaries(linked_pmids) if linked_pmids else {}
     # Phase 4: build entries serially (stats stay main-thread)
+    # v4.7.0 (--source only): a scanned DOI whose linked PMID is already
+    # verified in the PMID leg merges into that citation — one paper, one
+    # finding; explicit --dois/claims DOIs are never merged
+    _pmid_verified = {str(_r["pmid"]) for _r in results if _r.get("pmid")}
+    if args.source and not (args.dois or explicit_doi):
+        for _i, (_doi, _s, _c) in enumerate(unique_dois):
+            _linked = str(pmid_map.get(_doi, "") or "")
+            if _linked and _linked in _pmid_verified:
+                unique_dois[_i] = (_doi, "merge:" + _linked, _c)
+                stats["doi_merged_into_pmid"] = stats.get("doi_merged_into_pmid", 0) + 1
+                print(f"  note: DOI {_doi} links to already-verified PMID "
+                      f"{_linked} — merged (one paper, one finding)",
+                      file=sys.stderr, flush=True)
+    unique_dois = [t for t in unique_dois if not t[1].startswith("merge:")]
+    doi_processed = len(unique_dois)
     for doi, src, claimed in unique_dois:
         entry, audit_item = verify_doi_entry(
             doi, src, resolution=resolutions.get(doi),
