@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 4.7.0
+version: 4.8.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v4.7.0
+# PubMed Citation Verifier v4.8.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -53,12 +53,20 @@ Use this skill when the user's request matches any of: **verify PMIDs**,
 **reference check**, **batch verify references**, **AI hallucination
 detection**, **verify DOI**, **DOI check**, **citation formatting**,
 **reference formatter**, **GB/T 7714**, 中文文献验证 / 参考文献核查 /
-文献排版. A pasted reference list, a `.bib`/`.ris` file, or a claims CSV
-are all direct inputs.
+文献排版. A pasted reference list, a `.bib`/`.ris` file, a Word `.docx`
+document, an exported `.html` page, or a claims CSV are all direct inputs.
 
 Three quick mappings: "帮我验证这几个 PMID 31018962、22213727" →
 `--pmids`; "检查我论文参考文献" + a pasted list → `--parse-text`;
 "这篇撤稿了该引什么" → `--suggest` on a retracted entry.
+
+**When `--claims-file` is required:** a plain scan verifies existence plus
+whatever metadata the citation context carries — if a verdict will be
+acted on (mismatch/partial before submission), feed the expected
+title+authors via `--claims-file` for the decisive five-state verdict.
+**Tool boundary:** cite-holmes covers deep research with machine-verified
+citations; this skill is the verification/formatting pass — when a request
+mixes both, research first, then audit the final reference list here.
 
 ## Use from Python
 
@@ -92,6 +100,15 @@ Four limits cover 95% of surprises — each has a one-flag workaround:
 
 Everything else below expands on these.
 
+**Documentation map** — what lives where, so nothing needs hunting:
+
+| If you want... | Go to |
+|---|---|
+| The full version history | `references/CHANGELOG.md` (main doc keeps the recent highlights) |
+| Every FAQ, scenario walkthrough and tuning knob | `references/usage_guide.md` |
+| The Python API reference / runnable examples | `references/python_api.md` / `references/api_examples.md` |
+| Which file to open for which task | `references/INDEX.md` |
+
 ## The five-state verdict
 
 | Verdict | Meaning |
@@ -112,6 +129,11 @@ wrong this way. A binary exists/not-exists check misses them all.
 ```bash
 # Scan a project directory for PMIDs (parses citation context automatically)
 python3 scripts/verify_pmids.py --source /path/to/project --output report.html
+
+# Word documents and exported HTML pages are read directly (v4.8.0):
+# .docx paragraphs/tables and .html text are extracted in-memory —
+# script/style content is ignored, link targets (href) are kept
+python3 scripts/verify_pmids.py --source guideline_review.docx --output report.html
 
 # Verify specific PMIDs
 python3 scripts/verify_pmids.py --pmids 31018962,22213727
@@ -269,6 +291,8 @@ the one-flag workaround:
 | Retraction detection | Registry pubtype + Crossref `updated-by`, capped at partial | Status is as of cache time (30 days) | `--no-cache` for the final pass |
 | DOI verification | Crossref first, OpenAlex fallback for non-Crossref registries | DOIs absent from BOTH registries stay suspect/invalid by the 404 rule | Cross-check at doi.org before accusing |
 | Title-search legs (Latin + CJK) | Markerless entries resolved by PubMed/OpenAlex title search, honestly labeled | Never a mismatch source; no hit = unknown | Supply a PMID/DOI for a decisive verdict |
+| Second-opinion leg (v4.8.0) | A gated title-only claim is corroborated via PubMed title search (correct, labeled) or flagged as a wrong-PMID signal | Confirms or reports only — never manufactures a mismatch; CJK titles skip (OpenAlex CJK leg owns those) | `--claims-file` for the decisive verdict |
+| Word/HTML input (v4.8.0) | `.docx` paragraphs/tables and `.html` text are extracted in-memory; `href` link targets kept, script/style dropped | A damaged .docx falls back to a raw read (scans bytes, finds little); scanned PDFs/images are NOT text | Export to text/HTML first for PDFs |
 | Formatted reference lists | GB/T (numeric + author-date), Vancouver, APA, AMA — verified entries only | Registry-truncated author lists close with et-al, not invented names | Verify first, then format (`--format-references`) |
 | Network honesty | Failures are unknown + retry hints, never "not found"; nothing cached on failure | Cannot verify anything while registries are unreachable | `--check-net` first |
 
@@ -298,6 +322,12 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v4.8.0** — Word `.docx` and `.html` inputs are read directly by
+  `--source`/`--parse-text` (in-memory extraction; link targets kept,
+  script/style dropped); title-only citations get a second opinion via
+  PubMed title search — same-PMID corroboration upgrades to correct
+  (honestly labeled), a different-record hit surfaces a wrong-PMID
+  signal, and the leg never manufactures a mismatch.
 - **v4.7.0** — medical-document reality fixes: registry-metadata lines in
   literature exports ("- DOI: ...", "2025 | Journal | Authors") can no
   longer become the claimed title (an 85% false-mismatch rate on a real
@@ -417,7 +447,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v4.7.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v4.8.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
 | `references/INDEX.md` | 任务→文档 30 秒路由表 |

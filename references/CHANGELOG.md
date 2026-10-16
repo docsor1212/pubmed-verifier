@@ -350,6 +350,37 @@ three judgment-ladder defects; all three are fixed and locked:
   the pre-flight output is paste-safe.
 - Docs: "Trigger words" and "Use from Python" sections moved up front.
 
+## v4.8.0 — Word/HTML input & the title second-opinion leg
+
+Two capabilities grown from the same medical-document reality testing:
+
+- **`.docx` and `.html` inputs are read directly** (`--source` and
+  `--parse-text`): Word paragraphs/tables are extracted in-memory from the
+  document XML, exported HTML pages are tag-stripped with block elements
+  as newlines. `script`/`style` content is dropped; `href`/`src`/`cite`
+  link targets are KEPT (citations live in link targets on exported
+  pages). A damaged .docx falls back to a raw read instead of failing the
+  scan. Directory scanning now includes `.docx`.
+- **The second-opinion leg for title-only claims**: the v4.7.0 mismatch
+  gate correctly refuses to accuse on heuristic single-field claims — but
+  "honest-but-unhelpful" left real wrong-PMID citations undiscovered. The
+  gate now re-checks the claimed title phrase against PubMed's own
+  `[Title]` index (quoted-phrase query): corroboration by the SAME PMID
+  upgrades the verdict to correct (labeled `route: inline_title_search`,
+  weaker evidence than a user-supplied ID — reachable exactly where the
+  claimed title is a shortened variant that fails similarity thresholds
+  but appears verbatim in the registered title); a phrase hit on a
+  DIFFERENT record surfaces the `wrong_pmid_signal` evidence while the
+  verdict stays unknown; no hit or a network failure stays unknown. The
+  leg only confirms or reports —
+  it never manufactures a mismatch, and CJK titles skip it (the OpenAlex
+  CJK leg owns those).
+- Docs: a documentation map on both main pages (what lives where — full
+  version history, full FAQ, Python API reference, task router), the
+  Trigger words section now states when `--claims-file` is required and
+  where the cite-holmes boundary sits, and the boundary tables cover the
+  new input formats and the second-opinion leg.
+
 ## v4.7.0 — real medical-document fixes (literature-export testing)
 
 Found by running the verifier against a real rheumatology literature

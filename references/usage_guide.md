@@ -50,6 +50,27 @@ match the version-of-record DOI registered on that arXiv entry — a typo,
 or a DOI from a different paper. The registered DOI is in `details`;
 fix the claim or drop the `doi` cell.
 
+**Can I point `--source` at a Word document or an HTML page?**
+Yes (v4.8.0). `.docx` files are unzipped in-memory and the document body
+is read paragraph by paragraph (table cells included); `.html`/`.htm`
+pages are tag-stripped (block elements become newlines, `script`/`style`
+dropped, `href` link targets kept). A damaged .docx falls back to a raw
+read rather than aborting. Scanned PDFs and images are not text — export
+them first.
+
+**A verdict mentions "corroborated by a PubMed [Title] search" or shows a
+wrong-PMID signal — what does that mean?**
+That citation carried only a recoverable title (no authors), so the
+v4.7.0 gate refuses to accuse on it — but v4.8.0 re-checks the claimed
+title phrase via a PubMed `[Title]` field search. If the SAME PMID comes
+back, the verdict upgrades to **correct** (`route: inline_title_search`
+— weaker evidence than a user-supplied ID, authors were never claimed;
+the details carry the "corroborated" wording). If the phrase appears
+verbatim in the registered title of a DIFFERENT PubMed record, the
+details name that record (evidence key `wrong_pmid_signal`) while the
+verdict stays unknown: the cited PMID points to another paper. Feed
+`--claims-file` with title+authors for the decisive verdict.
+
 ### Worked scenarios
 
 - **"The reviewer asked how I checked my references."** — run the audit

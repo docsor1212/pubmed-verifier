@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v4.7.0
+PMID Citation Verifier -- PubMed E-utilities API v4.8.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -73,6 +73,8 @@ import sqlite3
 import sys
 import time
 import urllib.request
+import zipfile
+from html.parser import HTMLParser
 import urllib.parse
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -82,8 +84,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "4.7.0"
-_UA_TOOL = "pubmed-verifier/4.7 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "4.8.0"
+_UA_TOOL = "pubmed-verifier/4.8 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -437,7 +439,7 @@ def extract_dois_from_file(filepath: str) -> list:
     """Extract (doi, context) pairs from a file (v2.8.0). Returns cleaned DOIs."""
     results = []
     try:
-        text = Path(filepath).read_text(encoding="utf-8", errors="ignore")
+        text, _fmt = _read_text_any(filepath)
     except Exception:
         return results
     seen = set()
@@ -899,7 +901,7 @@ def extract_arxivs_from_file(filepath: str) -> list:
     (arxiv_id, context) pairs."""
     results = []
     try:
-        text = Path(filepath).read_text(encoding="utf-8", errors="ignore")
+        text, _fmt = _read_text_any(filepath)
     except Exception:
         return results
     seen = set()
@@ -1838,11 +1840,88 @@ def suggest_retraction_replacements(results: list) -> None:
                                      "verify each before citing")
 
 
+def _read_text_any(filepath: str) -> tuple:
+    """Read a --source / --parse-text input as plain text regardless of format (v4.8.0).
+
+    .docx (Word) is unzipped in-memory and the main document body is
+    extracted paragraph-by-paragraph (w:p boundaries become newlines, table
+    cells included); .html/.htm is tag-stripped with block-level elements
+    turned into newlines and script/style content dropped; anything else is
+    read as-is. A malformed zip falls back to a raw read rather than failing
+    the whole scan. Returns (text, format_label)."""
+    lower = str(filepath).lower()
+    try:
+        if lower.endswith(".docx"):
+            with zipfile.ZipFile(filepath) as z:
+                # size cap: a hostile/ runaway document.xml (zip bomb) falls
+                # back to the raw read instead of ballooning memory
+                if z.getinfo("word/document.xml").file_size > 64 * 1024 * 1024:
+                    raise ValueError("document.xml exceeds 64MB cap")
+                xml_bytes = z.read("word/document.xml")
+            root = ET.fromstring(xml_bytes)
+            w = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+            paras = []
+            for p in root.iter(f"{w}p"):
+                para = "".join(t.text or "" for t in p.iter(f"{w}t")).strip()
+                if para:
+                    paras.append(para)
+            if paras:
+                return "\n".join(paras), "docx"
+        elif lower.endswith((".html", ".htm")):
+
+            class _TextExtract(HTMLParser):
+                _BLOCK = {"p", "div", "li", "tr", "h1", "h2", "h3", "h4",
+                          "h5", "h6", "br", "table", "ul", "ol", "section",
+                          "article", "blockquote", "pre"}
+                _SKIP = {"script", "style"}
+
+                def __init__(self):
+                    super().__init__(convert_charrefs=True)
+                    self.parts = []
+                    self._skip = 0
+
+                def handle_starttag(self, tag, attrs):
+                    if tag in self._SKIP:
+                        self._skip += 1
+                        return
+                    if tag in self._BLOCK:
+                        self.parts.append("\n")
+                    # link/image targets carry the citations in exported
+                    # pages (<a href="https://pubmed.ncbi.nlm.nih.gov/N/">) —
+                    # keep them in the text stream or the extractors lose them
+                    for k, v in attrs:
+                        if k in ("href", "src", "cite") and v:
+                            self.parts.append(" " + v + " ")
+
+                def handle_endtag(self, tag):
+                    if tag in self._SKIP and self._skip:
+                        self._skip -= 1
+                    elif tag in self._BLOCK:
+                        self.parts.append("\n")
+
+                def handle_data(self, data):
+                    if not self._skip:
+                        self.parts.append(data)
+
+            parser = _TextExtract()
+            parser.feed(Path(filepath).read_text(encoding="utf-8", errors="ignore"))
+            text = "".join(parser.parts)
+            text = re.sub(r"[ \t]+", " ", text)
+            text = re.sub(r"\s*\n\s*", "\n", text)
+            text = re.sub(r"\n{3,}", "\n\n", text).strip()
+            if text:
+                return text, "html"
+    except Exception:
+        pass
+    # fallback: raw read (also covers damaged .docx and empty html bodies)
+    return Path(filepath).read_text(encoding="utf-8", errors="ignore"), "text"
+
+
 def extract_pmids_from_file(filepath: str) -> list[tuple[str, str]]:
     """Extract (pmid, context_line) from a file. Returns list of (pmid, surrounding_text)."""
     results = []
     try:
-        text = Path(filepath).read_text(encoding="utf-8", errors="ignore")
+        text, _fmt = _read_text_any(filepath)
     except Exception:
         return results
     for pattern in PMID_PATTERNS:
@@ -1855,7 +1934,7 @@ def extract_pmids_from_file(filepath: str) -> list[tuple[str, str]]:
     return results
 
 
-def extract_pmids_from_directory(dirpath: str, extensions: tuple = (".html", ".md", ".txt", ".htm", ".json")) -> dict:
+def extract_pmids_from_directory(dirpath: str, extensions: tuple = (".html", ".md", ".txt", ".htm", ".json", ".docx")) -> dict:
     """Scan directory for files containing PMIDs. Returns {filename: [(pmid, context)]}."""
     results = {}
     for root, dirs, files in os.walk(dirpath):
@@ -2089,6 +2168,67 @@ def apply_retraction_cap(verdict: str, details: str) -> tuple:
     return verdict, details
 
 
+def _second_opinion_title(cross: dict, claimed: dict, pmid: str, stats: dict) -> None:
+    """v4.8.0 second-opinion leg for a gated title-only claim.
+
+    The v4.7.0 mismatch gate keeps the verdict honest (no accusation from a
+    heuristic single-field claim), but such a claim can still be CHECKED
+    against PubMed's own index: a same-PMID hit upgrades the verdict to
+    correct (labeled route=inline_title_search — weaker evidence than a
+    user-supplied ID); a hit on a DIFFERENT record is surfaced as a
+    wrong-PMID signal; anything else stays unknown. This leg only confirms
+    or reports — it never manufactures a mismatch. CJK titles skip (PubMed
+    esearch is Latin-oriented; the OpenAlex CJK leg owns those), and a
+    network failure is recorded as 'unreachable', never as 'no match'.
+
+    The search is a quoted-phrase query restricted to the [Title] field —
+    a hit means the claimed phrase appears verbatim inside some record's
+    registered title. That is the corroboration signal: a hit on THIS pmid
+    upgrades the verdict to correct even where cross_check's similarity
+    thresholds failed (a shortened/paraphrased title variant scores low on
+    Jaccard but still contains the claimed phrase verbatim); a hit on a
+    DIFFERENT pmid is the wrong-PMID signal. Mutates cross/stats in place."""
+    ct = claimed.get("claimed_title", "")
+    if len(ct) < 15 or _HAS_CJK.search(ct):
+        return
+    cross["title_second_opinion"] = "unreachable"
+    try:
+        cands = [c for c in search_pubmed(f'"{ct}"[Title]', max_results=3,
+                                          raise_on_error=True)
+                 if c.get("valid")]
+    except Exception:
+        return
+    if not cands:
+        cross["title_second_opinion"] = "no_match"   # searched fine, zero hits
+        return
+    cross["title_second_opinion"] = "no_match"
+    for c in cands:
+        if str(c.get("pmid", "")) == str(pmid):
+            cross["verdict"] = "correct"
+            cross["title_match"] = True
+            cross["details"] = (
+                "Claimed title phrase corroborated by a PubMed [Title] search "
+                "of this same PMID (title-only claim: authors not claimed, "
+                "authorship not verified; similarity thresholds may still "
+                "disagree with the full registry title); registry record "
+                "attached.")
+            cross["confidence"] = max(
+                float(cross.get("confidence") or 0), 0.8)
+            cross["route"] = "inline_title_search"
+            stats["title_corroborated"] = stats.get("title_corroborated", 0) + 1
+        else:
+            cross["wrong_pmid_signal"] = True
+            cross["details"] = (
+                "Claimed title phrase appears verbatim in the registered "
+                f"title of a DIFFERENT PubMed record (PMID {c.get('pmid')} "
+                f"\"{(c.get('title') or '')[:80]}\") — evidence key "
+                "wrong_pmid_signal; the cited PMID points to another paper; "
+                "feed --claims-file (title+authors) for a decisive verdict")
+            stats["wrong_pmid_signal"] = stats.get("wrong_pmid_signal", 0) + 1
+        cross["title_second_opinion"] = "checked"
+        break
+
+
 # ── DOI↔PMID cross-check & journal abbreviation equivalence (v2.4.0) ──
 
 def _clean_doi(doi: str) -> str:
@@ -2315,8 +2455,10 @@ def _bib_escape(s: str) -> str:
     return s
 
 
-def _bib_authors(joined: str) -> str:
+def _bib_authors(joined) -> str:
     """'Smith J, Doe A' -> 'Smith, J and Doe, A' (BibTeX Family, Given)."""
+    if isinstance(joined, list):   # registry lists leak in from raw paths
+        joined = ", ".join(str(a) for a in joined)
     out = []
     for a in (joined or "").split(","):
         parts = a.strip().rsplit(" ", 1)
@@ -2353,7 +2495,10 @@ def generate_bibtex(results: list) -> str:
             continue
         year_m = re.search(r"((?:19|20)\d{2})", str(r.get("pubdate", "")))
         year = year_m.group(1) if year_m else "n.d."
-        first = (r.get("authors", "") or "Anonymous").split(",")[0].split()
+        _raw_auth = r.get("authors", "")
+        if isinstance(_raw_auth, list):   # same list-leak defense as _bib_authors
+            _raw_auth = ", ".join(str(a) for a in _raw_auth)
+        first = (_raw_auth or "Anonymous").split(",")[0].split()
         key = f"{first[0] if first else 'anon'}{year}pmid{r['pmid']}".lower()
         key_counts[key] = key_counts.get(key, 0) + 1
         if key_counts[key] > 1:
@@ -3527,7 +3672,7 @@ def parse_plaintext_references(path: str) -> tuple:
     plus routable / title_search_candidate flags."""
     entries, issues = [], []
     try:
-        text = open(path, "r", encoding="utf-8", errors="replace").read()
+        text, _fmt = _read_text_any(path)
     except OSError as e:
         return [], [f"cannot read {path}: {e}"]
     lines = text.splitlines()
@@ -4297,7 +4442,8 @@ def main():
                     pmid_entries.append((pmid, fpath, ctx, claimed))
             for root, dirs, files in os.walk(source):
                 for fname in files:
-                    if fname.lower().endswith((".html", ".md", ".txt", ".htm", ".json")):
+                    if fname.lower().endswith((".html", ".md", ".txt", ".htm",
+                                               ".json", ".docx")):
                         for doi, dctx in extract_dois_from_file(os.path.join(root, fname)):
                             cd = _clean_doi(doi)
                             doi_inputs.append((cd, os.path.join(root, fname), explicit_doi.get(cd)))
@@ -4458,7 +4604,12 @@ def main():
                     entry["title"] = info.get("title", "")
                     entry["journal"] = info.get("journal", "")
                     entry["pubdate"] = info.get("pubdate", "")
-                    entry["authors"] = info.get("authors", "")
+                    # v4.8.0: info["authors"] is a LIST from the registry —
+                    # join like the main loop does (a raw list here crashed
+                    # generate_bibtex's .split() downstream, T28)
+                    _ex_auth = info.get("authors", "")
+                    entry["authors"] = (", ".join(_ex_auth[:3])
+                                        if isinstance(_ex_auth, list) else _ex_auth)
                     entry["meta_source"] = info.get("source", "")
                     # full-shape cross so the common post-checks pass unchanged
                     cross = {"verdict": "correct", "details": entry["details"],
@@ -4500,6 +4651,10 @@ def main():
                         "context) — no mismatch accusation from heuristic "
                         "parsing; feed --claims-file for a decisive verdict")
                     stats["mismatch_gated"] = stats.get("mismatch_gated", 0) + 1
+                    # v4.8.0: the gate keeps the verdict honest, but a
+                    # title-only claim can still be corroborated (or surfaced
+                    # as a wrong-PMID signal) via PubMed's own title search
+                    _second_opinion_title(cross, claimed, pmid, stats)
 
                 if entry.get("doi_splice_suspect"):
                     splice_note = ("claimed DOI differs from the DOI registered for this PMID "

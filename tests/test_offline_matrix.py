@@ -2903,5 +2903,217 @@ class TestV470(_Reset):
         self.assertEqual(led["answered"][0]["verdict"], "existence")
 
 
+class TestV480(_Reset):
+    """v4.8.0: input-format expansion (Word .docx / .html) + the
+    second-opinion leg for gated title-only claims."""
+
+    # ── helpers ──
+
+    def _mk_docx(self, td, paras):
+        """Build a minimal .docx (zip of word/document.xml) from paragraphs.
+        Input-format fixture only — carries no registry truth."""
+        p = Path(td) / "paper.docx"
+        W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        body = "".join(
+            f'<w:p xmlns:w="{W}"><w:r><w:t>{t}</w:t></w:r></w:p>' for t in paras)
+        doc = (f'<?xml version="1.0"?><w:document xmlns:w="{W}">'
+               f'<w:body>{body}</w:body></w:document>')
+        import zipfile as _zf
+        with _zf.ZipFile(p, "w") as z:
+            z.writestr("word/document.xml", doc)
+        return str(p)
+
+    def _leg(self, claimed, candidates, cur="11111111", raise_net=False,
+             search=None):
+        """Drive _second_opinion_title with search_pubmed mocked.
+        Returns (cross, stats, captured_queries)."""
+        stats = {}
+        cross = {"verdict": "unknown", "details": "gated", "confidence": 0.2,
+                 "title_match": False, "author_match": None,
+                 "journal_match": None, "year_match": None}
+        real = vp.search_pubmed
+        queries = []
+
+        def fake(q, max_results=5, raise_on_error=False):
+            queries.append(q)
+            if raise_net:
+                raise RuntimeError("net down")
+            return list(candidates)
+
+        vp.search_pubmed = search or fake
+        try:
+            vp._second_opinion_title(cross, dict(claimed), cur, stats)
+        finally:
+            vp.search_pubmed = real
+        return cross, stats, queries
+
+    # ── .docx input ──
+
+    def test_docx_paragraphs_read_with_pmids(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = self._mk_docx(td, [
+                "Guidance for juvenile arthritis management (2024). PMID: 33109798",
+                "Plain narrative text without identifiers.",
+                "Table row: lupus screening guideline PMID: 27918933"])
+            text, fmt = vp._read_text_any(p)
+            self.assertEqual(fmt, "docx")
+            self.assertIn("33109798", text)
+            self.assertIn("27918933", text)
+            self.assertIn("Plain narrative text", text)
+            found = vp.extract_pmids_from_file(p)
+            self.assertEqual(sorted(x for x, _ in found),
+                             ["27918933", "33109798"])
+
+    def test_docx_routes_dois_and_arxivs(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = self._mk_docx(td, [
+                "See doi:10.1186/s12969-021-00611-9 for the protocol.",
+                "Preprint: arXiv:1706.03762v2"])
+            dois = [d for d, _ in vp.extract_dois_from_file(p)]
+            aids = [a for a, _ in vp.extract_arxivs_from_file(p)]
+            self.assertEqual(dois, ["10.1186/s12969-021-00611-9"])
+            self.assertEqual(aids, ["1706.03762v2"])
+
+    def test_damaged_docx_falls_back_to_raw_read(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "bad.docx"
+            p.write_bytes(b"definitely not a zip")
+            text, fmt = vp._read_text_any(str(p))
+            self.assertEqual(fmt, "text")
+            # and the extractors survive (empty results, no crash)
+            self.assertEqual(vp.extract_pmids_from_file(str(p)), [])
+
+    # ── .html input ──
+
+    def test_html_blocks_newlines_script_skipped(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "page.html"
+            p.write_text(
+                "<html><head><style>.x{color:red}</style>"
+                "<script>var leak=\"PMID: 99999999\";</script></head>"
+                "<body><h2>References</h2>"
+                "<p>EULAR recommendations updated. PMID: 21441836</p>"
+                "<div>protocol at doi:10.1186/s12969-021-00611-9</div>"
+                "</body></html>", encoding="utf-8")
+            text, fmt = vp._read_text_any(str(p))
+            self.assertEqual(fmt, "html")
+            self.assertIn("21441836", text)
+            self.assertNotIn("99999999", text)   # script content dropped
+            self.assertNotIn("color:red", text)  # style content dropped
+            found = vp.extract_pmids_from_file(str(p))
+            self.assertEqual([x for x, _ in found], ["21441836"])
+            dois = [d for d, _ in vp.extract_dois_from_file(str(p))]
+            self.assertIn("10.1186/s12969-021-00611-9", dois)
+
+    def test_html_anchor_href_preserved(self):
+        # citations live in link targets on exported pages — href must
+        # survive the tag strip (locked via the DOI pipeline in
+        # TestDoiNative; here via PMID-in-href)
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "links.html"
+            p.write_text('<a href="https://pubmed.ncbi.nlm.nih.gov/21441836/">x</a>',
+                         encoding="utf-8")
+            found = vp.extract_pmids_from_file(str(p))
+            self.assertEqual([x for x, _ in found], ["21441836"])
+
+    # ── second-opinion leg ──
+
+    TITLE = "2024 update of the EULAR recommendations for lupus management"
+
+    def test_second_opinion_corroborates_same_pmid(self):
+        # corroboration = the [Title] phrase search hits THIS pmid, even
+        # though the registered title differs enough to fail cross_check
+        # (that is exactly the shortened-title-variant path)
+        cands = [{"valid": True, "pmid": "11111111",
+                  "title": self.TITLE + " and long-term outcomes",
+                  "authors": "", "journal": "", "pubdate": ""}]
+        cross, stats, queries = self._leg({"claimed_title": self.TITLE}, cands)
+        self.assertEqual(cross["verdict"], "correct")
+        self.assertEqual(cross["route"], "inline_title_search")
+        self.assertIs(cross["title_match"], True)
+        self.assertEqual(stats.get("title_corroborated"), 1)
+        self.assertNotIn("wrong_pmid_signal", cross)
+        # the query must be a quoted phrase restricted to the Title field
+        self.assertEqual(queries, [f'"{self.TITLE}"[Title]'])
+
+    def test_second_opinion_never_accuses_on_gated_path(self):
+        # MECHANISM lock: the leg may corroborate or signal, but a gated
+        # claim can never come out of the leg as a mismatch
+        cands = [{"valid": True, "pmid": "99999999",
+                  "title": "Unrelated paper about knee cartilage",
+                  "authors": "", "journal": "", "pubdate": ""}]
+        cross, stats, _ = self._leg({"claimed_title": self.TITLE}, cands)
+        self.assertEqual(cross["verdict"], "unknown")
+        self.assertIs(cross.get("wrong_pmid_signal"), True)  # signal, not accusation
+        self.assertNotEqual(cross["verdict"], "mismatch")
+
+    def test_second_opinion_flags_wrong_pmid(self):
+        # claimed phrase found verbatim under a DIFFERENT PMID → strong
+        # signal, verdict still unknown (no accusation)
+        cands = [{"valid": True, "pmid": "22222222", "title": self.TITLE,
+                  "authors": "", "journal": "", "pubdate": ""}]
+        cross, stats, _ = self._leg({"claimed_title": self.TITLE}, cands,
+                                    cur="11111111")
+        self.assertEqual(cross["verdict"], "unknown")
+        self.assertIs(cross.get("wrong_pmid_signal"), True)
+        self.assertEqual(stats.get("wrong_pmid_signal"), 1)
+        self.assertEqual(cross["title_second_opinion"], "checked")
+        self.assertIn("DIFFERENT", cross["details"])
+
+    def test_second_opinion_zero_hits_is_no_match_not_unreachable(self):
+        # search SUCCEEDED and returned nothing — that is "no_match",
+        # never "unreachable" (which is reserved for network failure)
+        cross, _, _ = self._leg({"claimed_title": self.TITLE}, [])
+        self.assertEqual(cross["verdict"], "unknown")
+        self.assertEqual(cross["title_second_opinion"], "no_match")
+
+    def test_second_opinion_invalid_candidates_ignored(self):
+        # candidates without valid=True do not count as hits
+        cands = [{"valid": False, "pmid": "11111111", "title": self.TITLE,
+                  "authors": "", "journal": "", "pubdate": ""}]
+        cross, _, _ = self._leg({"claimed_title": self.TITLE}, cands)
+        self.assertEqual(cross["verdict"], "unknown")
+        self.assertEqual(cross["title_second_opinion"], "no_match")
+
+    def test_second_opinion_network_failure_honest(self):
+        cross, stats, _ = self._leg({"claimed_title": self.TITLE}, [],
+                                    raise_net=True)
+        self.assertEqual(cross["verdict"], "unknown")
+        self.assertEqual(cross["title_second_opinion"], "unreachable")
+        self.assertEqual(cross["details"], "gated")  # untouched
+
+    def test_second_opinion_skips_short_and_cjk(self):
+        for ct in ["Short one", "中国系统性红斑狼疮诊疗指南2024年版解读与实践要点"]:
+            cross, _, queries = self._leg(
+                {"claimed_title": ct},
+                [{"valid": True, "pmid": "1", "title": ct, "authors": "",
+                  "journal": "", "pubdate": ""}])
+            self.assertNotIn("title_second_opinion", cross)
+            self.assertEqual(cross["verdict"], "unknown")
+            self.assertEqual(queries, [])  # search never fired
+
+    def test_directory_scan_includes_docx(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._mk_docx(td, ["Screening guideline PMID: 27918933"])
+            m = vp.extract_pmids_from_directory(td)
+            self.assertEqual(len(m), 1)
+            items = list(m.values())[0]
+            self.assertEqual([x for x, _ in items], ["27918933"])
+
+    def test_list_authors_never_crash_exporters(self):
+        # v4.7.0 regression caught by the v4.8.0 realnet round (T28): the
+        # existence branch leaked the registry's list-typed authors into
+        # entry["authors"]; generate_bibtex's .split() crashed and the
+        # report bundle came out with 2 of 7 files
+        bib = vp.generate_bibtex([{
+            "pmid": "31018962", "verdict": "correct", "valid": True,
+            "title": "Classification criteria for autoinflammatory "
+                     "recurrent fevers",
+            "authors": ["Gattorno M", "Hofer M", "Federici S"],
+            "journal": "Ann Rheum Dis", "pubdate": "2019 Sep"}])
+        self.assertIn("@article", bib)
+        self.assertIn("Gattorno", bib)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
