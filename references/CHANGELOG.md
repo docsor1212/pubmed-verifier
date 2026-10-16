@@ -350,6 +350,34 @@ three judgment-ladder defects; all three are fixed and locked:
   the pre-flight output is paste-safe.
 - Docs: "Trigger words" and "Use from Python" sections moved up front.
 
+## v4.9.0 — PowerPoint input & verdict-ladder monotonicity
+
+Both grown from re-running the real rheumatology-literature audit (the
+v4.7.0 acceptance sample) against v4.8.0:
+
+- **`.pptx` decks are read directly** (`--source` and `--parse-text`):
+  every slide in numeric order plus the speaker notes (DrawingML
+  `a:p`/`a:t`, the same in-memory zip+XML family as .docx) —
+  patient-education courseware audits without a copy-paste pass. A
+  damaged file falls back to a raw read; directory scanning includes
+  `.pptx`.
+- **Verdict-ladder monotonicity**: the acceptance rerun surfaced
+  citations grading PARTIAL on "title matches but author/journal not
+  claimed" — a STRONGER evidence position than the bare existence
+  checks that grade correct. On scanned sources, a partial whose only
+  gap is the missing author claim (title matched; journal and year
+  never claimed) now grades **correct** with `route:
+  existence_title_match` and a detail line pointing at `--claims-file`
+  for the full pass. An entry claiming journal/year/authors anything
+  keeps its partial — those claims were checked and something differed,
+  a real doubt. In the acceptance sample this resolved 4 of the 6
+  manual-review items; the remaining 2 keep partial for real reasons
+  (no title recoverable + author/journal differ; year claimed and
+  differing).
+- cross_check_citation itself is unchanged — the upgrade lives in the
+  pipeline layer, so explicit `--claims-file`/CLI inputs always receive
+  the full verdict.
+
 ## v4.8.0 — Word/HTML input & the title second-opinion leg
 
 Two capabilities grown from the same medical-document reality testing:

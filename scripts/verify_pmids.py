@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v4.8.0
+PMID Citation Verifier -- PubMed E-utilities API v4.9.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -84,8 +84,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "4.8.0"
-_UA_TOOL = "pubmed-verifier/4.8 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "4.9.0"
+_UA_TOOL = "pubmed-verifier/4.9 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -1845,9 +1845,11 @@ def _read_text_any(filepath: str) -> tuple:
 
     .docx (Word) is unzipped in-memory and the main document body is
     extracted paragraph-by-paragraph (w:p boundaries become newlines, table
-    cells included); .html/.htm is tag-stripped with block-level elements
-    turned into newlines and script/style content dropped; anything else is
-    read as-is. A malformed zip falls back to a raw read rather than failing
+    cells included); .pptx (PowerPoint, v4.9.0) reads every slide plus the
+    notes in slide order (a:p/a:t DrawingML, same family as docx);
+    .html/.htm is tag-stripped with block-level elements turned into
+    newlines and script/style content dropped; anything else is read
+    as-is. A malformed zip falls back to a raw read rather than failing
     the whole scan. Returns (text, format_label)."""
     lower = str(filepath).lower()
     try:
@@ -1867,6 +1869,33 @@ def _read_text_any(filepath: str) -> tuple:
                     paras.append(para)
             if paras:
                 return "\n".join(paras), "docx"
+        elif lower.endswith(".pptx"):
+            with zipfile.ZipFile(filepath) as z:
+                a = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+                # slides in numeric order (slide10 must not precede slide2),
+                # then the notes; speaker notes carry citations too
+                def _slide_no(name):
+                    m = re.search(r"[sS]lide(\d+)\.xml$", name)
+                    return int(m.group(1)) if m else 0
+                xml_parts = sorted(
+                    (n for n in z.namelist()
+                     if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)),
+                    key=_slide_no)
+                xml_parts += sorted(
+                    (n for n in z.namelist()
+                     if re.fullmatch(r"ppt/notesSlides/notesSlide\d+\.xml", n)),
+                    key=_slide_no)
+                paras = []
+                for name in xml_parts:
+                    if z.getinfo(name).file_size > 64 * 1024 * 1024:
+                        continue   # per-part cap: skip the part, keep the deck
+                    root = ET.fromstring(z.read(name))
+                    for p in root.iter(f"{a}p"):
+                        para = "".join(t.text or "" for t in p.iter(f"{a}t")).strip()
+                        if para:
+                            paras.append(para)
+            if paras:
+                return "\n".join(paras), "pptx"
         elif lower.endswith((".html", ".htm")):
 
             class _TextExtract(HTMLParser):
@@ -1913,7 +1942,7 @@ def _read_text_any(filepath: str) -> tuple:
                 return text, "html"
     except Exception:
         pass
-    # fallback: raw read (also covers damaged .docx and empty html bodies)
+    # fallback: raw read (also covers damaged .docx/.pptx and empty html bodies)
     return Path(filepath).read_text(encoding="utf-8", errors="ignore"), "text"
 
 
@@ -1934,7 +1963,7 @@ def extract_pmids_from_file(filepath: str) -> list[tuple[str, str]]:
     return results
 
 
-def extract_pmids_from_directory(dirpath: str, extensions: tuple = (".html", ".md", ".txt", ".htm", ".json", ".docx")) -> dict:
+def extract_pmids_from_directory(dirpath: str, extensions: tuple = (".html", ".md", ".txt", ".htm", ".json", ".docx", ".pptx")) -> dict:
     """Scan directory for files containing PMIDs. Returns {filename: [(pmid, context)]}."""
     results = {}
     for root, dirs, files in os.walk(dirpath):
@@ -4443,7 +4472,7 @@ def main():
             for root, dirs, files in os.walk(source):
                 for fname in files:
                     if fname.lower().endswith((".html", ".md", ".txt", ".htm",
-                                               ".json", ".docx")):
+                                               ".json", ".docx", ".pptx")):
                         for doi, dctx in extract_dois_from_file(os.path.join(root, fname)):
                             cd = _clean_doi(doi)
                             doi_inputs.append((cd, os.path.join(root, fname), explicit_doi.get(cd)))
@@ -4655,6 +4684,38 @@ def main():
                     # title-only claim can still be corroborated (or surfaced
                     # as a wrong-PMID signal) via PubMed's own title search
                     _second_opinion_title(cross, claimed, pmid, stats)
+
+                # v4.9.0 verdict-ladder monotonicity: a partial whose ONLY
+                # gap is the missing author claim (title matched; journal/
+                # year never claimed) ranks BELOW a bare existence
+                # confirmation — stronger evidence, lower verdict. On
+                # scanned sources such entries upgrade to correct (labeled
+                # route=existence_title_match). The "never claimed" test
+                # reads the CLAIMED fields, not cross's journal/year_match
+                # (those are False for unclaimed too, not None). An entry
+                # that claims journal/year/author anything keeps its
+                # partial — those claims were checked and something
+                # differed, a REAL doubt.
+                if (cross["verdict"] == "partial"
+                        and cross.get("title_match") is True
+                        and not claimed.get("claimed_authors")
+                        and not claimed.get("claimed_journal")
+                        and not claimed.get("claimed_year")
+                        and src not in ("cli", "claims")
+                        and pmid not in explicit_claims):   # mixed mode: a
+                        # claims row rides a scanned src but IS user-explicit
+                        # metadata — full verdicts there, never this upgrade
+                    cross["verdict"] = "correct"
+                    cross["details"] = (
+                        "Title matches the registry record; no authors were "
+                        "claimed in this context (existence + inline title "
+                        "verification). Feed --claims-file with the authors "
+                        "for a full five-state verdict.")
+                    cross["route"] = "existence_title_match"
+                    cross["confidence"] = max(
+                        float(cross.get("confidence") or 0), 0.8)
+                    stats["existence_title_match"] = stats.get(
+                        "existence_title_match", 0) + 1
 
                 if entry.get("doi_splice_suspect"):
                     splice_note = ("claimed DOI differs from the DOI registered for this PMID "

@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 4.8.0
+version: 4.9.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v4.8.0
+# PubMed Citation Verifier v4.9.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -54,7 +54,8 @@ Use this skill when the user's request matches any of: **verify PMIDs**,
 detection**, **verify DOI**, **DOI check**, **citation formatting**,
 **reference formatter**, **GB/T 7714**, 中文文献验证 / 参考文献核查 /
 文献排版. A pasted reference list, a `.bib`/`.ris` file, a Word `.docx`
-document, an exported `.html` page, or a claims CSV are all direct inputs.
+document, a PowerPoint `.pptx` deck, an exported `.html` page, or a
+claims CSV are all direct inputs.
 
 Three quick mappings: "帮我验证这几个 PMID 31018962、22213727" →
 `--pmids`; "检查我论文参考文献" + a pasted list → `--parse-text`;
@@ -134,6 +135,10 @@ python3 scripts/verify_pmids.py --source /path/to/project --output report.html
 # .docx paragraphs/tables and .html text are extracted in-memory —
 # script/style content is ignored, link targets (href) are kept
 python3 scripts/verify_pmids.py --source guideline_review.docx --output report.html
+
+# PowerPoint decks too (v4.9.0): every slide in order plus the speaker
+# notes (.pptx, a:t text) — patient-education courseware audits directly
+python3 scripts/verify_pmids.py --source lecture_deck.pptx --output report.html
 
 # Verify specific PMIDs
 python3 scripts/verify_pmids.py --pmids 31018962,22213727
@@ -292,7 +297,8 @@ the one-flag workaround:
 | DOI verification | Crossref first, OpenAlex fallback for non-Crossref registries | DOIs absent from BOTH registries stay suspect/invalid by the 404 rule | Cross-check at doi.org before accusing |
 | Title-search legs (Latin + CJK) | Markerless entries resolved by PubMed/OpenAlex title search, honestly labeled | Never a mismatch source; no hit = unknown | Supply a PMID/DOI for a decisive verdict |
 | Second-opinion leg (v4.8.0) | A gated title-only claim is corroborated via PubMed title search (correct, labeled) or flagged as a wrong-PMID signal | Confirms or reports only — never manufactures a mismatch; CJK titles skip (OpenAlex CJK leg owns those) | `--claims-file` for the decisive verdict |
-| Word/HTML input (v4.8.0) | `.docx` paragraphs/tables and `.html` text are extracted in-memory; `href` link targets kept, script/style dropped | A damaged .docx falls back to a raw read (scans bytes, finds little); scanned PDFs/images are NOT text | Export to text/HTML first for PDFs |
+| Word/HTML/PowerPoint input (v4.8.0/v4.9.0) | `.docx` paragraphs/tables, `.pptx` slides+speaker notes, and `.html` text are extracted in-memory; `href` link targets kept, script/style dropped | A damaged office file falls back to a raw read (scans bytes, finds little); scanned PDFs/images are NOT text | Export to text/HTML first for PDFs |
+| Verdict-ladder monotonicity (v4.9.0) | A scanned citation whose ONLY gap is the missing author claim (title matched, journal/year never claimed) grades correct with `route: existence_title_match` — stronger evidence than a bare existence check can never grade lower | Any claimed-but-differing author/journal/year keeps partial; explicit `--claims-file`/CLI inputs always get the full verdict | `--claims-file` with authors for the complete five-state pass |
 | Formatted reference lists | GB/T (numeric + author-date), Vancouver, APA, AMA — verified entries only | Registry-truncated author lists close with et-al, not invented names | Verify first, then format (`--format-references`) |
 | Network honesty | Failures are unknown + retry hints, never "not found"; nothing cached on failure | Cannot verify anything while registries are unreachable | `--check-net` first |
 
@@ -322,6 +328,12 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v4.9.0** — PowerPoint `.pptx` decks are read directly (slides in
+  order + speaker notes); verdict-ladder monotonicity: a scanned
+  citation whose only gap is the missing author claim (title matched,
+  journal/year never claimed) grades correct with the evidence route
+  labeled — stronger evidence can no longer grade below a bare
+  existence check.
 - **v4.8.0** — Word `.docx` and `.html` inputs are read directly by
   `--source`/`--parse-text` (in-memory extraction; link targets kept,
   script/style dropped); title-only citations get a second opinion via
@@ -447,7 +459,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v4.8.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v4.9.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
 | `references/INDEX.md` | 任务→文档 30 秒路由表 |

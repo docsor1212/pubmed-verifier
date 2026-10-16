@@ -58,6 +58,17 @@ dropped, `href` link targets kept). A damaged .docx falls back to a raw
 read rather than aborting. Scanned PDFs and images are not text — export
 them first.
 
+**Why did a scanned citation that used to grade `partial` now grade
+`correct` with "existence + inline title verification"?**
+v4.9.0 fixed a ladder inversion: "title matched, authors never claimed"
+is stronger evidence than the bare existence checks that already graded
+correct — it could not honestly rank lower. When the ONLY gap is the
+missing author claim (journal and year never claimed either), scanned
+citations grade correct with `route: existence_title_match`. Anything
+claimed-and-differing (an author, a journal, a year) still grades
+partial — that is a real doubt, and `--claims-file` with the full
+metadata settles it.
+
 **A verdict mentions "corroborated by a PubMed [Title] search" or shows a
 wrong-PMID signal — what does that mean?**
 That citation carried only a recoverable title (no authors), so the

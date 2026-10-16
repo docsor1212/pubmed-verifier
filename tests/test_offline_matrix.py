@@ -3115,5 +3115,132 @@ class TestV480(_Reset):
         self.assertIn("Gattorno", bib)
 
 
+class TestV490(_Reset):
+    """v4.9.0: .pptx input (slides in order + speaker notes) and the
+    verdict-ladder monotonicity upgrade (title-matched partials whose only
+    gap is the missing author claim)."""
+
+    # ── helpers ──
+
+    A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+
+    def _mk_pptx(self, td, slides, notes=None):
+        """Build a minimal .pptx from {name: [paragraphs]}. Input-format
+        fixture only — carries no registry truth."""
+        p = Path(td) / "deck.pptx"
+
+        def _xml(paras):
+            body = "".join(
+                f'<a:p xmlns:a="{self.A_NS}"><a:r><a:t>{t}</a:t></a:r></a:p>'
+                for t in paras)
+            return f'<p:sld xmlns:p="urn:x" xmlns:a="{self.A_NS}">{body}</p:sld>'
+
+        import zipfile as _zf
+        with _zf.ZipFile(p, "w") as z:
+            for name, paras in slides.items():
+                z.writestr(name, _xml(paras))
+            for name, paras in (notes or {}).items():
+                z.writestr(name, _xml(paras))
+        return str(p)
+
+    # ── .pptx input ──
+
+    def test_pptx_slides_in_numeric_order_with_notes(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = self._mk_pptx(td, {
+                "ppt/slides/slide1.xml": ["Guidelines updated. PMID: 33109798"],
+                "ppt/slides/slide10.xml": ["Second-line refs PMID: 27918933"],
+                "ppt/slides/slide2.xml": ["doi:10.1186/s12969-021-00611-9"]},
+                {"ppt/notesSlides/notesSlide1.xml": ["see arXiv:1706.03762"]})
+            text, fmt = vp._read_text_any(p)
+            self.assertEqual(fmt, "pptx")
+            # slide2 must precede slide10 (numeric, not lexicographic)
+            i2 = text.find("s12969-021")
+            i10 = text.find("27918933")
+            self.assertGreater(i10, i2)
+            self.assertIn("arXiv:1706.03762", text)   # speaker notes included
+            found = vp.extract_pmids_from_file(p)
+            self.assertEqual(sorted(x for x, _ in found),
+                             ["27918933", "33109798"])
+
+    def test_pptx_routes_dois_and_arxivs(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = self._mk_pptx(td, {
+                "ppt/slides/slide1.xml": ["Protocol: doi:10.1186/s12969-021-00611-9"]},
+                {"ppt/notesSlides/notesSlide1.xml": ["preprint arXiv:1706.03762v2"]})
+            dois = [d for d, _ in vp.extract_dois_from_file(p)]
+            aids = [a for a, _ in vp.extract_arxivs_from_file(p)]
+            self.assertEqual(dois, ["10.1186/s12969-021-00611-9"])
+            self.assertEqual(aids, ["1706.03762v2"])
+
+    def test_damaged_pptx_falls_back_to_raw_read(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "bad.pptx"
+            p.write_bytes(b"definitely not a zip")
+            text, fmt = vp._read_text_any(str(p))
+            self.assertEqual(fmt, "text")
+            self.assertEqual(vp.extract_pmids_from_file(str(p)), [])
+
+    def test_directory_scan_includes_pptx(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._mk_pptx(td, {"ppt/slides/slide1.xml": ["Refs PMID: 27918933"]})
+            m = vp.extract_pmids_from_directory(td)
+            self.assertEqual(len(m), 1)
+            items = list(m.values())[0]
+            self.assertEqual([x for x, _ in items], ["27918933"])
+
+    # ── verdict-ladder monotonicity (title-matched partial upgrades) ──
+
+    def test_cross_check_keeps_partial_for_title_only_match(self):
+        # cross_check itself is UNCHANGED: title matched, no author/journal/
+        # year claimed → partial (the pipeline layer upgrades, not this)
+        cross = vp.cross_check_citation(
+            {"claimed_title": "EULAR recommendations for cardiovascular "
+                              "risk reduction"},
+            {"title": "EULAR recommendations for cardiovascular risk "
+                      "reduction and management",
+             "authors": "Agca R", "journal": "Ann Rheum Dis",
+             "pubdate": "2020 Feb"})
+        self.assertEqual(cross["verdict"], "partial")
+        self.assertIs(cross["title_match"], True)
+
+    def _upgrade_guard(self, cross, claimed, src="scan.md"):
+        """Mirror of the pipeline upgrade condition — kept in lockstep with
+        verify_pmids.py so the guard semantics are locked."""
+        return (cross["verdict"] == "partial"
+                and cross.get("title_match") is True
+                and not claimed.get("claimed_authors")
+                and not claimed.get("claimed_journal")
+                and not claimed.get("claimed_year")
+                and src not in ("cli", "claims"))
+
+    def test_upgrade_fires_only_when_nothing_else_claimed(self):
+        ok = {"verdict": "partial", "title_match": True}
+        self.assertTrue(self._upgrade_guard(
+            ok, {"claimed_title": "T"}))
+        # author claimed → a real doubt, no upgrade
+        self.assertFalse(self._upgrade_guard(
+            ok, {"claimed_title": "T", "claimed_authors": ["Some A"]}))
+        # journal claimed → no upgrade
+        self.assertFalse(self._upgrade_guard(
+            ok, {"claimed_title": "T", "claimed_journal": "Some J"}))
+        # year claimed → no upgrade
+        self.assertFalse(self._upgrade_guard(
+            ok, {"claimed_title": "T", "claimed_year": "2021"}))
+        # explicit user input → no upgrade (full verdicts there)
+        self.assertFalse(self._upgrade_guard(
+            ok, {"claimed_title": "T"}, src="cli"))
+        self.assertFalse(self._upgrade_guard(
+            ok, {"claimed_title": "T"}, src="claims"))
+
+    def test_upgrade_never_fires_on_title_mismatch_or_mismatch(self):
+        self.assertFalse(self._upgrade_guard(
+            {"verdict": "partial", "title_match": False},
+            {"claimed_title": "T"}))
+        self.assertFalse(self._upgrade_guard(
+            {"verdict": "mismatch", "title_match": False},
+            {"claimed_title": "T"}))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
