@@ -350,6 +350,30 @@ three judgment-ladder defects; all three are fixed and locked:
   the pre-flight output is paste-safe.
 - Docs: "Trigger words" and "Use from Python" sections moved up front.
 
+## v5.0.0 — paste-and-verify, one-flag final pass, leaner main doc
+
+Shaped by the v4.9.0 audit follow-ups (FAQ depth, trigger-boundary
+clarity, flag-combination onboarding, main-doc length):
+
+- **`--stdin` — paste-and-verify**: a copied reference list goes straight
+  down the pipe (`pbpaste | verify_pmids.py --stdin`, `git show
+  HEAD:refs.txt | verify_pmids.py --stdin`). Same numbered/heading parser
+  as `--parse-text`; the report labels the source "stdin" — no temp file
+  choreography in agent workflows.
+- **`--quick` — the pre-submission final pass in one flag**: `--no-cache`
+  (fresh registries) + `--verify-doi` (Crossref cross-check) +
+  `--suggest` (correct-PMID hints) combined. Explicit user flags always
+  win; --quick only sets what wasn't given.
+- **FAQ depth**: a format-specific "when parsing fails" table in
+  references/usage_guide.md (damaged office files, CJK without IDs,
+  numbering variants, fragmented titles, reading the `fields` table,
+  all-unknown = network).
+- **Trigger boundary made explicit**: a pasted reference list IS the
+  input — no explicit "verify" wording required (both language pages).
+- **Main doc slimmed**: SKILL.md 579 → ~450 lines (recent-release rows
+  sink into references/CHANGELOG.md, orphan historical section removed);
+  SKILL_ZH.md mirrors.
+
 ## v4.9.0 — PowerPoint input & verdict-ladder monotonicity
 
 Both grown from re-running the real rheumatology-literature audit (the

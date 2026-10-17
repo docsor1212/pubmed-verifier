@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 4.9.0
+version: 5.0.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v4.9.0
+# PubMed Citation Verifier v5.0.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -58,8 +58,9 @@ document, a PowerPoint `.pptx` deck, an exported `.html` page, or a
 claims CSV are all direct inputs.
 
 Three quick mappings: "帮我验证这几个 PMID 31018962、22213727" →
-`--pmids`; "检查我论文参考文献" + a pasted list → `--parse-text`;
-"这篇撤稿了该引什么" → `--suggest` on a retracted entry.
+`--pmids`; "检查我论文参考文献" + a pasted list → `--parse-text` (or pipe
+it to `--stdin` — **a pasted list IS the input, no explicit "verify"
+word needed**); "这篇撤稿了该引什么" → `--suggest` on a retracted entry.
 
 **When `--claims-file` is required:** a plain scan verifies existence plus
 whatever metadata the citation context carries — if a verdict will be
@@ -128,6 +129,16 @@ wrong this way. A binary exists/not-exists check misses them all.
 ## Quick start
 
 ```bash
+# Pre-submission final pass in ONE command (v5.0.0): fresh registries
+# (--no-cache) + Crossref DOI cross-check (--verify-doi) + correct-PMID
+# suggestions (--suggest), no flags to remember
+python3 scripts/verify_pmids.py --source /path/to/draft --quick --output report.html
+
+# Paste-and-verify (v5.0.0): a copied reference list straight from the
+# clipboard or another command — no temp file needed
+pbpaste | python3 scripts/verify_pmids.py --stdin
+git show HEAD:refs.txt | python3 scripts/verify_pmids.py --stdin
+
 # Scan a project directory for PMIDs (parses citation context automatically)
 python3 scripts/verify_pmids.py --source /path/to/project --output report.html
 
@@ -328,6 +339,11 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v5.0.0** — paste-and-verify (`--stdin` reads a copied reference list
+  straight from the pipe) and `--quick`, the pre-submission final pass in
+  one flag (--no-cache + --verify-doi + --suggest); FAQ depth (a
+  format-specific "when parsing fails" table); main doc slimmed to ~450
+  lines.
 - **v4.9.0** — PowerPoint `.pptx` decks are read directly (slides in
   order + speaker notes); verdict-ladder monotonicity: a scanned
   citation whose only gap is the missing author claim (title matched,
@@ -340,47 +356,25 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
   PubMed title search — same-PMID corroboration upgrades to correct
   (honestly labeled), a different-record hit surfaces a wrong-PMID
   signal, and the leg never manufactures a mismatch.
-- **v4.7.0** — medical-document reality fixes: registry-metadata lines in
-  literature exports ("- DOI: ...", "2025 | Journal | Authors") can no
-  longer become the claimed title (an 85% false-mismatch rate on a real
-  rheumatology export dropped to zero); a live PMID with no claimed
-  metadata is an explicit existence confirmation; --source merges a DOI
-  into its already-verified PMID; --parse-text reads "## Title" heading
-  exports.
-- **v4.6.0** — finding ledger in every report (answered / partially /
-  unresolved, with the next action); `--claims-template` turns a copied
-  reference list into a claims CSV skeleton; usage guide + task INDEX land
-  in references/.
-- **v4.5.0** — card conversion: skill icon live; description covers five
-  more search intents verbatim.
-- **v4.4.0** — `--report-bundle DIR` writes the complete submission
-  evidence pack (audit + HTML + BibTeX/RIS + CSV + GB/T list + manifest)
-  in one command; version history moved to references/CHANGELOG.md.
-- **v4.3.0** — GB/T author-date style (`--citation-style gbty`); monographs
-  no longer fake a journal ([M]/[R]/[D] records keep the publisher out of
-  the journal field).
-- **v4.2.0** — retraction replacement suggestions (`--suggest` on a
-  retracted entry proposes live same-topic candidates); delta audits show
-  full per-category detail.
-- **v4.1.0** — OpenAlex as the fourth data source (Crossref-404 DOIs get a
-  second look; DataCite/Zenodo decidable); Chinese references without IDs
-  verify via the OpenAlex title-search leg.
+- Versions **v4.7.0 and older** — full entries in [references/CHANGELOG.md](references/CHANGELOG.md).
 
-## v4.4.0 — submission evidence pack & leaner main doc
+## Safety & behavior statement
 
-- **`--report-bundle DIR`** — one command writes the complete evidence
-  pack a journal or reviewer may ask for: `audit.json` (replayable
-  working-paper), `report.html`, `verified-refs.bib`/`.ris`,
-  `audit-table.csv`, `references-gbt.txt`, and a `manifest.txt` that
-  records the tool version, the redacted invocation, the timestamp and
-  the verdict totals. Bundle files are byte-identical to their
-  `--export-*` counterparts — same generators, no new semantics.
-- The full version history moved to `references/CHANGELOG.md` (20
-  releases, kept verbatim); SKILL.md keeps the last three and is a third
-  shorter to read.
-- OpenAlex rate-limit responses (429) now back off at least 5s per retry
-  for OpenAlex URLs (Retry-After is still honored first); exhausted
-  retries stay honest unknowns.
+- Single-run CLI: scan → verify → write report → exit. No daemon, no
+  background task, zero runtime downloads/installs (pure standard
+  library, zero dependencies).
+- Network access is limited to these official academic registries, all
+  HTTPS: `eutils.ncbi.nlm.nih.gov`, `www.ebi.ac.uk` (Europe PMC),
+  `api.crossref.org`, `api.openalex.org`, `export.arxiv.org` — no other
+  hosts; no telemetry, no stats, no data collection — outbound payloads
+  are only the PMID/DOI/titles you asked to verify.
+- Your files and reports stay local. Writes go only to the report paths
+  you specify and the SQLite cache under `~/.cache/pubmed-verifier/`
+  (disable with `--no-cache`).
+- The optional `NCBI_API_KEY` / `PUBMED_VERIFIER_MAILTO` env vars
+  authenticate/sign YOUR API requests only — they go nowhere else.
+- No OS integration: no subprocesses, no services, no permission
+  changes, no scheduled tasks.
 
 ## How it works
 
@@ -459,7 +453,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v4.9.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v5.0.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
 | `references/INDEX.md` | 任务→文档 30 秒路由表 |

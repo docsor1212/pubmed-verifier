@@ -3242,5 +3242,47 @@ class TestV490(_Reset):
             {"claimed_title": "T"}))
 
 
+class TestV500(_Reset):
+    """v5.0.0: --stdin paste-and-verify input channel + --quick flag
+    combination. Error paths are offline-black-box (subprocess, no
+    network); the happy path is locked by the realnet round."""
+
+    SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts"
+                 / "verify_pmids.py")
+
+    def _run(self, args, stdin_text=None):
+        import subprocess
+        return subprocess.run(
+            [sys.executable, self.SCRIPT] + args,
+            input=stdin_text, capture_output=True, text=True, timeout=60)
+
+    def test_stdin_empty_input_fails_honestly(self):
+        r = self._run(["--stdin"], stdin_text="")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no input", r.stderr)
+
+    def test_stdin_and_parse_text_are_exclusive(self):
+        r = self._run(["--stdin", "--parse-text", "whatever.txt"],
+                      stdin_text="[1] Some title. PMID: 31018962")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("mutually exclusive", r.stderr)
+
+    def test_stdin_flag_in_parser(self):
+        r = self._run(["--help"])
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("--stdin", r.stdout)
+        self.assertIn("--quick", r.stdout)
+
+    def test_quick_flag_in_parser_with_combination_doc(self):
+        r = self._run(["--help"])
+        self.assertIn("--no-cache +", r.stdout)   # the combination is documented
+        self.assertIn("--verify-doi", r.stdout)
+
+    def test_stdin_whitespace_only_fails(self):
+        r = self._run(["--stdin"], stdin_text="   \n  \n")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no input", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

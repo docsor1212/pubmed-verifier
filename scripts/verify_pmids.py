@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v4.9.0
+PMID Citation Verifier -- PubMed E-utilities API v5.0.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -59,6 +59,7 @@ Exit codes: 0 = no problems found; 1 = invalid/mismatch citations found;
 """
 
 import argparse
+import atexit
 import concurrent.futures
 import csv
 import io
@@ -71,6 +72,7 @@ import os
 import re
 import sqlite3
 import sys
+import tempfile
 import time
 import urllib.request
 import zipfile
@@ -84,8 +86,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "4.9.0"
-_UA_TOOL = "pubmed-verifier/4.9 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "5.0.0"
+_UA_TOOL = "pubmed-verifier/5.0 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -4255,6 +4257,14 @@ def main():
                              "(numbered [1]/1. entries, or one per line): inline PMID/DOI/arXiv "
                              "IDs route exactly; title-only entries resolve via PubMed title "
                              "search (results marked resolved_by=title_search)")
+    parser.add_argument("--stdin", action="store_true",
+                        help="Read a pasted reference list from stdin (same parsing as "
+                             "--parse-text): `pbpaste | verify_pmids.py --stdin` / "
+                             "`git show HEAD:refs.bib.txt | verify_pmids.py --stdin`")
+    parser.add_argument("--quick", action="store_true",
+                        help="Pre-submission final pass in one flag: --no-cache + "
+                             "--verify-doi + --suggest combined (fresh registries, "
+                             "DOI cross-check, correct-PMID suggestions)")
     parser.add_argument("--format-references", metavar="PATH",
                         help="Write verified entries as a formatted reference list — "
                              "GB/T 7714-2015 / Vancouver / APA 7 / AMA 11 via --citation-style; "
@@ -4363,6 +4373,36 @@ def main():
             sys.exit(1)
 
     # Collect PMIDs from sources
+    # v5.0.0 --quick: the pre-submission final pass as one flag — fresh
+    # registries, DOI cross-check and correct-PMID suggestions without
+    # remembering the combination. Explicit user flags always win (set
+    # first, never unset).
+    if getattr(args, "quick", False):
+        args.no_cache = True
+        args.verify_doi = True
+        args.suggest = True
+    # v5.0.0 --stdin: a pasted reference list arrives as parse-text via a
+    # temp file (same numbered/heading parser); the report label reads
+    # "stdin" instead of a random temp name.
+    if getattr(args, "stdin", False):
+        if args.parse_text:
+            print("Error: --stdin and --parse-text are mutually exclusive",
+                  file=sys.stderr)
+            sys.exit(1)
+        pasted = sys.stdin.read()
+        if not pasted.strip():
+            print("Error: --stdin received no input (nothing on stdin)",
+                  file=sys.stderr)
+            sys.exit(1)
+        _tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", prefix="pv_stdin_",
+            encoding="utf-8", delete=False)
+        _tmp.write(pasted)
+        _tmp.close()
+        args.parse_text = _tmp.name
+        args._stdin_label = True
+        atexit.register(
+            lambda n=_tmp.name: (os.path.exists(n) and os.unlink(n)) or None)
     doi_inputs = []   # (clean_doi, source_label, claimed_dict|None) — v2.8.0/v3.4.0
     if args.dois:
         for d in args.dois.split(","):
@@ -4420,7 +4460,8 @@ def main():
         text_entries, text_issues = parse_plaintext_references(args.parse_text)
         for msg in text_issues:
             print(f"  parse-text: {msg}", file=sys.stderr)
-        text_src = os.path.basename(args.parse_text)
+        text_src = ("stdin" if getattr(args, "_stdin_label", False)
+                   else os.path.basename(args.parse_text))
         routed = {"pmid": 0, "doi": 0, "arxiv": 0, "title": 0}
         for i, e in enumerate(text_entries, 1):
             claimed = {"claimed_title": e["claimed_title"],
@@ -4977,7 +5018,9 @@ def main():
     # with resolved_by=title_search; anything else stays honestly unknown.
     text_processed = 0
     for te in title_queue:
-        entry, audit_item = verify_title_entry(te, args.parse_text or "text")
+        _text_label = ("stdin" if getattr(args, "_stdin_label", False)
+                       else (args.parse_text or "text"))
+        entry, audit_item = verify_title_entry(te, _text_label)
         text_processed += 1
         if entry["verdict"] == "correct":
             stats["correct"] = stats.get("correct", 0) + 1

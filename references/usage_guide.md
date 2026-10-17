@@ -124,6 +124,25 @@ verdict stays unknown: the cited PMID points to another paper. Feed
   changed.
 
 
+## Piping input — paste-and-verify
+
+`pbpaste | verify_pmids.py --stdin` verifies a copied reference list
+without a temp file (same parser as `--parse-text`, report source reads
+"stdin"); `--quick` is the pre-submission final pass (`--no-cache` +
+`--verify-doi` + `--suggest`) in one flag.
+
+## When parsing fails — format-specific fixes
+
+| Symptom | Why | Fix |
+|---|---|---|
+| A .docx/.pptx yields almost no citations | Damaged zip, an image-only export, or a scanned document — the fallback reads raw bytes and finds nothing | Re-save from Word/PowerPoint as .docx/.pptx, or export to .txt/.html; scanned PDFs/pages are NOT text — run OCR first |
+| A Chinese reference without any PMID/DOI grades unknown | The Latin parser under-extracts Chinese metadata | `--parse-text` engages the OpenAlex CJK title-search leg; or supply the PMID/DOI |
+| A numbered list parses as one giant entry | In numbered/heading lists, continuation lines attach to the current entry; numbering markers vary (「1、」vs "[1]" vs "1."), and fewer than two markers fall back to one-entry-per-line | Normalize to `[1]`/`1.` markers, or split entries onto their own lines; bibliography exports using `## Title` headings are detected automatically |
+| Titles come back fragmented (multi-line entries) | Flattened exports join lines; continuation lines attach to the current entry | Keep each reference on one line, or use `--claims-file` for exact metadata |
+| A citation grades partial and you don't know which field | Partial = some metadata claimed and NOT matching | Read the `fields` table (title/author/journal/year ✓/✗/—): any ✗ is the doubt; a "—" never caused it |
+| Correct verdict but you expected stricter checking | Existence-only or title-verified paths don't check authors (none were claimed) | Feed `--claims-file` with title+authors — the decisive five-state pass |
+| Everything grades unknown at once | Data sources unreachable (network/proxy) | `--check-net` first; unknown is never cached, retry when reachable |
+
 ## Best practices & tuning — full playbook
 
 - **Speed up large batches** — request an NCBI API key (see
