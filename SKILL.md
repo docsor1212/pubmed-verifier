@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 5.0.0
+version: 5.1.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v5.0.0
+# PubMed Citation Verifier v5.1.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -222,6 +222,14 @@ Results: 1/3 correct, 1 mismatch, 1 invalid, 0 partial, 0 unknown
    Error: PMID not found in API response
 ```
 
+`--output report.html` renders a self-contained dashboard (inline CSS,
+no external assets): readiness banner, a filterable verdict table
+(✅/⚠️/🔶/❌/❓ tabs with per-field ✓✗— evidence columns, retraction and
+DOI-splice flags highlighted on top), a delta panel when `--diff` is
+given, the finding ledger, and a reproducibility footer (redacted
+command + version + data sources). Open it in any browser — it is also
+what `--report-bundle` packs for reviewers.
+
 `--output report.json` carries the same verdicts plus the full evidence
 chain per citation (`evidence.title_match / author_match / journal_match /
 year_match`, `fields` tri-state, `meta_source` naming which registry
@@ -310,6 +318,8 @@ the one-flag workaround:
 | Second-opinion leg (v4.8.0) | A gated title-only claim is corroborated via PubMed title search (correct, labeled) or flagged as a wrong-PMID signal | Confirms or reports only — never manufactures a mismatch; CJK titles skip (OpenAlex CJK leg owns those) | `--claims-file` for the decisive verdict |
 | Word/HTML/PowerPoint input (v4.8.0/v4.9.0) | `.docx` paragraphs/tables, `.pptx` slides+speaker notes, and `.html` text are extracted in-memory; `href` link targets kept, script/style dropped | A damaged office file falls back to a raw read (scans bytes, finds little); scanned PDFs/images are NOT text | Export to text/HTML first for PDFs |
 | Verdict-ladder monotonicity (v4.9.0) | A scanned citation whose ONLY gap is the missing author claim (title matched, journal/year never claimed) grades correct with `route: existence_title_match` — stronger evidence than a bare existence check can never grade lower | Any claimed-but-differing author/journal/year keeps partial; explicit `--claims-file`/CLI inputs always get the full verdict | `--claims-file` with authors for the complete five-state pass |
+| Input scale & concurrency (v5.1.0) | Scanned inputs of any size; DOI verification runs 4 workers; PMID batches go 50/call (0.4 s spacing, 0.12 s with an API key) | No hard entry cap — tens of thousands of citations in one run will take hours and lean on rate limits; arXiv is throttled to 1 call/3 s BY THE API | Split very large scans by section; use `--pmids` batches or the cache for repeat runs |
+| Explicit precedence (v5.1.0) | `--pmids` outranks `--source` when both are given | The ignored input is announced on stderr, never silently dropped | Give only the input you mean |
 | Formatted reference lists | GB/T (numeric + author-date), Vancouver, APA, AMA — verified entries only | Registry-truncated author lists close with et-al, not invented names | Verify first, then format (`--format-references`) |
 | Network honesty | Failures are unknown + retry hints, never "not found"; nothing cached on failure | Cannot verify anything while registries are unreachable | `--check-net` first |
 
@@ -333,12 +343,26 @@ titles (no network). Lint wins when combined with verification flags —
 only the lint runs.
 
 
+## Using it from mainland China — the one page
+
+Everything network-related in one place (each item also lives where it is used):
+
+- **Pre-flight**: `--check-net` probes all four registries + arXiv (5 s each) and prints per-host reachability with next steps.
+- **Registry choice**: default `--meta-source auto` already retries a failed NCBI batch against Europe PMC (no key, generally reachable); `--meta-source europepmc` forces it.
+- **Proxy**: standard `HTTPS_PROXY`/`HTTP_PROXY` env vars are honored on every request; direct-mode automation should `unset` them (a dead proxy env otherwise masks as unreachable registries).
+- **Package mirror**: ModelScope carries the skill package (`modelscope.cn/skills/Docsor/pubmed-verifier`) — but verification itself still calls the academic registries at runtime; the mirror only removes the install friction.
+- **Honest failure**: whatever the network does, failures grade `unknown` (exit 2), never "not found", and are never cached.
+
 ## Best practices & tuning
 
 Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, batching, proxies, CI usage).
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v5.1.0** — structured retraction detail (`retraction_type` across
+  all three registries; removal newly detected and capped); explicit
+  `--pmids`/`--source` precedence warning; mainland-China usage guide
+  one-pager; boundary table gains scale/concurrency rows.
 - **v5.0.0** — paste-and-verify (`--stdin` reads a copied reference list
   straight from the pipe) and `--quick`, the pre-submission final pass in
   one flag (--no-cache + --verify-doi + --suggest); FAQ depth (a
@@ -453,7 +477,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v5.0.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v5.1.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
 | `references/INDEX.md` | 任务→文档 30 秒路由表 |

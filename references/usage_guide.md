@@ -14,7 +14,7 @@ reported as not-found and never cached.
 **What does RETRACTED mean in a report?**
 The registry itself lists the paper's publication type as "Retracted
 Publication" (checked for every citation since v2.7.0 — no DOI or flags
-needed), and/or Crossref records a retraction. The verdict is capped at
+needed), and/or Crossref records a retraction (or, since v5.1.0, a removal — the paper withdrawn from the record entirely; the markdown flag then reads `[RETRACTED:removal (date)]`, and JSON carries `retraction_type`). The verdict is capped at
 partial and a human review note is attached — citing it would propagate
 withdrawn science. A retraction *notice* is never flagged; papers under
 *Expression of Concern* (an editorial note, not a retraction) are not

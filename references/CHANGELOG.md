@@ -350,6 +350,26 @@ three judgment-ladder defects; all three are fixed and locked:
   the pre-flight output is paste-safe.
 - Docs: "Trigger words" and "Use from Python" sections moved up front.
 
+## v5.1.0 — structured retraction detail & explicit precedence
+
+- **Structured retraction detail**: every retraction now carries a
+  `retraction_type` (retraction vs **removal** — the paper withdrawn
+  from the record entirely, newly detected via Crossref
+  `updated-by`), on top of the existing note/date/source. Wired through
+  all three registries (NCBI/Europe PMC/Crossref), the JSON/audit
+  evidence chain (`retraction.type`) and the markdown report flags
+  (`[RETRACTED:removal (2024-03-01)]`).
+- **Explicit precedence**: `--pmids` together with `--source` now
+  announces on stderr that `--pmids` wins and the scan input is ignored
+  — silent no-ops look like bugs from the outside.
+- **Mainland-China usage guide**: one concentrated page (pre-flight,
+  registry fallback, proxy semantics, package mirror, honest-failure
+  contract) on both language pages — the network guidance had scattered
+  across sections.
+- **Boundary table** gains input-scale/concurrency and
+  explicit-precedence rows; the HTML report's structure is now
+  described where the text output sample lives.
+
 ## v5.0.0 — paste-and-verify, one-flag final pass, leaner main doc
 
 Shaped by the v4.9.0 audit follow-ups (FAQ depth, trigger-boundary

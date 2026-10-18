@@ -3284,5 +3284,54 @@ class TestV500(_Reset):
         self.assertIn("no input", r.stderr)
 
 
+class TestV5100(_Reset):
+    """v5.1.0: structured retraction detail (type across three registries,
+    removal detection) + explicit --pmids/--source precedence."""
+
+    def _md(self, extra):
+        base = {"pmid": "1", "verdict": "partial", "valid": True,
+                "source_file": "t", "title": "T"}
+        base.update(extra)
+        return vp.generate_markdown_report(
+            [base], {"total": 1, "partial": 1, "retracted": 1}, "t")
+
+    def test_markdown_retraction_type_and_date_flag(self):
+        md = self._md({"retracted": True, "retraction_type": "removal",
+                       "retraction_date": "2024-03-01T00:00:00"})
+        self.assertIn("RETRACTED:removal (2024-03-01)", md)
+
+    def test_markdown_plain_retraction_undecorated(self):
+        md = self._md({"retracted": True, "retraction_type": "retraction",
+                       "retraction_date": ""})
+        self.assertIn("RETRACTED]", md)
+        self.assertNotIn("RETRACTED:", md)
+
+    def test_json_report_carries_retraction_type(self):
+        import json as _json
+        entry = {"pmid": "1", "verdict": "partial", "valid": True,
+                 "retracted": True, "retraction_type": "removal",
+                 "retraction_note": "removed by DOI 10.x/y",
+                 "retraction_date": "2024-03-01",
+                 "retraction_source": "crossref updated-by"}
+        doc = _json.loads(vp.generate_json_report([entry], {"total": 1}))
+        r = doc["results"][0]
+        self.assertEqual(r["retraction_type"], "removal")
+        self.assertEqual(r["retraction_date"], "2024-03-01")
+
+    def test_pmids_outrank_source_loudly(self):
+        # offline black box: non-digit --pmids keeps the run network-free
+        import subprocess
+        r = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve().parent.parent
+                                 / "scripts" / "verify_pmids.py"),
+             "--pmids", "xyz", "--source", "/tmp"],
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0)
+        # v2.8.0's existing precedence warning (kept by the v5.1.0 audit:
+        # its wording is the more specific of the two duplicates)
+        self.assertIn("WARN: both --pmids and --source", r.stderr)
+        self.assertIn("NOT scanned", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

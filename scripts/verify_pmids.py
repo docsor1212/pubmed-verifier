@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v5.0.0
+PMID Citation Verifier -- PubMed E-utilities API v5.1.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -86,8 +86,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "5.0.0"
-_UA_TOOL = "pubmed-verifier/5.0 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "5.1.0"
+_UA_TOOL = "pubmed-verifier/5.1 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -246,6 +246,7 @@ def _parse_esummary(batch: list, data: dict) -> dict:
                     "pages": article.get("pages", ""),
                     "doi": doi,
                     "retracted": retracted,
+                    "retraction_type": ("retraction" if retracted else ""),
                     "retraction_note": ("PubMed publication type: Retracted Publication"
                                         if retracted else ""),
                     "valid": True,
@@ -335,6 +336,7 @@ def fetch_summaries_europepmc(pmids: list, batch_size: int = 25,
                     "pages": h.get("pageInfo", ""),
                     "doi": h.get("doi", "") or "",
                     "retracted": epmc_retracted,
+                    "retraction_type": ("retraction" if epmc_retracted else ""),
                     "retraction_note": ("Europe PMC publication type: retracted publication"
                                         if epmc_retracted else ""),
                     "valid": True,
@@ -377,17 +379,21 @@ def fetch_doi_metadata(doi: str) -> dict:
             year = str(parts[0][0])
         # Retraction detection (v2.3.0, ported from cite-holmes): Crossref
         # lists withdrawal events in updated-by[]; any entry typed
-        # "retraction" means the paper has been retracted. Corrections and
-        # other update types do NOT count. (In filters the key is hyphenated
-        # update-type; response items carry plain "type".)
+        # "retraction" (or "removal" — the paper was withdrawn from the
+        # record entirely, v5.1.0) means the paper is unusable.
+        # Corrections and other update types do NOT count. (In filters the
+        # key is hyphenated update-type; response items carry plain "type".)
         retracted, retraction_note, retraction_date = False, "", ""
+        retraction_type = ""
         for u in msg.get("updated-by", []) or []:
             if not isinstance(u, dict):
                 continue
             utype = str(u.get("type") or u.get("update-type") or "").lower()
-            if utype == "retraction":
+            if utype in ("retraction", "removal"):
                 retracted = True
-                retraction_note = f"retracted by DOI {u.get('DOI', '?')}"
+                retraction_type = utype
+                retraction_note = (f"{'removed' if utype == 'removal' else 'retracted'}"
+                                   f" by DOI {u.get('DOI', '?')}")
                 upd = (u.get("updated") or {}).get("date-time") or (u.get("updated") or {}).get("date-parts")
                 if upd:
                     retraction_date = str(upd)
@@ -400,6 +406,7 @@ def fetch_doi_metadata(doi: str) -> dict:
             "pubdate": year,
             "doi": doi,
             "retracted": retracted,
+            "retraction_type": retraction_type,
             "retraction_note": retraction_note,
             "retraction_date": retraction_date,
             "source": "crossref",
@@ -477,15 +484,23 @@ def resolve_doi(doi: str, timeout=None) -> dict:
         if parts and parts[0]:
             year = str(parts[0][0])
         # Retraction signal rides the same response (updated-by) — without it
-        # the --dois pipeline would be blind to retractions (v2.8.0 review P1)
-        retracted, retraction_note = False, ""
+        # the --dois pipeline would be blind to retractions (v2.8.0 review P1).
+        # v5.1.0: removals count too (paper withdrawn from the record), and
+        # the structured type/date ride along — same shape as fetch_doi_metadata.
+        retracted, retraction_note, retraction_date = False, "", ""
+        retraction_type = ""
         for u in msg.get("updated-by", []) or []:
             if not isinstance(u, dict):
                 continue
             utype = str(u.get("type") or u.get("update-type") or "").lower()
-            if utype == "retraction":
+            if utype in ("retraction", "removal"):
                 retracted = True
-                retraction_note = f"retracted by DOI {u.get('DOI', '?')}"
+                retraction_type = utype
+                retraction_note = (f"{'removed' if utype == 'removal' else 'retracted'}"
+                                   f" by DOI {u.get('DOI', '?')}")
+                upd = (u.get("updated") or {}).get("date-time") or (u.get("updated") or {}).get("date-parts")
+                if upd:
+                    retraction_date = str(upd)
                 break
         meta = {
             "title": msg.get("title", [""])[0] if msg.get("title") else "",
@@ -495,7 +510,9 @@ def resolve_doi(doi: str, timeout=None) -> dict:
                         for a in msg.get("author", [])],
             "type": msg.get("type", ""),
             "retracted": retracted,
+            "retraction_type": retraction_type,
             "retraction_note": retraction_note,
+            "retraction_date": retraction_date,
         }
         return {"status": "resolved", "meta": meta, "error": ""}
     except urllib.error.HTTPError as e:
@@ -541,6 +558,7 @@ def fetch_openalex_doi(doi: str, timeout=None) -> dict:
         "authors": [a for a in authors if a],
         "type": data.get("type", ""),
         "retracted": bool(data.get("is_retracted")),
+        "retraction_type": ("retraction" if data.get("is_retracted") else ""),
         "retraction_note": "retracted (OpenAlex retraction state)" if data.get("is_retracted") else "",
         "registry": "openalex",
     }
@@ -680,6 +698,7 @@ def _verify_cjk_openalex(entry: dict, src: str) -> tuple:
             if w.get("is_retracted"):
                 res["retracted"] = True
                 res["retraction_note"] = "retracted (OpenAlex retraction state)"
+                res["retraction_type"] = "retraction"
                 res["verdict"], res["details"] = apply_retraction_cap(
                     res["verdict"], res["details"])
             audit = dict(audit0, claimed=claimed,
@@ -773,6 +792,7 @@ def verify_doi_entry(doi: str, src: str, resolution: dict = None,
         if meta.get("retracted"):
             entry["retracted"] = True
             entry["retraction_note"] = meta.get("retraction_note", "")
+            entry["retraction_type"] = meta.get("retraction_type", "retraction")
             entry["retraction_source"] = "crossref updated-by"
         # v2.9.0: link the DOI back to its PMID (Europe PMC DOI query) and
         # attach the full PubMed record. The linked record's registered DOI
@@ -802,6 +822,8 @@ def verify_doi_entry(doi: str, src: str, resolution: dict = None,
                     entry["retracted"] = True
                     if not entry.get("retraction_note"):
                         entry["retraction_note"] = info.get("retraction_note", "")
+                    if not entry.get("retraction_type"):
+                        entry["retraction_type"] = info.get("retraction_type", "retraction")
                     entry["retraction_source"] = entry.get("retraction_source", "") or \
                         "PubMed publication type"
         # v3.4.0: full cross-check when the user claimed metadata for this
@@ -2194,7 +2216,8 @@ def apply_retraction_cap(verdict: str, details: str) -> tuple:
     because citing it would propagate withdrawn science. mismatch/unknown
     verdicts stay as they are -- already flagged for other reasons."""
     if verdict in ("correct", "partial"):
-        note = "RETRACTED paper — human review required（论文已撤稿，引用前须人工复核）"
+        note = ("RETRACTED/REMOVED paper — human review required"
+                "（论文已撤稿或被移除，引用前须人工复核）")
         return "partial", (details + "; " if details else "") + note
     return verdict, details
 
@@ -3137,7 +3160,12 @@ def generate_markdown_report(results: list, stats: dict, source: str, deltas: di
         ev = " ".join(marks.get(fld.get(k), "—") for k in ev_keys)
         flags = []
         if r.get("retracted"):
-            flags.append("RETRACTED")
+            # v5.1.0: structured retraction detail — type (retraction vs
+            # removal) and the date the registry recorded the withdrawal
+            rt = str(r.get("retraction_type") or "retraction")
+            rd = str(r.get("retraction_date") or "")
+            flags.append("RETRACTED" + (f":{rt}" if rt != "retraction" else "")
+                         + (f" ({rd[:10]})" if rd else ""))
         if r.get("doi_splice_suspect"):
             flags.append("SPLICE")
         v = r.get("verdict", "?")
@@ -3852,6 +3880,7 @@ def verify_title_entry(entry: dict, src: str) -> tuple:
             if cand.get("retracted"):
                 res["retracted"] = True
                 res["retraction_note"] = cand.get("retraction_note", "")
+                res["retraction_type"] = cand.get("retraction_type", "retraction")
                 res["verdict"], res["details"] = apply_retraction_cap(
                     res["verdict"], res["details"])
             audit = dict(audit0, pmid=res["pmid"],
@@ -4636,6 +4665,7 @@ def main():
                         if doi_meta.get("retracted"):
                             entry["retracted"] = True
                             entry["retraction_note"] = doi_meta.get("retraction_note", "")
+                            entry["retraction_type"] = doi_meta.get("retraction_type", "retraction")
                             entry["retraction_date"] = doi_meta.get("retraction_date", "")
                             entry["retraction_source"] = "crossref updated-by"
                     else:
@@ -4659,6 +4689,7 @@ def main():
                 if info.get("retracted") and not entry.get("retracted"):
                     entry["retracted"] = True
                     entry["retraction_note"] = info.get("retraction_note", "")
+                    entry["retraction_type"] = info.get("retraction_type", "retraction")
                     entry["retraction_source"] = "registry pubtype"
 
                 # v4.7.0: a live PMID with no usable claimed metadata
@@ -4690,6 +4721,7 @@ def main():
                     if info.get("retracted") and not entry.get("retracted"):
                         entry["retracted"] = True
                         entry["retraction_note"] = info.get("retraction_note", "")
+                        entry["retraction_type"] = info.get("retraction_type", "retraction")
                         entry["retraction_source"] = "registry pubtype"
                         entry["verdict"], entry["details"] = apply_retraction_cap(
                             entry["verdict"], entry["details"])
@@ -4843,6 +4875,7 @@ def main():
                         "splice_suspect": entry.get("doi_splice_suspect", False)},
                     "retraction": {
                         "flagged": entry.get("retracted", False),
+                        "type": entry.get("retraction_type", ""),
                         "note": entry.get("retraction_note", ""),
                         "date": entry.get("retraction_date", ""),
                         "source": entry.get("retraction_source",
