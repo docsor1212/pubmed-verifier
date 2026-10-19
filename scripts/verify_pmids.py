@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v5.1.0
+PMID Citation Verifier -- PubMed E-utilities API v5.2.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -86,8 +86,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "5.1.0"
-_UA_TOOL = "pubmed-verifier/5.1 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "5.2.0"
+_UA_TOOL = "pubmed-verifier/5.2 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -335,6 +335,10 @@ def fetch_summaries_europepmc(pmids: list, batch_size: int = 25,
                     "volume": h.get("journalVolume", ""),
                     "pages": h.get("pageInfo", ""),
                     "doi": h.get("doi", "") or "",
+                    # v5.2.0: citation count rides the same lite response —
+                    # a rough impact signal, None when the profile omits it
+                    "cited_by_count": (int(h["citedCount"])
+                                       if str(h.get("citedCount", "")).isdigit() else None),
                     "retracted": epmc_retracted,
                     "retraction_type": ("retraction" if epmc_retracted else ""),
                     "retraction_note": ("Europe PMC publication type: retracted publication"
@@ -559,6 +563,9 @@ def fetch_openalex_doi(doi: str, timeout=None) -> dict:
         "type": data.get("type", ""),
         "retracted": bool(data.get("is_retracted")),
         "retraction_type": ("retraction" if data.get("is_retracted") else ""),
+        # v5.2.0: OpenAlex carries the citation count natively
+        "cited_by_count": (int(data["cited_by_count"])
+                           if str(data.get("cited_by_count", "")).isdigit() else None),
         "retraction_note": "retracted (OpenAlex retraction state)" if data.get("is_retracted") else "",
         "registry": "openalex",
     }
@@ -1864,6 +1871,19 @@ def suggest_retraction_replacements(results: list) -> None:
                                      "verify each before citing")
 
 
+def _input_guard_note(total: int, limit: int) -> None:
+    """v5.2.0 quantified-input guard: over the --max-entries threshold,
+    print the actual count, the expected cost and a split recommendation
+    to stderr. limit<=0 silences the guard entirely."""
+    if not limit or total <= limit:
+        return
+    print(f"NOTE: {total} de-duplicated entries exceed "
+          f"--max-entries {limit}. Expect a long run: PMID batches go "
+          f"50/call, arXiv is throttled to 1 call/3 s by the API. "
+          f"Consider splitting the input, or raise --max-entries / use "
+          f"--max-entries 0 to silence this.", file=sys.stderr)
+
+
 def _read_text_any(filepath: str) -> tuple:
     """Read a --source / --parse-text input as plain text regardless of format (v4.8.0).
 
@@ -3158,6 +3178,8 @@ def generate_markdown_report(results: list, stats: dict, source: str, deltas: di
         ev_keys = ("title", "author", "journal", "year") + \
             (("doi",) if "doi" in fld else ())
         ev = " ".join(marks.get(fld.get(k), "—") for k in ev_keys)
+        if r.get("cited_by_count") is not None:
+            ev += f" · {r['cited_by_count']} cited"
         flags = []
         if r.get("retracted"):
             # v5.1.0: structured retraction detail — type (retraction vs
@@ -4290,6 +4312,10 @@ def main():
                         help="Read a pasted reference list from stdin (same parsing as "
                              "--parse-text): `pbpaste | verify_pmids.py --stdin` / "
                              "`git show HEAD:refs.bib.txt | verify_pmids.py --stdin`")
+    parser.add_argument("--max-entries", type=int, default=2000, metavar="N",
+                        help="Warn when the total de-duplicated input (PMIDs+DOIs+arXiv IDs+"
+                             "title-search entries) exceeds N (default 2000) — large runs take "
+                             "hours and lean on rate limits; 0 disables the guard")
     parser.add_argument("--quick", action="store_true",
                         help="Pre-submission final pass in one flag: --no-cache + "
                              "--verify-doi + --suggest combined (fresh registries, "
@@ -4588,6 +4614,10 @@ def main():
         seen[pmid].append((src, ctx, claimed))
 
     unique_pmids = list(seen.keys())
+    # v5.2.0 quantified-input guard: a vague "large scans take hours" helped
+    # nobody — the guard counts the actual de-duplicated workload and says so
+    _input_guard_note(len(unique_pmids) + len(doi_inputs) + len(arxiv_inputs)
+                      + len(title_queue), getattr(args, "max_entries", 0))
     if unique_pmids:
         print(f"Found {len(pmid_entries)} PMID citations ({len(unique_pmids)} unique). Verifying...")
     if doi_inputs:
@@ -4641,6 +4671,8 @@ def main():
                 entry["title"] = info["title"]
                 entry["journal"] = info["journal"]
                 entry["pubdate"] = info["pubdate"]
+                if info.get("cited_by_count") is not None:
+                    entry["cited_by_count"] = info["cited_by_count"]
                 entry["authors"] = ", ".join(info["authors"][:3])
                 entry["authors_truncated"] = len(info.get("authors", [])) > 3
                 entry["doi"] = info.get("doi", "")
@@ -4711,6 +4743,8 @@ def main():
                     _ex_auth = info.get("authors", "")
                     entry["authors"] = (", ".join(_ex_auth[:3])
                                         if isinstance(_ex_auth, list) else _ex_auth)
+                    if info.get("cited_by_count") is not None:
+                        entry["cited_by_count"] = info["cited_by_count"]
                     entry["meta_source"] = info.get("source", "")
                     # full-shape cross so the common post-checks pass unchanged
                     cross = {"verdict": "correct", "details": entry["details"],

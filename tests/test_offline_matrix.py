@@ -3333,5 +3333,51 @@ class TestV5100(_Reset):
         self.assertIn("NOT scanned", r.stderr)
 
 
+class TestV5200(_Reset):
+    """v5.2.0: quantified input guard (--max-entries) + cited_by_count
+    (Europe PMC/OpenAlex rides-along, zero extra requests)."""
+
+    def test_input_guard_silent_below_and_at_threshold(self):
+        import io, contextlib
+        for total, limit in ((0, 2000), (1999, 2000), (2000, 2000), (5000, 0), (500, 0)):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                vp._input_guard_note(total, limit)
+            self.assertEqual(err.getvalue(), "")
+
+    def test_input_guard_notes_above_threshold(self):
+        import io, contextlib
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            vp._input_guard_note(2001, 2000)
+        msg = err.getvalue()
+        self.assertIn("NOTE: 2001 de-duplicated entries", msg)
+        self.assertIn("--max-entries 2000", msg)
+        self.assertIn("1 call/3 s", msg)
+
+    def test_markdown_citation_count_in_evidence_cell(self):
+        md = vp.generate_markdown_report(
+            [{"pmid": "1", "verdict": "correct", "valid": True,
+              "source_file": "t", "title": "T",
+              "fields": {"title": True}, "cited_by_count": 128}],
+            {"total": 1, "correct": 1}, "t")
+        self.assertIn("· 128 cited", md)
+
+    def test_markdown_omits_count_when_registry_lacks_it(self):
+        # the NCBI path has no citation count — nothing invented
+        md = vp.generate_markdown_report(
+            [{"pmid": "1", "verdict": "correct", "valid": True,
+              "source_file": "t", "title": "T", "fields": {"title": True}}],
+            {"total": 1, "correct": 1}, "t")
+        self.assertNotIn("cited", md)
+
+    def test_json_carries_cited_by_count(self):
+        import json as _json
+        entry = {"pmid": "1", "verdict": "correct", "valid": True,
+                 "cited_by_count": 42}
+        doc = _json.loads(vp.generate_json_report([entry], {"total": 1}))
+        self.assertEqual(doc["results"][0]["cited_by_count"], 42)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

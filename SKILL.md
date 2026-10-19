@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 5.1.0
+version: 5.2.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v5.1.0
+# PubMed Citation Verifier v5.2.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -61,6 +61,31 @@ Three quick mappings: "帮我验证这几个 PMID 31018962、22213727" →
 `--pmids`; "检查我论文参考文献" + a pasted list → `--parse-text` (or pipe
 it to `--stdin` — **a pasted list IS the input, no explicit "verify"
 word needed**); "这篇撤稿了该引什么" → `--suggest` on a retracted entry.
+
+**When to invoke — by pattern, not just by keyword:**
+- MUST invoke: any request containing citation identifiers (PMID/DOI/
+  arXiv ID) together with words like check/verify/audit/validate — even
+  without the word "verify" ("are these PMIDs real?", "is this DOI
+  right?");
+- MUST invoke: a reference list is pasted or attached, whatever the
+  framing ("look at my references", "any problems here?") — the list IS
+  the input (`--parse-text`/`--stdin`);
+- MUST NOT invoke alone: "write me a paper/lit review" (research first —
+  cite-holmes; run this skill on the DRAFT's reference list at the end);
+- MUST NOT invoke for: plain formatting of UNVERIFIED citations without
+  verification intent — formatting stands on verified records
+  (`--format-references` verifies first by design).
+
+**Combination runs** (flags stack; each does one job):
+
+| Scenario | Command shape |
+|---|---|
+| Pre-submission final pass | `--source DRAFT --quick --output report.html` |
+| Paste-and-verify from clipboard | `pbpaste \| ... --stdin --suggest` |
+| Knowledge-base audit + evidence pack | `--source KB --report-bundle DIR` |
+| Bibliography round-trip | `--bibliography refs.bib --export-bibtex out.bib` |
+| Delta audit vs last month | `--source KB --diff old-audit.json` |
+| CJK-only reference list | `--parse-text refs-cn.txt` (OpenAlex CJK leg) |
 
 **When `--claims-file` is required:** a plain scan verifies existence plus
 whatever metadata the citation context carries — if a verdict will be
@@ -318,7 +343,7 @@ the one-flag workaround:
 | Second-opinion leg (v4.8.0) | A gated title-only claim is corroborated via PubMed title search (correct, labeled) or flagged as a wrong-PMID signal | Confirms or reports only — never manufactures a mismatch; CJK titles skip (OpenAlex CJK leg owns those) | `--claims-file` for the decisive verdict |
 | Word/HTML/PowerPoint input (v4.8.0/v4.9.0) | `.docx` paragraphs/tables, `.pptx` slides+speaker notes, and `.html` text are extracted in-memory; `href` link targets kept, script/style dropped | A damaged office file falls back to a raw read (scans bytes, finds little); scanned PDFs/images are NOT text | Export to text/HTML first for PDFs |
 | Verdict-ladder monotonicity (v4.9.0) | A scanned citation whose ONLY gap is the missing author claim (title matched, journal/year never claimed) grades correct with `route: existence_title_match` — stronger evidence than a bare existence check can never grade lower | Any claimed-but-differing author/journal/year keeps partial; explicit `--claims-file`/CLI inputs always get the full verdict | `--claims-file` with authors for the complete five-state pass |
-| Input scale & concurrency (v5.1.0) | Scanned inputs of any size; DOI verification runs 4 workers; PMID batches go 50/call (0.4 s spacing, 0.12 s with an API key) | No hard entry cap — tens of thousands of citations in one run will take hours and lean on rate limits; arXiv is throttled to 1 call/3 s BY THE API | Split very large scans by section; use `--pmids` batches or the cache for repeat runs |
+| Input scale & concurrency (v5.1.0/v5.2.0) | Any input size; the `--max-entries` guard (default 2000) counts the de-duplicated workload and warns with a split recommendation; DOI verification runs 4 workers; PMID batches go 50/call (0.4 s spacing, 0.12 s with an API key) | arXiv is throttled to 1 call/3 s BY THE API (1,000 arXiv IDs ≈ 50+ minutes no matter what); citation counts (`cited_by_count`) only exist on the Europe PMC/OpenAlex paths — the NCBI path reports none | `--max-entries N` raises the threshold, `0` silences it; split very large scans by section |
 | Explicit precedence (v5.1.0) | `--pmids` outranks `--source` when both are given | The ignored input is announced on stderr, never silently dropped | Give only the input you mean |
 | Formatted reference lists | GB/T (numeric + author-date), Vancouver, APA, AMA — verified entries only | Registry-truncated author lists close with et-al, not invented names | Verify first, then format (`--format-references`) |
 | Network honesty | Failures are unknown + retry hints, never "not found"; nothing cached on failure | Cannot verify anything while registries are unreachable | `--check-net` first |
@@ -359,6 +384,11 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v5.2.0** — `--max-entries` quantified input guard (the de-duplicated
+  workload counted against a threshold, with a split recommendation);
+  `cited_by_count` rides Europe PMC/OpenAlex responses (zero extra
+  requests); trigger section described by pattern with a
+  combination-run table.
 - **v5.1.0** — structured retraction detail (`retraction_type` across
   all three registries; removal newly detected and capped); explicit
   `--pmids`/`--source` precedence warning; mainland-China usage guide
@@ -477,7 +507,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v5.1.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v5.2.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
 | `references/INDEX.md` | 任务→文档 30 秒路由表 |

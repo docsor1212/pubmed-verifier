@@ -350,6 +350,25 @@ three judgment-ladder defects; all three are fixed and locked:
   the pre-flight output is paste-safe.
 - Docs: "Trigger words" and "Use from Python" sections moved up front.
 
+## v5.2.0 — quantified input guard & citation counts
+
+- **`--max-entries` guard**: the vague "large scans take hours" became a
+  number — the de-duplicated workload (PMIDs + DOIs + arXiv IDs +
+  title-search entries) is counted and compared against a threshold
+  (default 2000); over it, a NOTE prints the actual count, the expected
+  cost and a split recommendation. `--max-entries N` raises it, `0`
+  silences it.
+- **`cited_by_count`**: citation counts ride responses that already carry
+  them (Europe PMC `citedCount`, OpenAlex `cited_by_count`) — zero extra
+  requests. Surfaces in JSON/markdown ("· 128 cited" in the evidence
+  cell). The NCBI path reports none, honestly.
+- **Trigger section by pattern**: when-to-invoke is now described as
+  patterns (MUST invoke / MUST NOT invoke alone) plus a combination-run
+  table, on both language pages — an enumerated keyword list misses
+  boundary phrasings.
+- Boundary table row now quantifies the guard and the arXiv floor
+  (1,000 arXiv IDs ≈ 50+ minutes).
+
 ## v5.1.0 — structured retraction detail & explicit precedence
 
 - **Structured retraction detail**: every retraction now carries a
