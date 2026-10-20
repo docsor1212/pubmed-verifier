@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 5.2.0
+version: 5.3.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v5.2.0
+# PubMed Citation Verifier v5.3.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -159,6 +159,10 @@ wrong this way. A binary exists/not-exists check misses them all.
 # suggestions (--suggest), no flags to remember
 python3 scripts/verify_pmids.py --source /path/to/draft --quick --output report.html
 
+# Environment self-check (v5.3.0): versions, cache state, key/proxy
+# config — add --check-net to include the five-registry probe
+python3 scripts/verify_pmids.py --doctor
+
 # Paste-and-verify (v5.0.0): a copied reference list straight from the
 # clipboard or another command — no temp file needed
 pbpaste | python3 scripts/verify_pmids.py --stdin
@@ -210,6 +214,9 @@ python3 scripts/verify_pmids.py --parse-text references.txt --no-cache
 # Format the verified entries as a ready-to-paste reference list
 # (--citation-style: gbt | vancouver | apa | ama; default gbt)
 python3 scripts/verify_pmids.py --parse-text references.txt --format-references refs_gbt.txt --citation-style gbt
+
+# Stream results for agent pipelines (v5.3.0): one citation per line
+python3 scripts/verify_pmids.py --parse-text refs.txt --jsonl results.jsonl
 
 # Submission evidence pack: one command, every artifact (audit + HTML +
 # BibTeX/RIS + CSV + GB/T list + manifest)
@@ -343,6 +350,7 @@ the one-flag workaround:
 | Second-opinion leg (v4.8.0) | A gated title-only claim is corroborated via PubMed title search (correct, labeled) or flagged as a wrong-PMID signal | Confirms or reports only — never manufactures a mismatch; CJK titles skip (OpenAlex CJK leg owns those) | `--claims-file` for the decisive verdict |
 | Word/HTML/PowerPoint input (v4.8.0/v4.9.0) | `.docx` paragraphs/tables, `.pptx` slides+speaker notes, and `.html` text are extracted in-memory; `href` link targets kept, script/style dropped | A damaged office file falls back to a raw read (scans bytes, finds little); scanned PDFs/images are NOT text | Export to text/HTML first for PDFs |
 | Verdict-ladder monotonicity (v4.9.0) | A scanned citation whose ONLY gap is the missing author claim (title matched, journal/year never claimed) grades correct with `route: existence_title_match` — stronger evidence than a bare existence check can never grade lower | Any claimed-but-differing author/journal/year keeps partial; explicit `--claims-file`/CLI inputs always get the full verdict | `--claims-file` with authors for the complete five-state pass |
+| Retraction reasons (v5.3.0) | A retracted citation carries `retraction_reason` — the notice abstract when the registry has one, else the notice title — plus `retraction_reason_doi` for the source statement | Many notices are just "Retraction Note: <original title>"; the original title alone NEVER masquerades as the reason — the notice is cited instead | Read `--export-audit` for the full chain |
 | Input scale & concurrency (v5.1.0/v5.2.0) | Any input size; the `--max-entries` guard (default 2000) counts the de-duplicated workload and warns with a split recommendation; DOI verification runs 4 workers; PMID batches go 50/call (0.4 s spacing, 0.12 s with an API key) | arXiv is throttled to 1 call/3 s BY THE API (1,000 arXiv IDs ≈ 50+ minutes no matter what); citation counts (`cited_by_count`) only exist on the Europe PMC/OpenAlex paths — the NCBI path reports none | `--max-entries N` raises the threshold, `0` silences it; split very large scans by section |
 | Explicit precedence (v5.1.0) | `--pmids` outranks `--source` when both are given | The ignored input is announced on stderr, never silently dropped | Give only the input you mean |
 | Formatted reference lists | GB/T (numeric + author-date), Vancouver, APA, AMA — verified entries only | Registry-truncated author lists close with et-al, not invented names | Verify first, then format (`--format-references`) |
@@ -384,6 +392,10 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v5.3.0** — retraction reasons distilled from the notice record
+  (abstract > semantic title; the original title never masquerades as a
+  reason); `--doctor` environment self-check; `--jsonl` stream output;
+  HTML rows expand the full evidence trail inline.
 - **v5.2.0** — `--max-entries` quantified input guard (the de-duplicated
   workload counted against a threshold, with a split recommendation);
   `cited_by_count` rides Europe PMC/OpenAlex responses (zero extra
@@ -507,7 +519,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v5.2.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v5.3.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
 | `references/INDEX.md` | 任务→文档 30 秒路由表 |

@@ -21,6 +21,9 @@ withdrawn science. A retraction *notice* is never flagged; papers under
 flagged either. Retraction status reflects the registry at cache time — for
 a final pre-submission check, run with `--no-cache`.
 
+**Where does `retraction_reason` come from?**
+v5.3.0 fetches the retraction NOTICE itself (the DOI in `updated-by`) and distills its abstract — or, when there is no abstract, its title only if the title names the offence. Many notices are literally "Retraction Note: <original title>"; there the honest output is the notice citation (`retraction_notice_title` + `retraction_reason_doi`), never the original title pretending to be a reason. `--doctor` checks the rest of your environment.
+
 **Mismatch reported but the title looks similar?**
 Check `details` for which field diverged; thresholds are strict on purpose.
 Feed the full citation via `--claims-file` for a precise verdict.

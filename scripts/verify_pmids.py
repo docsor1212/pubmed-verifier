@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v5.2.0
+PMID Citation Verifier -- PubMed E-utilities API v5.3.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -86,8 +86,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "5.2.0"
-_UA_TOOL = "pubmed-verifier/5.2 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "5.3.0"
+_UA_TOOL = "pubmed-verifier/5.3 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -389,13 +389,19 @@ def fetch_doi_metadata(doi: str) -> dict:
         # key is hyphenated update-type; response items carry plain "type".)
         retracted, retraction_note, retraction_date = False, "", ""
         retraction_type = ""
+        update_dois = []
+        retraction_notice_doi = ""
         for u in msg.get("updated-by", []) or []:
             if not isinstance(u, dict):
                 continue
+            ud = str(u.get("DOI", "") or "").strip()
+            if ud:
+                update_dois.append(ud)
             utype = str(u.get("type") or u.get("update-type") or "").lower()
             if utype in ("retraction", "removal"):
                 retracted = True
                 retraction_type = utype
+                retraction_notice_doi = ud   # THE notice, not update_dois[0]
                 retraction_note = (f"{'removed' if utype == 'removal' else 'retracted'}"
                                    f" by DOI {u.get('DOI', '?')}")
                 upd = (u.get("updated") or {}).get("date-time") or (u.get("updated") or {}).get("date-parts")
@@ -413,6 +419,12 @@ def fetch_doi_metadata(doi: str) -> dict:
             "retraction_type": retraction_type,
             "retraction_note": retraction_note,
             "retraction_date": retraction_date,
+            # v5.3.0: DOIs of the notices themselves + the notice abstract
+            # (JATS tags stripped) — the abstract is where an actual REASON
+            # lives when the registry carries one
+            "update_dois": update_dois,
+            "retraction_notice_doi": retraction_notice_doi,
+            "abstract": re.sub(r"<[^>]+>", " ", msg.get("abstract", "") or "")[:400].strip(),
             "source": "crossref",
         }
     except Exception as e:
@@ -493,13 +505,19 @@ def resolve_doi(doi: str, timeout=None) -> dict:
         # the structured type/date ride along — same shape as fetch_doi_metadata.
         retracted, retraction_note, retraction_date = False, "", ""
         retraction_type = ""
+        update_dois = []
+        retraction_notice_doi = ""
         for u in msg.get("updated-by", []) or []:
             if not isinstance(u, dict):
                 continue
+            ud = str(u.get("DOI", "") or "").strip()
+            if ud:
+                update_dois.append(ud)
             utype = str(u.get("type") or u.get("update-type") or "").lower()
             if utype in ("retraction", "removal"):
                 retracted = True
                 retraction_type = utype
+                retraction_notice_doi = ud   # THE notice, not update_dois[0]
                 retraction_note = (f"{'removed' if utype == 'removal' else 'retracted'}"
                                    f" by DOI {u.get('DOI', '?')}")
                 upd = (u.get("updated") or {}).get("date-time") or (u.get("updated") or {}).get("date-parts")
@@ -517,6 +535,9 @@ def resolve_doi(doi: str, timeout=None) -> dict:
             "retraction_type": retraction_type,
             "retraction_note": retraction_note,
             "retraction_date": retraction_date,
+            "update_dois": update_dois,
+            "retraction_notice_doi": retraction_notice_doi,
+            "abstract": re.sub(r"<[^>]+>", " ", msg.get("abstract", "") or "")[:400].strip(),
         }
         return {"status": "resolved", "meta": meta, "error": ""}
     except urllib.error.HTTPError as e:
@@ -801,6 +822,21 @@ def verify_doi_entry(doi: str, src: str, resolution: dict = None,
             entry["retraction_note"] = meta.get("retraction_note", "")
             entry["retraction_type"] = meta.get("retraction_type", "retraction")
             entry["retraction_source"] = "crossref updated-by"
+            # v5.3.0: reason from the notice record — the abstract when the
+            # registry carries one, else the title only if it names the
+            # offence; "Retraction Note: <original title>" alone never
+            # masquerades as a reason (same contract as the PMID main loop)
+            notice_doi = (meta.get("retraction_notice_doi")
+                          or (meta.get("update_dois") or [""])[0])
+            if notice_doi:
+                nmeta = fetch_doi_metadata(notice_doi)
+                reason, notice_title = _retraction_reason_from_notice(nmeta)
+                if reason:
+                    entry["retraction_reason"] = reason
+                if notice_title:
+                    entry["retraction_notice_title"] = notice_title[:200]
+                if notice_doi:
+                    entry["retraction_reason_doi"] = notice_doi
         # v2.9.0: link the DOI back to its PMID (Europe PMC DOI query) and
         # attach the full PubMed record. The linked record's registered DOI
         # is cross-checked against the input — an ambiguous link keeps
@@ -1869,6 +1905,35 @@ def suggest_retraction_replacements(results: list) -> None:
             r["replacement_note"] = ("retracted — replacement candidates from a "
                                      "same-topic search; they are NOT verdicts, "
                                      "verify each before citing")
+
+
+_RETRACT_WORD_RE = re.compile(
+    r"retract|withdraw|removal|removed|invalid|misconduct|duplicate|"
+    r"unreliable|erratum|corrigendum", re.IGNORECASE)
+
+
+def _retraction_reason_from_notice(nmeta: dict) -> tuple:
+    """v5.3.0: distill a human-readable reason from a retraction notice.
+
+    The Crossref notice record yields, in priority order: its abstract
+    (JATS already stripped by the fetchers -- where an actual REASON
+    lives), else its title WHEN the title itself carries retraction
+    semantics (many notices are just "Retraction Note: <original title>"
+    -- that stripped remainder is the ORIGINAL title, not a reason, and
+    must not masquerade as one). Returns (reason, notice_title)."""
+    notice_title = str(nmeta.get("title", "") or "").strip()
+    abstract = str(nmeta.get("abstract", "") or "").strip()
+    if abstract:
+        return abstract[:300], notice_title
+    if notice_title and _RETRACT_WORD_RE.search(notice_title):
+        stripped = re.sub(
+            r"^\s*(retraction|withdrawal|removal|retracting|retracted)[^:]{0,40}:\s*",
+            "", notice_title, flags=re.IGNORECASE).strip()
+        if stripped and _RETRACT_WORD_RE.search(stripped):
+            # the remainder still names the offence ("...for plagiarism")
+            return stripped[:300], notice_title
+        return notice_title[:300], notice_title
+    return "", notice_title
 
 
 def _input_guard_note(total: int, limit: int) -> None:
@@ -3188,6 +3253,9 @@ def generate_markdown_report(results: list, stats: dict, source: str, deltas: di
             rd = str(r.get("retraction_date") or "")
             flags.append("RETRACTED" + (f":{rt}" if rt != "retraction" else "")
                          + (f" ({rd[:10]})" if rd else ""))
+            rr = str(r.get("retraction_reason") or "")
+            if rr:
+                flags.append("reason: " + rr[:120])
         if r.get("doi_splice_suspect"):
             flags.append("SPLICE")
         v = r.get("verdict", "?")
@@ -3334,6 +3402,32 @@ def generate_html_report(results: list[dict], stats: dict, source: str, repro: d
         match_score = r.get("match_score")
         match_cell = f'<td>{match_score:.0%}</td>' if match_score is not None else '<td>—</td>'
 
+        # v5.3.0: the full per-citation evidence trail expands inline —
+        # claimed vs registered metadata, match booleans, retraction and
+        # splice detail — via the native <details> element (zero JS)
+        ev_parts = [f"claimed: {r.get('claimed_title', '') or '—'}"]
+        ev_parts.append(f"registered: {r.get('title', '') or '—'}")
+        if r.get("journal"):
+            ev_parts.append(f"journal: {r['journal']}")
+        if r.get("pubdate"):
+            ev_parts.append(f"date: {r['pubdate']}")
+        if r.get("meta_source"):
+            ev_parts.append(f"answered by: {r['meta_source']}")
+        if r.get("resolved_by"):
+            ev_parts.append(f"resolved by: {r['resolved_by']}")
+        if r.get("route"):
+            ev_parts.append(f"route: {r['route']}")
+        if r.get("cited_by_count") is not None:
+            ev_parts.append(f"cited: {r['cited_by_count']}")
+        if r.get("retraction_reason"):
+            ev_parts.append(f"retraction reason: {r['retraction_reason']}")
+        for k, lab in (("title_match", "title"), ("author_match", "author"),
+                       ("journal_match", "journal"), ("year_match", "year"),
+                       ("doi_cross_match", "doi-cross")):
+            if k in r and r[k] is not None:
+                ev_parts.append(f"{lab}: {'match' if r[k] else 'DIFFER'}")
+        ev_html = html.escape("\n".join(ev_parts))
+
         rows += (
             f'<tr class="{row_class}">'
             f'<td>{status_icon}</td>'
@@ -3347,6 +3441,9 @@ def generate_html_report(results: list[dict], stats: dict, source: str, repro: d
             f'<td class="details">{details}</td>'
             f'<td>{suggested_str}</td>'
             f'{match_cell}</tr>\n'
+            f'<tr class="detail-row"><td colspan="11">'
+            f'<details><summary>full evidence</summary><pre>{ev_html}</pre>'
+            f'</details></td></tr>\n'
         )
 
     epmc_count = sum(1 for r in results if r.get("meta_source") == "europepmc")
@@ -3446,6 +3543,9 @@ tr.retracted{{background:#fdecea;box-shadow:inset 3px 0 0 #c0392b;}}
 tr.splice{{background:#fdecea;box-shadow:inset 3px 0 0 #c0392b;}}
 .claimed{{color:#6b6560;font-style:italic;}}
 .evidence{{font-size:.72rem;white-space:nowrap;}}
+tr.detail-row > td{{padding:0 8px;border-top:none;}}
+tr.detail-row summary{{cursor:pointer;color:#5b6470;font-size:11px;padding:2px 0;}}
+tr.detail-row pre{{margin:4px 0 8px;white-space:pre-wrap;font-size:11px;color:#444;}}
 .flag{{color:#c0392b;font-weight:700;font-size:.7rem;}}
 .ready{{border-radius:8px;padding:10px 14px;margin:10px 0;font-weight:600;}}
 .ready.ok{{background:#e8f5e9;color:#2e7d32;border:1px solid #a5d6a7;}}
@@ -3499,7 +3599,11 @@ tr.splice{{background:#fdecea;box-shadow:inset 3px 0 0 #c0392b;}}
 <script>
 function flt(c) {{
   document.querySelectorAll('tbody tr').forEach(function(tr) {{
-    tr.style.display = (c === 'all' || tr.classList.contains(c)) ? '' : 'none';
+    if (tr.classList.contains('detail-row')) return;  // detail follows its data row
+    var show = (c === 'all' || tr.classList.contains(c));
+    tr.style.display = show ? '' : 'none';
+    var d = tr.nextElementSibling;
+    if (d && d.classList.contains('detail-row')) d.style.display = show ? '' : 'none';
   }});
 }}
 </script>
@@ -4179,6 +4283,49 @@ def run_claims_template(src_path: str, out_path: str) -> int:
     return 0
 
 
+def run_doctor(net: bool) -> int:
+    """Environment self-check (v5.3.0, --doctor): one command that answers
+    "is my installation healthy?" — tool identity, Python, cache state,
+    configuration and (with --doctor --check-net) all five registries.
+    Zero writes, read-only diagnostics; exit 0 unless the network probe
+    fails (same contract as --check-net)."""
+    problems = []
+    print("pubmed-verifier doctor")
+    print(f"  tool version : {_TOOL_VERSION}")
+    print(f"  python       : {sys.version.split()[0]} ({sys.platform})")
+    if sys.version_info < (3, 9):
+        problems.append("Python < 3.9 — builtin generics need 3.9+")
+    print(f"  UA           : {_UA_TOOL}")
+    key = _OPTS.get("ncbi_key") or ""
+    mailto = _OPTS.get("mailto") or ""
+    print(f"  NCBI API key : {'set' if key else 'not set (3 req/s ceiling; 10 with a key)'}")
+    print(f"  mailto       : {mailto or 'not set (Crossref polite pool off)'}")
+    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    print(f"  proxy env    : {(proxy[:40] + '...') if proxy and len(proxy) > 40 else (proxy or 'not set')}")
+    db = _cache_path()
+    if db.exists():
+        try:
+            conn = sqlite3.connect(db)
+            n = conn.execute("SELECT COUNT(*) FROM pmid_cache").fetchone()[0]
+            conn.close()
+            print(f"  cache        : {db} ({n} entries)")
+        except Exception as e:
+            problems.append(f"cache unreadable: {db} ({type(e).__name__})")
+    else:
+        print(f"  cache        : {db} (empty — first run)")
+    if net:
+        rc = run_check_net()
+        if rc != 0:
+            problems.append("one or more data sources unreachable (see above)")
+    if problems:
+        print("doctor findings:")
+        for pr in problems:
+            print(f"  !! {pr}")
+        return 2 if net else 0   # network findings share --check-net's exit 2
+    print("doctor: all checks passed.")
+    return 0
+
+
 def run_check_net() -> int:
     """Pre-flight connectivity probe (v3.9.0, five sources since v4.1.0): 5s per data source, prints
     reachability + practical next steps. Exit 0 all reachable, 2 otherwise
@@ -4312,6 +4459,14 @@ def main():
                         help="Read a pasted reference list from stdin (same parsing as "
                              "--parse-text): `pbpaste | verify_pmids.py --stdin` / "
                              "`git show HEAD:refs.bib.txt | verify_pmids.py --stdin`")
+    parser.add_argument("--doctor", action="store_true",
+                        help="Environment self-check: tool/Python versions, cache state, "
+                             "key/mailto/proxy configuration; add --check-net to include "
+                             "the five-registry probe. Read-only, safe to share.")
+    parser.add_argument("--jsonl", metavar="PATH",
+                        help="Write results as JSON Lines (one citation per line) — "
+                             "stream-friendly for agent pipelines; pair with --output "
+                             "for the full report")
     parser.add_argument("--max-entries", type=int, default=2000, metavar="N",
                         help="Warn when the total de-duplicated input (PMIDs+DOIs+arXiv IDs+"
                              "title-search entries) exceeds N (default 2000) — large runs take "
@@ -4346,6 +4501,14 @@ def main():
                              "missing titles, unknown columns, duplicate keys — no network")
     parser.add_argument("--version", action="version", version=f"pubmed-verifier {_TOOL_VERSION}")
     args = parser.parse_args()
+    # v5.3.0 audit P1-1: these must be set BEFORE the --doctor dispatch,
+    # or doctor always reports key/mailto as unset
+    _OPTS["ncbi_key"] = args.ncbi_api_key or os.environ.get("NCBI_API_KEY", "")
+    _OPTS["mailto"] = args.mailto or os.environ.get("PUBMED_VERIFIER_MAILTO", "")
+    _OPTS["meta_source"] = args.meta_source
+    _OPTS["timeout"] = args.timeout
+    if args.doctor:
+        sys.exit(run_doctor(net=args.check_net))
     if args.check_net:
         sys.exit(run_check_net())
     if args.lint_claims:
@@ -4356,11 +4519,6 @@ def main():
             print("--claims-template needs SRC,OUT (comma-separated)", file=sys.stderr)
             sys.exit(1)
         sys.exit(run_claims_template(parts[0].strip(), parts[1].strip()))
-
-    _OPTS["ncbi_key"] = args.ncbi_api_key or os.environ.get("NCBI_API_KEY", "")
-    _OPTS["mailto"] = args.mailto or os.environ.get("PUBMED_VERIFIER_MAILTO", "")
-    _OPTS["meta_source"] = args.meta_source
-    _OPTS["timeout"] = args.timeout
 
     # Collect PMIDs with optional claimed metadata
     pmid_entries = []  # list of (pmid, source_file, context, claimed_dict)
@@ -4700,6 +4858,8 @@ def main():
                             entry["retraction_type"] = doi_meta.get("retraction_type", "retraction")
                             entry["retraction_date"] = doi_meta.get("retraction_date", "")
                             entry["retraction_source"] = "crossref updated-by"
+                            if doi_meta.get("retraction_notice_doi"):
+                                entry["retraction_notice_doi"] = doi_meta["retraction_notice_doi"]
                     else:
                         entry["doi_verified"] = False
                         entry["doi_note"] = "crossref unreachable (network) — not a verdict"
@@ -4723,6 +4883,25 @@ def main():
                     entry["retraction_note"] = info.get("retraction_note", "")
                     entry["retraction_type"] = info.get("retraction_type", "retraction")
                     entry["retraction_source"] = "registry pubtype"
+
+                # v5.3.0: retraction reason — resolved AFTER all retraction
+                # sources attached (Crossref updated-by or registry pubtype),
+                # so BOTH paths get it. Notice DOI preference: the dedicated
+                # notice DOI when Crossref named one, else the entry DOI.
+                # One extra Crossref call per RETRACTED entry — retractions
+                # are rare and the circuit breaker caps abuse; a failed
+                # lookup leaves the reason empty (honest).
+                if (entry.get("retracted") and not entry.get("retraction_reason")
+                        and (entry.get("doi") or entry.get("retraction_notice_doi"))):
+                    notice_doi = (entry.get("retraction_notice_doi")
+                                  or entry.get("doi", ""))
+                    nmeta = fetch_doi_metadata(notice_doi)
+                    reason, notice_title = _retraction_reason_from_notice(nmeta)
+                    if reason:
+                        entry["retraction_reason"] = reason
+                    if notice_title:
+                        entry["retraction_notice_title"] = notice_title[:200]
+                    entry["retraction_reason_doi"] = notice_doi
 
                 # v4.7.0: a live PMID with no usable claimed metadata
                 # (title/authors) is an EXISTENCE check — registry record
@@ -4912,6 +5091,9 @@ def main():
                         "type": entry.get("retraction_type", ""),
                         "note": entry.get("retraction_note", ""),
                         "date": entry.get("retraction_date", ""),
+                        "reason": entry.get("retraction_reason", ""),
+                        "notice_title": entry.get("retraction_notice_title", ""),
+                        "notice_doi": entry.get("retraction_reason_doi", ""),
                         "source": entry.get("retraction_source",
                                             "crossref updated-by" if entry.get("retracted") else "")},
                     "verdict": {"final": entry["verdict"], "details": entry["details"],
@@ -5172,6 +5354,16 @@ def main():
             sys.exit(1)
         Path(args.output).write_text(output_text, encoding="utf-8")
         print(f"Report written to {args.output}")
+
+    if args.jsonl:
+        # v5.3.0: one citation per line — stream-friendly for agent
+        # pipelines (jq, log shippers, incremental consumers). The stats
+        # block goes out as the final {"_stats": ...} line so a stream
+        # never needs buffering to know the totals.
+        lines = [json.dumps(r, ensure_ascii=False) for r in results]
+        lines.append(json.dumps({"_stats": stats}, ensure_ascii=False))
+        Path(args.jsonl).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"JSONL written to {args.jsonl} ({len(results)} results + 1 stats line)")
 
     if args.export_audit:
         Path(args.export_audit).write_text(

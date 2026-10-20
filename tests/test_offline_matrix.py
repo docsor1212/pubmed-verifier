@@ -3379,5 +3379,49 @@ class TestV5200(_Reset):
         self.assertEqual(doc["results"][0]["cited_by_count"], 42)
 
 
+class TestV5300(_Reset):
+    """v5.3.0: retraction reason distillation + --doctor + --jsonl +
+    HTML inline evidence details."""
+
+    def test_reason_prefers_abstract(self):
+        r, title = vp._retraction_reason_from_notice({
+            "title": "Retraction Note: Some Paper",
+            "abstract": "The editors have retracted this article because "
+                        "figure duplication was identified during review."})
+        self.assertIn("figure duplication", r)
+        self.assertEqual(title, "Retraction Note: Some Paper")
+
+    def test_reason_takes_semantic_title_verbatim(self):
+        r, _ = vp._retraction_reason_from_notice({
+            "title": "RETRACTED ARTICLE: study on X was found to involve "
+                     "data fabrication",
+            "abstract": ""})
+        self.assertIn("fabrication", r)
+
+    def test_reason_never_masquerades_original_title(self):
+        r, title = vp._retraction_reason_from_notice({
+            "title": "Retraction Note: Stimulus-triggered fate conversion",
+            "abstract": ""})
+        self.assertEqual(r, "Retraction Note: Stimulus-triggered fate conversion")
+        self.assertEqual(title, r)
+
+    def test_reason_empty_for_unrelated_notice_title(self):
+        r, title = vp._retraction_reason_from_notice({
+            "title": "Editorial", "abstract": ""})
+        self.assertEqual(r, "")
+        self.assertEqual(title, "Editorial")
+
+    def test_doctor_runs_and_reports(self):
+        import io, contextlib
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = vp.run_doctor(net=False)
+        text = out.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("pubmed-verifier doctor", text)
+        self.assertIn(vp._TOOL_VERSION, text)
+        self.assertIn("cache", text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

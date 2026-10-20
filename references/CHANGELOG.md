@@ -350,6 +350,29 @@ three judgment-ladder defects; all three are fixed and locked:
   the pre-flight output is paste-safe.
 - Docs: "Trigger words" and "Use from Python" sections moved up front.
 
+## v5.3.0 — retraction reasons, doctor, JSONL, expandable HTML
+
+- **Retraction reasons**: a retracted citation now distills WHY from the
+  retraction notice record — the notice abstract when Crossref carries
+  one, else the notice title only when it names the offence; the bare
+  original title inside "Retraction Note: <original title>" never
+  masquerades as a reason. Fields: `retraction_reason`,
+  `retraction_notice_title`, `retraction_reason_doi` — in JSON, the
+  audit chain, the HTML detail rows and the markdown report. Wired on
+  both the PMID `--verify-doi` path and the DOI-native path
+  (`--dois`, bibliography routing).
+- **`--doctor`**: environment self-check — tool/Python versions, cache
+  path and entry count (a stale-table cache reports as a finding),
+  NCBI key / mailto / proxy configuration; `--doctor --check-net`
+  includes the five-registry probe. Read-only, paste-safe.
+- **`--jsonl PATH`**: one citation per line + a final `{"_stats": ...}`
+  line — stream-friendly output for agent pipelines.
+- **HTML inline evidence**: every table row gains a native
+  `<details>` expansion with the full evidence trail (claimed vs
+  registered, match booleans, answered-by registry, route, citation
+  count, retraction reason) — zero JavaScript, and the verdict filter
+  keeps the detail rows in sync.
+
 ## v5.2.0 — quantified input guard & citation counts
 
 - **`--max-entries` guard**: the vague "large scans take hours" became a
