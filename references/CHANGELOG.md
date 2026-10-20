@@ -350,6 +350,22 @@ three judgment-ladder defects; all three are fixed and locked:
   the pre-flight output is paste-safe.
 - Docs: "Trigger words" and "Use from Python" sections moved up front.
 
+## v5.4.0 — grouped flags, cheat sheet, citation sort
+
+- **`--help` is grouped by task domain** (inputs / verification depth /
+  output & exports / network & performance / institutional & diagnostics)
+  — 38 flags in one flat list was the top usability complaint; the same
+  grouping now scans top-to-bottom. Zero behavior change: only where each
+  flag appears in `--help`.
+- **`references/flags.md`** — the scenario→command cheat sheet: the 90%
+  scenarios are each ONE command with ZERO extra flags, then the full
+  flag map in the same grouping as `--help`. Routed from INDEX and both
+  documentation maps.
+- **`--sort cited`** — report rows ordered by citation count descending
+  (Europe PMC/OpenAlex counts; entries without a count keep their
+  severity position at the back). Affects the terminal/JSON/JSONL/
+  markdown reports; the HTML report always keeps its severity layout.
+
 ## v5.3.0 — retraction reasons, doctor, JSONL, expandable HTML
 
 - **Retraction reasons**: a retracted citation now distills WHY from the

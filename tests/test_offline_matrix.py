@@ -3423,5 +3423,53 @@ class TestV5300(_Reset):
         self.assertIn("cache", text)
 
 
+class TestV5400(_Reset):
+    """v5.4.0: grouped argparse (zero behavior change) + --sort cited +
+    the flags.md cheat sheet routing."""
+
+    def test_help_prints_all_five_groups(self):
+        import subprocess
+        r = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve().parent.parent
+                                 / "scripts" / "verify_pmids.py"), "--help"],
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0)
+        for g in ("inputs — what to verify", "verification depth",
+                  "output & exports", "network & performance",
+                  "institutional & diagnostics"):
+            self.assertIn(g, r.stdout)
+
+    def test_grouping_is_pure_presentation(self):
+        # every flag still parses from its group — spot-check one per group
+        import subprocess
+        r = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve().parent.parent
+                                 / "scripts" / "verify_pmids.py"),
+             "--pmids", "xyz", "--sort", "cited", "--doctor"],
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("pubmed-verifier doctor", r.stdout)  # grouped flags still parse
+
+    def test_sort_cited_orders_rows_descending(self):
+        # locks the ACTUAL product key (_cited_sort_key), not a copy
+        rows = [{"pmid": "1", "cited_by_count": 3},
+                {"pmid": "2", "cited_by_count": 300},
+                {"pmid": "3"},
+                {"pmid": "4", "cited_by_count": 50},
+                {"pmid": "5", "cited_by_count": 0}]
+        rows.sort(key=vp._cited_sort_key, reverse=True)
+        self.assertEqual([r["pmid"] for r in rows], ["2", "4", "1", "5", "3"])
+
+    def test_flags_cheat_sheet_exists_and_routed(self):
+        f = Path(__file__).resolve().parent.parent / "references" / "flags.md"
+        self.assertTrue(f.exists())
+        text = f.read_text(encoding="utf-8")
+        self.assertIn("The 90% scenarios", text)
+        self.assertIn("--quick", text)
+        idx = (Path(__file__).resolve().parent.parent / "references"
+               / "INDEX.md").read_text(encoding="utf-8")
+        self.assertIn("flags.md", idx)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v5.3.0
+PMID Citation Verifier -- PubMed E-utilities API v5.4.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -86,8 +86,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "5.3.0"
-_UA_TOOL = "pubmed-verifier/5.3 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "5.4.0"
+_UA_TOOL = "pubmed-verifier/5.4 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -1934,6 +1934,13 @@ def _retraction_reason_from_notice(nmeta: dict) -> tuple:
             return stripped[:300], notice_title
         return notice_title[:300], notice_title
     return "", notice_title
+
+
+def _cited_sort_key(r: dict) -> tuple:
+    """v5.4.0 --sort cited: entries with a count first (descending);
+    count-less entries keep their severity-relative order at the back."""
+    return (r.get("cited_by_count") is not None,
+            r.get("cited_by_count") or 0)
 
 
 def _input_guard_note(total: int, limit: int) -> None:
@@ -4405,98 +4412,112 @@ def run_claims_lint(path: str) -> int:
 def main():
     parser = argparse.ArgumentParser(
         description=f"PMID Citation Verifier v{_TOOL_VERSION} -- Five-state verification of PMIDs, DOIs and arXiv IDs with retraction detection for every citation, DOI-native verification, delta audits against a baseline, audit/BibTeX/CSV export, plain-text reference list parsing, formatted reference list export (GB/T 7714 / Vancouver / APA / AMA), and dual-source network hardening")
-    parser.add_argument("--source", help="File or directory to scan for PMIDs")
-    parser.add_argument("--pmids", help="Comma-separated PMIDs to verify directly")
-    parser.add_argument("--claims", help="JSON string with claimed metadata: [{pmid,title,authors,journal,year},...]")
-    parser.add_argument("--claims-file", help="JSON or CSV file with claimed metadata")
-    parser.add_argument("--verify-doi", action="store_true",
+
+    # v5.4.0: 38 flags read badly as one flat list — grouped by
+    # task domain so --help scans top-to-bottom instead of alphabetically
+    g_inputs = parser.add_argument_group('inputs — what to verify', '--source/--pmids/--dois/--arxivs scan or verify directly; --claims/--claims-file add expected metadata; --bibliography audits .bib/.ris; --parse-text/--stdin take a pasted reference list')
+    g_verify = parser.add_argument_group('verification depth', '--quick bundles the pre-submission pass; --verify-doi cross-checks Crossref; --suggest proposes correct PMIDs; cache flags control freshness')
+    g_output = parser.add_argument_group('output & exports', 'reports, streaming lines, the submission evidence pack, formatted reference lists and offline claims tooling')
+    g_net = parser.add_argument_group('network & performance', 'registry selection, timeouts, concurrency and the large-input guard')
+    g_inst = parser.add_argument_group('institutional & diagnostics', 'polite-pool identity, rate-limit key and the environment self-check')
+
+    g_inputs.add_argument("--source", help="File or directory to scan for PMIDs")
+    g_inputs.add_argument("--pmids", help="Comma-separated PMIDs to verify directly")
+    g_inputs.add_argument("--claims", help="JSON string with claimed metadata: [{pmid,title,authors,journal,year},...]")
+    g_inputs.add_argument("--claims-file", help="JSON or CSV file with claimed metadata")
+    g_verify.add_argument("--verify-doi", action="store_true",
                         help="Also verify DOIs via Crossref; flags RETRACTED papers (verdict capped at partial)")
-    parser.add_argument("--match-keywords", action="store_true", 
+    g_verify.add_argument("--match-keywords", action="store_true", 
                         help="Check topic relevance via keyword matching (auxiliary, not PMID correctness)")
-    parser.add_argument("--threshold", type=float, default=0.2, help="Keyword match threshold (default: 0.2)")
-    parser.add_argument("--suggest", action="store_true", help="Auto-suggest correct PMIDs for mismatches (slower, uses extra API calls)")
-    parser.add_argument("--no-cache", action="store_true", help="Disable cache, always query API")
-    parser.add_argument("--cache-days", type=int, default=30, help="Cache validity in days (default: 30)")
-    parser.add_argument("--output", help="Output file (.json or .html)")
-    parser.add_argument("--format", choices=["json", "html", "markdown", "text"], default="text", help="Output format")
-    parser.add_argument("--ncbi-api-key", default="",
+    g_verify.add_argument("--threshold", type=float, default=0.2, help="Keyword match threshold (default: 0.2)")
+    g_verify.add_argument("--suggest", action="store_true", help="Auto-suggest correct PMIDs for mismatches (slower, uses extra API calls)")
+    g_verify.add_argument("--no-cache", action="store_true", help="Disable cache, always query API")
+    g_verify.add_argument("--cache-days", type=int, default=30, help="Cache validity in days (default: 30)")
+    g_output.add_argument("--output", help="Output file (.json or .html)")
+    g_output.add_argument("--format", choices=["json", "html", "markdown", "text"], default="text", help="Output format")
+    g_inst.add_argument("--ncbi-api-key", default="",
                         help="NCBI E-utilities API key (or env NCBI_API_KEY): rate limit 3->10 req/s, batch ~3x faster")
-    parser.add_argument("--mailto", default="",
+    g_inst.add_argument("--mailto", default="",
                         help="Contact email (or env PUBMED_VERIFIER_MAILTO): Crossref polite pool + NCBI etiquette")
-    parser.add_argument("--meta-source", choices=["auto", "ncbi", "europepmc"], default="auto",
+    g_net.add_argument("--meta-source", choices=["auto", "ncbi", "europepmc"], default="auto",
                         help="Metadata source: auto = NCBI with Europe PMC fallback (default)")
-    parser.add_argument("--timeout", type=float, default=20, help="Per-request timeout seconds (default: 20)")
-    parser.add_argument("--export-audit", metavar="PATH",
+    g_net.add_argument("--timeout", type=float, default=20, help="Per-request timeout seconds (default: 20)")
+    g_output.add_argument("--export-audit", metavar="PATH",
                         help="Write a self-contained JSON audit working-paper: tool identity, redacted invocation, per-citation evidence chain and verdict trace")
-    parser.add_argument("--export-ris", metavar="PATH",
+    g_output.add_argument("--export-ris", metavar="PATH",
                         help="Write verified bibliography as RIS (correct = TY JOUR, "
                              "partial = TY DATA with note; Zotero/EndNote/Mendeley)")
-    parser.add_argument("--export-bibtex", metavar="PATH",
+    g_output.add_argument("--export-bibtex", metavar="PATH",
                         help="Export verified references as BibTeX (correct included; partial commented; retracted/excluded counted)")
-    parser.add_argument("--export-csv", metavar="PATH",
+    g_output.add_argument("--export-csv", metavar="PATH",
                         help="Export a spreadsheet-friendly audit table (key, verdict, flags, fields, details)")
-    parser.add_argument("--workers", type=int, default=4, metavar="N",
+    g_net.add_argument("--workers", type=int, default=4, metavar="N",
                         help="Parallel Crossref resolutions for --dois batches (default 4, max 8)")
-    parser.add_argument("--dois", metavar="DOI_LIST",
+    g_inputs.add_argument("--dois", metavar="DOI_LIST",
                         help="Comma-separated DOIs to verify natively via Crossref (existence + registered metadata; 404 = fabrication signal)")
-    parser.add_argument("--arxivs", metavar="ARXIV_LIST",
+    g_inputs.add_argument("--arxivs", metavar="ARXIV_LIST",
                         help="Comma-separated arXiv IDs to verify against the official arXiv API (nonexistent = fabrication signal)")
-    parser.add_argument("--diff", metavar="BASELINE_JSON",
+    g_output.add_argument("--diff", metavar="BASELINE_JSON",
                         help="Compare this run to a previous audit working-paper: newly retracted, degraded, improved, new, dropped")
-    parser.add_argument("--bibliography", metavar="FILE",
+    g_inputs.add_argument("--bibliography", metavar="FILE",
                         help="Verify a bibliography file (.bib BibTeX / .ris RIS): entries "
                              "route by PMID (field or note) > DOI > arXiv eprint/ID pattern")
-    parser.add_argument("--check-net", action="store_true",
-                        help="Probe the four data sources (5s each) and print "
+    g_net.add_argument("--check-net", action="store_true",
+                        help="Probe the five data sources (5s each) and print "
                              "reachability + next steps — run this when results "
                              "come back unknown on a constrained network")
-    parser.add_argument("--parse-text", metavar="FILE",
+    g_inputs.add_argument("--parse-text", metavar="FILE",
                         help="Verify a plain-text reference list copied from a paper draft "
                              "(numbered [1]/1. entries, or one per line): inline PMID/DOI/arXiv "
                              "IDs route exactly; title-only entries resolve via PubMed title "
                              "search (results marked resolved_by=title_search)")
-    parser.add_argument("--stdin", action="store_true",
+    g_inputs.add_argument("--stdin", action="store_true",
                         help="Read a pasted reference list from stdin (same parsing as "
                              "--parse-text): `pbpaste | verify_pmids.py --stdin` / "
                              "`git show HEAD:refs.bib.txt | verify_pmids.py --stdin`")
-    parser.add_argument("--doctor", action="store_true",
+    g_inst.add_argument("--doctor", action="store_true",
                         help="Environment self-check: tool/Python versions, cache state, "
                              "key/mailto/proxy configuration; add --check-net to include "
                              "the five-registry probe. Read-only, safe to share.")
-    parser.add_argument("--jsonl", metavar="PATH",
+    g_output.add_argument("--sort", choices=["severity", "cited"], default="severity",
+                          help="Report row order: severity (default — retraction/splice/"
+                               "mismatch first, the HTML layout) or cited (citation count "
+                               "descending, from the Europe PMC/OpenAlex paths; entries "
+                               "without a count keep their severity position at the back)")
+    g_output.add_argument("--jsonl", metavar="PATH",
                         help="Write results as JSON Lines (one citation per line) — "
                              "stream-friendly for agent pipelines; pair with --output "
                              "for the full report")
-    parser.add_argument("--max-entries", type=int, default=2000, metavar="N",
+    g_net.add_argument("--max-entries", type=int, default=2000, metavar="N",
                         help="Warn when the total de-duplicated input (PMIDs+DOIs+arXiv IDs+"
                              "title-search entries) exceeds N (default 2000) — large runs take "
                              "hours and lean on rate limits; 0 disables the guard")
-    parser.add_argument("--quick", action="store_true",
+    g_verify.add_argument("--quick", action="store_true",
                         help="Pre-submission final pass in one flag: --no-cache + "
                              "--verify-doi + --suggest combined (fresh registries, "
                              "DOI cross-check, correct-PMID suggestions)")
-    parser.add_argument("--format-references", metavar="PATH",
+    g_output.add_argument("--format-references", metavar="PATH",
                         help="Write verified entries as a formatted reference list — "
                              "GB/T 7714-2015 / Vancouver / APA 7 / AMA 11 via --citation-style; "
                              "correct = numbered list, partial = review section, "
                              "retracted = excluded with a warning")
-    parser.add_argument("--claims-template", metavar="SRC,OUT",
+    g_output.add_argument("--claims-template", metavar="SRC,OUT",
                         help="Reverse-generate a claims CSV skeleton from a "
                              "plain-text reference list, .bib or .ris: every "
                              "routable field the parsers can see is filled, you "
                              "fill the gaps, then run --claims-file for exact "
                              "five-state verification (format: SRC,OUT)")
-    parser.add_argument("--report-bundle", metavar="DIR",
+    g_output.add_argument("--report-bundle", metavar="DIR",
                         help="Write the complete submission evidence pack into DIR: "
                              "audit.json + report.html + verified-refs.bib/.ris + "
                              "audit-table.csv + references-gbt.txt + manifest.txt — "
                              "one command, everything a reviewer may ask for")
-    parser.add_argument("--citation-style",
+    g_output.add_argument("--citation-style",
                         choices=["gbt", "gbty", "vancouver", "apa", "ama"],
                         default="gbt",
                         help="Style for --format-references (default: gbt = GB/T 7714-2015 "
                              "numeric; gbty = GB/T author-date, unnumbered, sorted by first author)")
-    parser.add_argument("--lint-claims", metavar="FILE",
+    g_output.add_argument("--lint-claims", metavar="FILE",
                         help="Offline lint of a claims file (JSON/CSV/BibTeX/RIS): ID shapes, "
                              "missing titles, unknown columns, duplicate keys — no network")
     parser.add_argument("--version", action="version", version=f"pubmed-verifier {_TOOL_VERSION}")
@@ -5295,6 +5316,14 @@ def main():
     # entries get same-topic live candidates, honestly labeled
     if args.suggest:
         suggest_retraction_replacements(results)
+
+    # v5.4.0: --sort cited — a researcher's "which of these carries weight"
+    # ordering. Applied AFTER stats are counted (pure presentation) and
+    # affects the terminal/JSON/JSONL/markdown reports; the HTML report
+    # ALWAYS keeps its own severity layout (the detail-row design assumes
+    # retraction/splice rows first).
+    if getattr(args, "sort", "severity") == "cited":
+        results.sort(key=_cited_sort_key, reverse=True)
 
     # Delta audit against a previous working-paper (v2.8.0)
     deltas = None
