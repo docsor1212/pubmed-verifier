@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v5.4.0
+PMID Citation Verifier -- PubMed E-utilities API v5.5.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -86,8 +86,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "5.4.0"
-_UA_TOOL = "pubmed-verifier/5.4 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "5.5.0"
+_UA_TOOL = "pubmed-verifier/5.5 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -1949,7 +1949,7 @@ def _input_guard_note(total: int, limit: int) -> None:
     to stderr. limit<=0 silences the guard entirely."""
     if not limit or total <= limit:
         return
-    print(f"NOTE: {total} de-duplicated entries exceed "
+    print(f"[NOTE] {total} de-duplicated entries exceed "
           f"--max-entries {limit}. Expect a long run: PMID batches go "
           f"50/call, arXiv is throttled to 1 call/3 s by the API. "
           f"Consider splitting the input, or raise --max-entries / use "
@@ -2516,7 +2516,7 @@ def _load_csv_claims(filepath: str) -> dict:
                     "claimed_arxiv": str(row.get("arxiv_id", "") or row.get("arxiv", "") or "").strip(),
                 }
     except Exception as e:
-        print(f"Error reading CSV claims file: {e}", file=sys.stderr)
+        print(f"[ERROR] reading CSV claims file: {e}", file=sys.stderr)
     _load_csv_claims.arxiv_rows = getattr(_load_csv_claims, "arxiv_rows", {})
     return claims
 
@@ -4580,7 +4580,7 @@ def main():
                         if cd:
                             explicit_doi[cd] = _doi_claim_from_item(item)
             except (json.JSONDecodeError, ValueError, OSError) as e:
-                print(f"Error reading claims file: {e}", file=sys.stderr)
+                print(f"[ERROR] reading claims file: {e}", file=sys.stderr)
                 sys.exit(1)
     elif args.claims:
         try:
@@ -4603,7 +4603,7 @@ def main():
                     if cd:
                         explicit_doi[cd] = _doi_claim_from_item(item)
         except (json.JSONDecodeError, ValueError) as e:
-            print(f"Error parsing --claims JSON: {e}", file=sys.stderr)
+            print(f"[ERROR] parsing --claims JSON: {e}", file=sys.stderr)
             sys.exit(1)
 
     # Collect PMIDs from sources
@@ -4620,12 +4620,12 @@ def main():
     # "stdin" instead of a random temp name.
     if getattr(args, "stdin", False):
         if args.parse_text:
-            print("Error: --stdin and --parse-text are mutually exclusive",
+            print("[ERROR] --stdin and --parse-text are mutually exclusive",
                   file=sys.stderr)
             sys.exit(1)
         pasted = sys.stdin.read()
         if not pasted.strip():
-            print("Error: --stdin received no input (nothing on stdin)",
+            print("[ERROR] --stdin received no input (nothing on stdin)",
                   file=sys.stderr)
             sys.exit(1)
         _tmp = tempfile.NamedTemporaryFile(
@@ -4644,7 +4644,7 @@ def main():
             if cd:
                 doi_inputs.append((cd, "cli", explicit_doi.get(cd)))
     if args.pmids and args.source:
-        print("WARN: both --pmids and --source given; --source is ignored "
+        print("[WARN] both --pmids and --source given; --source is ignored "
               "entirely (its PMIDs and DOIs are NOT scanned).", file=sys.stderr)
     # Standalone arXiv inputs (v3.0.0) + claims keyed by arxiv_id (v3.1.0)
     arxiv_inputs = []   # (arxiv_id, source_label, claimed_dict|None)
@@ -4755,7 +4755,7 @@ def main():
                             arxiv_inputs.append((aid, os.path.join(root, fname),
                                                  explicit_arxiv.get(aid.lower())))
         else:
-            print(f"Error: {source} not found", file=sys.stderr)
+            print(f"[ERROR] {source} not found", file=sys.stderr)
             sys.exit(1)
     elif explicit_claims or explicit_arxiv or explicit_doi:
         # Only --claims provided, no --source or --pmids

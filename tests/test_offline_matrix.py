@@ -3259,6 +3259,7 @@ class TestV500(_Reset):
     def test_stdin_empty_input_fails_honestly(self):
         r = self._run(["--stdin"], stdin_text="")
         self.assertEqual(r.returncode, 1)
+        self.assertIn("[ERROR]", r.stderr)
         self.assertIn("no input", r.stderr)
 
     def test_stdin_and_parse_text_are_exclusive(self):
@@ -3329,7 +3330,7 @@ class TestV5100(_Reset):
         self.assertEqual(r.returncode, 0)
         # v2.8.0's existing precedence warning (kept by the v5.1.0 audit:
         # its wording is the more specific of the two duplicates)
-        self.assertIn("WARN: both --pmids and --source", r.stderr)
+        self.assertIn("[WARN] both --pmids and --source", r.stderr)
         self.assertIn("NOT scanned", r.stderr)
 
 
@@ -3351,7 +3352,7 @@ class TestV5200(_Reset):
         with contextlib.redirect_stderr(err):
             vp._input_guard_note(2001, 2000)
         msg = err.getvalue()
-        self.assertIn("NOTE: 2001 de-duplicated entries", msg)
+        self.assertIn("[NOTE] 2001 de-duplicated entries", msg)
         self.assertIn("--max-entries 2000", msg)
         self.assertIn("1 call/3 s", msg)
 
@@ -3469,6 +3470,41 @@ class TestV5400(_Reset):
         idx = (Path(__file__).resolve().parent.parent / "references"
                / "INDEX.md").read_text(encoding="utf-8")
         self.assertIn("flags.md", idx)
+
+
+class TestV5500(_Reset):
+    """v5.5.0: operations playbook + the written error contract
+    (normalized stderr markers)."""
+
+    def test_operations_playbook_exists_and_routed(self):
+        f = Path(__file__).resolve().parent.parent / "references" / "operations.md"
+        self.assertTrue(f.exists())
+        text = f.read_text(encoding="utf-8")
+        for section in ("batching math", "Proxy configuration",
+                        "error contract", "CI integration"):
+            self.assertIn(section, text)
+        idx = (Path(__file__).resolve().parent.parent / "references"
+               / "INDEX.md").read_text(encoding="utf-8")
+        self.assertIn("operations.md", idx)
+
+    def test_error_contract_table_matches_real_markers(self):
+        # the documented marker vocabulary and the tool's own output must
+        # not drift — every [MARKER] in the doc exists in the script
+        doc = (Path(__file__).resolve().parent.parent / "references"
+               / "operations.md").read_text(encoding="utf-8")
+        src = (Path(__file__).resolve().parent.parent / "scripts"
+               / "verify_pmids.py").read_text(encoding="utf-8")
+        for marker in ("[ERROR]", "[WARN]", "[NOTE]"):
+            self.assertIn(f"| `{marker}` |", doc)
+            self.assertIn(marker, src)
+
+    def test_no_legacy_unnormalized_markers(self):
+        # any stderr print with a bare legacy prefix is a contract breach —
+        # regex, not exact strings (the exact-string version missed three)
+        src = (Path(__file__).resolve().parent.parent / "scripts"
+               / "verify_pmids.py").read_text(encoding="utf-8")
+        self.assertIsNone(re.search(r'print\(f?"(Error|WARN|NOTE): ', src),
+                          "legacy unnormalized stderr marker found")
 
 
 if __name__ == "__main__":

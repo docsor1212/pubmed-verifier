@@ -4,6 +4,20 @@
 
 # pubmed-verifier — full release history
 
+**Navigate by era** (v5.x and v4.x entries are self-contained; each
+section reads standalone):
+
+- **v5.x — capability era**: v5.4 grouped flags & cheat sheet · v5.3
+  retraction reasons / doctor / JSONL / expandable HTML · v5.2 input
+  guard & citation counts · v5.1 retraction detail & explicit precedence · v4.9 PowerPoint & ladder monotonicity ·
+  v5.0 paste-and-verify & --quick
+- **v4.x — document-reality era**: v4.8 Word/HTML input & second opinion · v3.8 verdict-ladder corrections ·
+  v4.7 medical-document fixes · v4.6 finding ledger · v4.4 evidence
+  pack · v4.3 GB/T author-date · v4.1 OpenAlex & CJK · v4.0 plain-text
+  parsing & formatted lists
+- **v2.x–v3.x — hardening era**: network hardening, retraction
+  detection, DOI-native, arXiv, BibTeX/RIS, audit working-paper
+
 Complete version history. The SKILL.md "Recent releases" section keeps the
 last three; everything older lives here verbatim.
 
@@ -349,6 +363,25 @@ three judgment-ladder defects; all three are fixed and locked:
 - `--check-net` masks proxy credentials (`http://user:****@host:port`) so
   the pre-flight output is paste-safe.
 - Docs: "Trigger words" and "Use from Python" sections moved up front.
+
+## v5.5.0 — the operations playbook & a written error contract
+
+Shaped by the v5.4.0 audit follow-ups (the same gap named from three angles (FAQ depth,
+advanced-usage guidance, error handling): bulk batching, proxy setup and
+the failure contract lived only in scattered sections. One page now owns
+them:
+
+- **`references/operations.md`** — the batching math (per-path API cost
+  table + a worked 3,000-citation example), the three real proxy
+  scenarios (corporate, dead-env masquerade, CI direct) with
+  `--check-net` as the arbiter, a speed checklist in decision order, a
+  minimal CI gate, and a section map of the main script.
+- **The error contract, written down**: three exit codes and the stderr
+  marker vocabulary (`[ERROR]` the run cannot proceed / `[WARN]`
+  ambiguous invocation proceeding with stated precedence / `[NOTE]`
+  informational guard) — markers normalized in the tool's own output to
+  match.
+- Routed from INDEX and both documentation maps.
 
 ## v5.4.0 — grouped flags, cheat sheet, citation sort
 

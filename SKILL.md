@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 5.4.0
+version: 5.5.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v5.4.0
+# PubMed Citation Verifier v5.5.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -134,6 +134,7 @@ Everything else below expands on these.
 | The full version history | `references/CHANGELOG.md` (main doc keeps the recent highlights) |
 | Every FAQ, scenario walkthrough and tuning knob | `references/usage_guide.md` |
 | A scenario→command cheat sheet for all 38 flags | `references/flags.md` |
+| Bulk batching, proxies, speed, CI gating and the stderr marker contract | `references/operations.md` |
 | The Python API reference / runnable examples | `references/python_api.md` / `references/api_examples.md` |
 | Which file to open for which task | `references/INDEX.md` |
 
@@ -393,6 +394,10 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v5.5.0** — `references/operations.md` (batching math, proxy
+  scenarios, speed checklist, CI gate, script section map) + the error
+  contract written down (exit codes + `[ERROR]/[WARN]/[NOTE]` stderr
+  vocabulary, normalized in the tool's output).
 - **v5.4.0** — `--help` grouped by task domain (38 flags, five groups);
   `references/flags.md` scenario→command cheat sheet; `--sort cited`
   report ordering.
@@ -523,10 +528,11 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v5.4.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v5.5.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
 | `references/flags.md` | Flag cheat sheet — scenario → one command, all 38 flags grouped |
+| `references/operations.md` | Operations playbook — batching math, proxy scenarios, speed checklist, error contract, CI gate |
 | `references/INDEX.md` | 任务→文档 30 秒路由表 |
 | `references/python_api.md` | Calling the verifier from Python (stable surfaces + examples) |
 | `examples/claims.sample.csv` | Reference format for `--claims-file` (incl. a DOI-only row) |
