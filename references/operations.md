@@ -43,7 +43,11 @@ are never cached — a cached "unknown" is impossible by construction.
 | Dead proxy env left behind | The registries look unreachable even though the network is fine — a stale env var **masquerades as an outage** | `env \| grep -i proxy`; unset and re-run `--check-net` |
 | Automation / CI direct connection | `unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy` in the job before invoking | A proxy that only handles some hosts gives partial reachability — judge by `--check-net`, not by one source |
 
-`--check-net` is the arbiter: five registries, 5 s each, per-host verdict.
+`--check-net` is the arbiter: five registries, probed twice each (direct
+and via your `HTTPS_PROXY`, 5 s per route), one verdict line per source —
+a source blocked on the direct route but reachable through the configured
+proxy reports as usable, and every line names the verification paths that
+source serves plus the in-tool fallback.
 NCBI blocked but Europe PMC reachable → `--meta-source europepmc` runs the
 whole verification off EPMC (no key needed). Registry retraction/abstract
 extras degrade honestly (they are Crossref-side).

@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 5.5.0
+version: 5.6.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v5.5.0
+# PubMed Citation Verifier v5.6.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -84,6 +84,7 @@ word needed**); "这篇撤稿了该引什么" → `--suggest` on a retracted ent
 | Paste-and-verify from clipboard | `pbpaste \| ... --stdin --suggest` |
 | Knowledge-base audit + evidence pack | `--source KB --report-bundle DIR` |
 | Bibliography round-trip | `--bibliography refs.bib --export-bibtex out.bib` |
+| Bibliography into Zotero | `--source KB --export-csl library.json` (Zotero: File > Import) |
 | Delta audit vs last month | `--source KB --diff old-audit.json` |
 | CJK-only reference list | `--parse-text refs-cn.txt` (OpenAlex CJK leg) |
 
@@ -116,7 +117,7 @@ print(cross["verdict"], round(cross["confidence"], 2))
 
 ## Know before you run
 
-Four limits cover 95% of surprises — each has a one-flag workaround:
+Six limits cover 95% of surprises — each has a one-flag workaround:
 
 | Limit | Workaround |
 |---|---|
@@ -124,6 +125,8 @@ Four limits cover 95% of surprises — each has a one-flag workaround:
 | Chinese references without a PMID/DOI marker parse weakly | `--parse-text` (OpenAlex CJK leg) or supply an ID |
 | Network failures stay `unknown` — never silently "not found" | `--check-net` first, retry when reachable |
 | Retraction/DOI status is as of cache time (30 days) | `--no-cache` for the final pre-submission pass |
+| Office/HTML input extracts text only — scanned PDFs and images carry no extractable text | Export to text/HTML first, or feed IDs via `--claims-file` |
+| Very large batches take time and may hit rate limits | See the batching math in `references/operations.md`; verify in slices |
 
 Everything else below expands on these.
 
@@ -133,7 +136,7 @@ Everything else below expands on these.
 |---|---|
 | The full version history | `references/CHANGELOG.md` (main doc keeps the recent highlights) |
 | Every FAQ, scenario walkthrough and tuning knob | `references/usage_guide.md` |
-| A scenario→command cheat sheet for all 38 flags | `references/flags.md` |
+| A scenario→command cheat sheet for all 39 flags | `references/flags.md` |
 | Bulk batching, proxies, speed, CI gating and the stderr marker contract | `references/operations.md` |
 | The Python API reference / runnable examples | `references/python_api.md` / `references/api_examples.md` |
 | Which file to open for which task | `references/INDEX.md` |
@@ -164,6 +167,13 @@ python3 scripts/verify_pmids.py --source /path/to/draft --quick --output report.
 # Environment self-check (v5.3.0): versions, cache state, key/proxy
 # config — add --check-net to include the five-registry probe
 python3 scripts/verify_pmids.py --doctor
+
+# Behind a national firewall: --check-net (v5.6.0) probes every source
+# both direct AND through your HTTPS_PROXY, so a source blocked on the
+# direct route but fine via the proxy shows as usable; rerun with
+# --meta-source europepmc if NCBI stays blocked (full playbook:
+# references/operations.md)
+python3 scripts/verify_pmids.py --check-net
 
 # Paste-and-verify (v5.0.0): a copied reference list straight from the
 # clipboard or another command — no temp file needed
@@ -209,6 +219,10 @@ python3 scripts/verify_pmids.py --check-net
 python3 scripts/verify_pmids.py --bibliography refs.bib --no-cache
 python3 scripts/verify_pmids.py --bibliography refs.ris --no-cache --export-ris verified.ris
 
+# Export the verified bibliography as CSL JSON (v5.6.0) — Zotero ingests it
+# via File > Import; Mendeley and Pandoc read the same file
+python3 scripts/verify_pmids.py --bibliography refs.bib --no-cache --export-csl library.json
+
 # Verify a reference list copied from a paper draft (inline IDs route
 # exactly; title-only entries resolve via PubMed title search)
 python3 scripts/verify_pmids.py --parse-text references.txt --no-cache
@@ -221,7 +235,7 @@ python3 scripts/verify_pmids.py --parse-text references.txt --format-references 
 python3 scripts/verify_pmids.py --parse-text refs.txt --jsonl results.jsonl
 
 # Submission evidence pack: one command, every artifact (audit + HTML +
-# BibTeX/RIS + CSV + GB/T list + manifest)
+# BibTeX/RIS/CSL + CSV + GB/T list + manifest)
 python3 scripts/verify_pmids.py --parse-text references.txt --report-bundle evidence_pack
 
 # Turn a copied reference list into a claims CSV skeleton (fill the gaps,
@@ -382,7 +396,11 @@ only the lint runs.
 
 Everything network-related in one place (each item also lives where it is used):
 
-- **Pre-flight**: `--check-net` probes all four registries + arXiv (5 s each) and prints per-host reachability with next steps.
+- **Pre-flight**: `--check-net` probes all four registries + arXiv **twice
+  each — direct and via your `HTTPS_PROXY`** (5 s per route) — and prints
+  per-source reachability, which verification paths it serves, and the
+  in-tool fallback; a source blocked on the direct route but fine through
+  the proxy reports as usable.
 - **Registry choice**: default `--meta-source auto` already retries a failed NCBI batch against Europe PMC (no key, generally reachable); `--meta-source europepmc` forces it.
 - **Proxy**: standard `HTTPS_PROXY`/`HTTP_PROXY` env vars are honored on every request; direct-mode automation should `unset` them (a dead proxy env otherwise masks as unreachable registries).
 - **Package mirror**: ModelScope carries the skill package (`modelscope.cn/skills/Docsor/pubmed-verifier`) — but verification itself still calls the academic registries at runtime; the mirror only removes the install friction.
@@ -394,6 +412,11 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v5.6.0** — `--export-csl` writes the verified bibliography as CSL
+  JSON (imports straight into Zotero via File > Import; Mendeley
+  Mendeley and Pandoc read the same file); `--check-net` now probes
+  each source twice (direct + via `HTTPS_PROXY`) and every line names
+  the verification paths it serves and the fallback source.
 - **v5.5.0** — `references/operations.md` (batching math, proxy
   scenarios, speed checklist, CI gate, script section map) + the error
   contract written down (exit codes + `[ERROR]/[WARN]/[NOTE]` stderr
@@ -528,10 +551,10 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v5.5.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v5.6.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
-| `references/flags.md` | Flag cheat sheet — scenario → one command, all 38 flags grouped |
+| `references/flags.md` | Flag cheat sheet — scenario → one command, all 39 flags grouped |
 | `references/operations.md` | Operations playbook — batching math, proxy scenarios, speed checklist, error contract, CI gate |
 | `references/INDEX.md` | 任务→文档 30 秒路由表 |
 | `references/python_api.md` | Calling the verifier from Python (stable surfaces + examples) |

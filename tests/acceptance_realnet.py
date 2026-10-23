@@ -474,8 +474,8 @@ bundle_dir = tempfile.mkdtemp(prefix="pv_bundle_t28_")
 rc, so, data = run_cli(["--pmids", GOOD_PMIDS[0], "--no-cache",
                         "--report-bundle", bundle_dir])
 expected = sorted(["audit.json", "report.html", "verified-refs.bib",
-                   "verified-refs.ris", "audit-table.csv",
-                   "references-gbt.txt", "manifest.txt"])
+                   "verified-refs.ris", "verified-refs.csl",
+                   "audit-table.csv", "references-gbt.txt", "manifest.txt"])
 actual = sorted(os.listdir(bundle_dir)) if os.path.isdir(bundle_dir) else []
 man = ""
 mpath = os.path.join(bundle_dir, "manifest.txt")
@@ -487,10 +487,40 @@ if os.path.exists(mpath):
 res_all = (data or {}).get("results", [])
 exp_correct = sum(1 for r in res_all if r.get("verdict") == "correct")
 verdicts_line = next((l for l in man.splitlines() if l.startswith("verdicts:")), "")
-record("T28 report bundle e2e (7 files + manifest)",
+record("T28 report bundle e2e (8 files + manifest)",
        actual == expected and "submission evidence pack" in man
        and f"{exp_correct} correct" in verdicts_line,
        f"files={len(actual)} verdicts_line={verdicts_line[:60]}")
+
+# ── T34: CSL JSON export e2e (v5.6.0): real record → importable CSL item ──
+csl_path = tempfile.mktemp(prefix="pv_csl_t34_", suffix=".json")
+rc, so, data = run_cli(["--pmids", GOOD_PMIDS[0], "--no-cache",
+                        "--export-csl", csl_path])
+res0 = next((r for r in (data or {}).get("results", [])
+             if r.get("verdict") == "correct"), None)
+csl_ok = False
+csl_note = ""
+try:
+    items = json.load(open(csl_path, encoding="utf-8"))
+    if res0 is None:
+        # network blip → honest unknown excluded from the export; the file
+        # must still be valid JSON (possibly empty list)
+        csl_ok = isinstance(items, list)
+        csl_note = f"honest-empty ({len(items)} items)"
+    else:
+        it = items[0]
+        real_title = " ".join(str(res0.get("title", "")).split())
+        csl_ok = (it["type"] == "article-journal"
+                  and it["title"] == real_title
+                  and it.get("DOI") == res0.get("doi")
+                  and isinstance(it.get("author"), list)
+                  and all(("family" in a) or ("literal" in a) for a in it["author"])
+                  and "verified by pubmed-verifier" in it["note"])
+        csl_note = f"title={it['title'][:40]} doi={it.get('DOI')}"
+except Exception as e:
+    csl_note = f"parse error: {e}"
+record("T34 CSL JSON export e2e (registry-true fields)",
+       rc == 0 and csl_ok, csl_note)
 
 # ── 汇总 ──
 passed = sum(1 for r in RESULTS if r["ok"])

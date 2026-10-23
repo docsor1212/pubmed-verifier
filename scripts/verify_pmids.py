@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v5.5.0
+PMID Citation Verifier -- PubMed E-utilities API v5.6.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -86,8 +86,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "5.5.0"
-_UA_TOOL = "pubmed-verifier/5.5 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "5.6.0"
+_UA_TOOL = "pubmed-verifier/5.6 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -110,11 +110,11 @@ class CircuitOpenError(RuntimeError):
 CT_KEY = "claimed_title"
 CT_SEP = " "
 CT_NL = chr(10)
-_META_LINE_RE = re.compile(r"^[-\u2022*]?\s*(?:DOI|PMID|arXiv|\u5f52\u5729ID|url)\s*[:\uff1a]", re.I)
+_META_LINE_RE = re.compile(r"^[-\u2022*]?\s*(?:DOI|PMID|arXiv|[A-Za-z\u4e00-\u9fff]{1,12}ID|url)\s*[:\uff1a]", re.I)
 _TABLE_ROW_RE = re.compile(r"^(?:19|20)\d{2}\s*\|")
 _HEADING_MARK_RE = re.compile(r"^#{1,6}\s+")
 _QUOTE_MARK_RE = re.compile(r"^>\s?")
-_META_SEG_RE = re.compile(r"(?:[-\u2022*]\s*)?(?:DOI|PMID|arXiv|\u5f52\u5729ID|url)\s*[:\uff1a]\s*\S+", re.I)
+_META_SEG_RE = re.compile(r"(?:[-\u2022*]\s*)?(?:DOI|PMID|arXiv|[A-Za-z\u4e00-\u9fff]{1,12}ID|url)\s*[:\uff1a]\s*\S+", re.I)
 _TABLE_SEG_RE = re.compile(r"(?:19|20)\d{2}\s*\|[^|]*\|[^|]*(?:\||$)")
 _MD_TITLE_RE = re.compile(r"##\s+([^.]{10,240}\.)")
 
@@ -1170,7 +1170,7 @@ def verify_arxiv_entry(arxiv_id: str, src: str, claimed: dict = None,
 def _strip_metadata_lines(text: str, out_claimed: dict = None) -> str:
     """Strip bibliography-database export lines before citation
     segmentation (v4.7.0). "- DOI: 10.x/...", "PMID: ...",
-    "归墟ID: ...", "2025 | Journal | Authors" table rows are registry
+    "<Database>ID: ... (any library name, CJK included)", "2025 | Journal | Authors" table rows are registry
     metadata, not claims — the last such line before a PMID used to be
     taken as the claimed title and manufactured mass false mismatches
     on real literature exports (85% of rows in a rheumatology export
@@ -2737,6 +2737,81 @@ def generate_ris(results: list) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _csl_authors(raw_authors) -> list:
+    """Registry author string/list -> CSL JSON name objects.
+
+    NCBI shapes authors as 'Family Initials' (Smith AB, Van Dijk M): the
+    trailing short segment is taken as the given-name initials, anything that
+    doesn't match that shape falls back to a literal name rather than being
+    force-split (single-name authors, CJK strings, 'et al.' remnants)."""
+    if isinstance(raw_authors, list):   # registry lists leak in from raw paths
+        raw_authors = ", ".join(str(a) for a in raw_authors)
+    out = []
+    for a in (raw_authors or "").split(","):
+        a = a.strip()
+        if not a or a.lower() == "et al.":
+            continue
+        parts = a.rsplit(" ", 1)
+        if (len(parts) == 2 and parts[0] and parts[1]
+                and len(parts[1]) <= 4
+                and re.fullmatch(r"[A-Za-z][A-Za-z.]*", parts[1])):
+            out.append({"family": parts[0], "given": parts[1]})
+        else:
+            out.append({"literal": a})
+    return out
+
+
+def generate_csl_json(results: list) -> str:
+    """Verified-bibliography CSL JSON export (v5.6.0): correct entries as
+    article-journal items that Zotero (File > Import) and Mendeley
+    ingest directly; partial entries included with a verify-manually note;
+    everything else excluded. Counterpart of generate_bibtex/generate_ris on
+    the open citation-format standard."""
+    included = partial = excluded = 0
+    items = []
+    seen_pmids = set()
+    for r in results:
+        if r.get("pmid"):
+            if r["pmid"] in seen_pmids:
+                continue
+            seen_pmids.add(r["pmid"])
+        if r.get("retracted"):
+            excluded += 1
+            continue
+        v = r.get("verdict")
+        if v not in ("correct", "partial") or not r.get("valid"):
+            excluded += 1
+            continue
+        year_m = re.search(r"((?:19|20)\d{2})", str(r.get("pubdate", "")))
+        item = {
+            "id": (f"pmid:{r['pmid']}" if r.get("pmid")
+                   else f"doi:{r.get('doi')}" if r.get("doi") else "entry"),
+            "type": "article-journal",
+            "title": " ".join(str(r.get("title", "")).split()),
+            "author": _csl_authors(r.get("authors", "")),
+            "note": (f"verified by pubmed-verifier ({v}"
+                     + (f"; PMID {r['pmid']}" if r.get("pmid") else "") + ")"),
+        }
+        if r.get("journal"):
+            item["container-title"] = " ".join(str(r["journal"]).split())
+        if year_m:
+            item["issued"] = {"date-parts": [[int(year_m.group(1))]]}
+        if r.get("volume"):
+            item["volume"] = str(r["volume"])
+        if r.get("pages"):
+            item["page"] = str(r["pages"])
+        if r.get("doi"):
+            item["DOI"] = r["doi"]
+        if v == "partial":
+            partial += 1
+            item["note"] += ("; PARTIAL MATCH — verify manually: "
+                             + " ".join(str(r.get("details", "")).split())[:200])
+        else:
+            included += 1
+        items.append(item)
+    return json.dumps(items, ensure_ascii=False, indent=2) + "\n"
+
+
 # ── Formatted reference list export (v4.0.0) ──
 
 _CITATION_STYLES = {
@@ -3033,6 +3108,7 @@ def write_report_bundle(results: list, stats: dict, args, deltas: dict,
                                                repro, deltas))
     _write("verified-refs.bib", generate_bibtex(results))
     _write("verified-refs.ris", generate_ris(results))
+    _write("verified-refs.csl", generate_csl_json(results))
     _write("audit-table.csv", generate_csv_report(results))
     _write("references-gbt.txt", generate_reference_list(results, "gbt"))
 
@@ -3053,6 +3129,7 @@ def write_report_bundle(results: list, stats: dict, args, deltas: dict,
         "  report.html        — human-readable report (same data, filterable)",
         "  verified-refs.bib  — verified bibliography, correct entries as @article",
         "  verified-refs.ris  — verified bibliography (Zotero/EndNote/Mendeley)",
+        "  verified-refs.csl  — verified bibliography as CSL JSON (Zotero File > Import)",
         "  audit-table.csv    — spreadsheet audit table",
         "  references-gbt.txt — ready-to-paste GB/T 7714-2015 list (verified only)",
         "",
@@ -4333,21 +4410,73 @@ def run_doctor(net: bool) -> int:
     return 0
 
 
+# (name, url, what verification paths this source serves, in-tool fallback)
+_CHECK_NET_TARGETS = [
+    ("NCBI E-utilities", "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/einfo.fcgi",
+     "PMID/PMCID verification (primary path)",
+     "Europe PMC via --meta-source europepmc"),
+    ("Europe PMC", "https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=test&format=json&pageSize=1",
+     "meta fallback, citation counts, CJK title search",
+     "NCBI via --meta-source ncbi"),
+    ("Crossref", "https://api.crossref.org/works/10.1038/nature12968",
+     "DOI verification and retraction notices",
+     "OpenAlex (automatic second lookup)"),
+    ("arXiv API", "https://export.arxiv.org/api/query?id_list=1706.03762&max_results=1",
+     "arXiv preprint verification",
+     "none — arXiv-sourced citations will grade unknown"),
+    ("OpenAlex (fallback)", "https://api.openalex.org/works?search=test&per-page=1",
+     "title search, CJK verification, citation counts",
+     ""),
+]
+
+
+def _probe_url(url: str, timeout: int = 5, direct: bool = False) -> int:
+    """One probe. direct=True builds an opener with an empty ProxyHandler so
+    environment proxies are bypassed; the default opener honours HTTPS_PROXY."""
+    req = urllib.request.Request(url, headers={"User-Agent": _UA_TOOL})
+    opener = (urllib.request.build_opener(urllib.request.ProxyHandler({}))
+              if direct else urllib.request.build_opener())
+    with opener.open(req, timeout=timeout) as r:
+        return r.status
+
+
+def _timed_probe(url: str, direct: bool = False) -> tuple:
+    """(ok, note) shape run_check_net prints; note names the route it measured."""
+    t0 = time.time()
+    route = "direct" if direct else "via proxy"
+    try:
+        code = _probe_url(url, timeout=5, direct=direct)
+        return True, f"HTTP {code} ({time.time() - t0:.1f}s, {route})"
+    except Exception as e:
+        return False, f"{type(e).__name__} {str(e)[:60]} ({time.time() - t0:.1f}s, {route})"
+
+
+def _render_source_line(name, direct_ok, direct_note, proxy_ok, proxy_note, proxy_set):
+    """One status line per source; both network paths shown when they differ
+    — a source blocked on the direct route but fine through the configured
+    proxy is reported OK (usable), not X (unreachable)."""
+    if direct_ok:
+        return f"  OK {name}: {direct_note}"
+    if proxy_set and proxy_ok:
+        return (f"  OK {name}: blocked direct, reachable via HTTPS_PROXY "
+                f"({proxy_note}) — keep the proxy env set to use this source")
+    if proxy_set:
+        return f"  X  {name}: unreachable direct and via proxy ({direct_note})"
+    return f"  X  {name}: unreachable ({direct_note})"
+
+
 def run_check_net() -> int:
-    """Pre-flight connectivity probe (v3.9.0, five sources since v4.1.0): 5s per data source, prints
-    reachability + practical next steps. Exit 0 all reachable, 2 otherwise
+    """Pre-flight connectivity probe (v3.9.0; five sources since v4.1.0;
+    v5.6.0 probes each source twice — direct and via the environment proxy —
+    so a source blocked on the direct route but reachable through the proxy is
+    reported as usable, and every line names the verification paths the source
+    serves plus the in-tool fallback). Exit 0 all reachable, 2 otherwise
     (verification would honestly mark affected citations unknown)."""
-    targets = [
-        ("NCBI E-utilities", "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/einfo.fcgi"),
-        ("Europe PMC", "https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=test&format=json&pageSize=1"),
-        ("Crossref", "https://api.crossref.org/works/10.1038/nature12968"),
-        ("arXiv API", "https://export.arxiv.org/api/query?id_list=1706.03762&max_results=1"),
-        ("OpenAlex (fallback)", "https://api.openalex.org/works?search=test&per-page=1"),
-    ]
-    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
-    print("Network pre-flight (5s timeout per source):")
+    proxy_raw = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    print("Network pre-flight (5s timeout per route, direct + proxy):")
     # v4.2.0: mask credentials — a proxy URL like http://user:pass@host:port
     # is echoed as http://user:****@host:port so paste-safe sharing works
+    proxy = proxy_raw
     if proxy and "@" in proxy:
         head, _, tail = proxy.rpartition("@")
         userinfo = head.split("//", 1)[-1]
@@ -4355,25 +4484,24 @@ def run_check_net() -> int:
         scheme = head.split("//", 1)[0] + "//" if "//" in head else ""
         proxy = f"{scheme}{user}:****@{tail}"
     print(f"  proxy env: {proxy or 'not set'}")
-    ok = 0
-    for name, url in targets:
-        t0 = time.time()
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": _UA_TOOL})
-            with urllib.request.urlopen(req, timeout=5) as r:
-                code = r.status
-            ok += 1
-            print(f"  OK {name}: HTTP {code} ({time.time() - t0:.1f}s)")
-        except Exception as e:
-            print(f"  X  {name}: {type(e).__name__} {str(e)[:70]} ({time.time() - t0:.1f}s)")
+    reachable = 0
+    for name, url, serves, fallback in _CHECK_NET_TARGETS:
+        d_ok, d_note = _timed_probe(url, direct=True)
+        p_ok, p_note = (False, "")
+        if proxy_raw and not d_ok:
+            p_ok, p_note = _timed_probe(url, direct=False)
+        print(_render_source_line(name, d_ok, d_note, p_ok, p_note, bool(proxy_raw)))
+        print(f"      serves: {serves}" + (f" | fallback: {fallback}" if fallback else ""))
+        if d_ok or p_ok:
+            reachable += 1
         time.sleep(0.5)
-    if ok == len(targets):
+    if reachable == len(_CHECK_NET_TARGETS):
         print("All data sources reachable.")
         return 0
-    print(f"{len(targets) - ok}/{len(targets)} source(s) unreachable — verification "
-          f"marks affected citations as unknown (never invalid). Practical steps: "
-          f"set HTTPS_PROXY/HTTP_PROXY, or --meta-source europepmc when NCBI is "
-          f"blocked; re-run this check to confirm.")
+    print(f"{len(_CHECK_NET_TARGETS) - reachable}/{len(_CHECK_NET_TARGETS)} source(s) unreachable — "
+          f"verification marks affected citations as unknown (never invalid). "
+          f"Practical steps: set HTTPS_PROXY/HTTP_PROXY for blocked sources, or "
+          f"--meta-source europepmc when NCBI is blocked; re-run this check to confirm.")
     return 2
 
 
@@ -4447,6 +4575,10 @@ def main():
     g_output.add_argument("--export-ris", metavar="PATH",
                         help="Write verified bibliography as RIS (correct = TY JOUR, "
                              "partial = TY DATA with note; Zotero/EndNote/Mendeley)")
+    g_output.add_argument("--export-csl", metavar="PATH",
+                        help="Write verified bibliography as CSL JSON — imports "
+                             "directly into Zotero (File > Import); "
+                             "Mendeley and Pandoc read the same file")
     g_output.add_argument("--export-bibtex", metavar="PATH",
                         help="Export verified references as BibTeX (correct included; partial commented; retracted/excluded counted)")
     g_output.add_argument("--export-csv", metavar="PATH",
@@ -5410,6 +5542,13 @@ def main():
             generate_ris(results), encoding="utf-8")
         print(f"RIS written to {args.export_ris} "
               f"(correct = TY JOUR, partial = TY DATA)")
+
+    if args.export_csl:
+        Path(args.export_csl).write_text(
+            generate_csl_json(results), encoding="utf-8")
+        print(f"CSL JSON written to {args.export_csl} "
+              f"(imports into Zotero via File > Import; partial entries carry a "
+              f"verify-manually note, others excluded)")
 
     if args.format_references:
         Path(args.format_references).write_text(

@@ -8,7 +8,9 @@ breaker, polite pool, API-key injection, Europe PMC parsing, honest-unknown
 classification, cache protection) plus regression of the five-state core.
 """
 
+import contextlib
 import csv
+import io
 import json
 import os
 import re
@@ -1932,17 +1934,26 @@ class TestV390(_Reset):
         self.assertIsNone(cross.get("title_check"))
 
     def test_check_net_blackhole_exit2(self):
-        import subprocess as _sp, os as _os
-        script = (Path(__file__).resolve().parent.parent / "scripts" / "verify_pmids.py")
+        # v5.6.0 rewrote run_check_net to probe each source twice (direct +
+        # via env proxy) — the old end-to-end blackhole-proxy run no longer
+        # forces X (direct wins past the dead proxy), so the all-unreachable
+        # contract is locked in-process by pointing the target table at an
+        # unroutable port with the blackhole proxy env in place.
+        dead = "https://127.0.0.1:1/x"   # connection refused on both routes
+        targets = [(f"src{i}", dead, f"serves {i}", "fallback") for i in range(5)]
         env = dict(os.environ)
         for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
                   "ALL_PROXY", "all_proxy"):
             env[k] = "http://127.0.0.1:1"
-        r = _sp.run([sys.executable, str(script), "--check-net"],
-                    capture_output=True, text=True, timeout=120, env=env)
-        out = r.stdout + r.stderr
-        self.assertEqual(r.returncode, 2)
-        self.assertEqual(out.count(" X  "), 5)  # five probes since v4.1.0
+        buf = io.StringIO()
+        with mock.patch.object(vp, "_CHECK_NET_TARGETS", targets), \
+             mock.patch.dict(os.environ, env, clear=False), \
+             contextlib.redirect_stdout(buf):
+            rc = vp.run_check_net()
+        out = buf.getvalue()
+        self.assertEqual(rc, 2)
+        self.assertEqual(out.count(" X  "), 5)  # five probes, all unreachable
+        self.assertIn("unreachable direct and via proxy", out)
         self.assertIn("Practical steps", out)
 
     def test_fields_title_none_when_skipped(self):
@@ -2431,9 +2442,13 @@ class TestV410(_Reset):
 
     def test_check_net_has_five_probes(self):
         # the fifth probe (OpenAlex) must be part of the pre-flight
-        import inspect
-        body = inspect.getsource(vp.run_check_net)
-        self.assertIn("api.openalex.org", body)
+        # (v5.6.0: the target table moved to module level — assert there)
+        self.assertEqual(len(vp._CHECK_NET_TARGETS), 5)
+        urls = " ".join(u for _, u, _, _ in vp._CHECK_NET_TARGETS)
+        self.assertIn("api.openalex.org", urls)
+        # every row names what it serves (v5.6.0 contract)
+        for _name, _url, serves, _fallback in vp._CHECK_NET_TARGETS:
+            self.assertTrue(serves)
 
 
 
@@ -2663,11 +2678,12 @@ class TestV440(_Reset):
         with tempfile.TemporaryDirectory() as td:
             written = vp.write_report_bundle(results, stats, self._args_stub(),
                                              None, [], td)
-            self.assertEqual(len(written), 7)
+            self.assertEqual(len(written), 8)
             names = sorted(os.path.basename(p) for p in written)
             self.assertEqual(names, ["audit-table.csv", "audit.json",
                                      "manifest.txt", "references-gbt.txt",
                                      "report.html", "verified-refs.bib",
+                                     "verified-refs.csl",
                                      "verified-refs.ris"])
             man = open(os.path.join(td, "manifest.txt"),
                        encoding="utf-8").read()
@@ -2851,7 +2867,7 @@ class TestV470(_Reset):
     FLAT_CTX = ("Sample header  ## Clinical relevance of mosaic variants "
                 "detected by exome sequencing. 2064 | The Journal of allergy "
                 "and clinical immunology | Ghosh Rajarshi et al. - DOI: "
-                "10.1016/j.jaci.2026.02.011 - PMID: 41724404 - 归墟ID: "
+                "10.1016/j.jaci.2026.02.011 - PMID: 41724404 - 文献库ID: "
                 "ref_xxx  > Mosaic variants represent a significant "
                 "contributor to immune diseases.")
 
@@ -3505,6 +3521,153 @@ class TestV5500(_Reset):
                / "verify_pmids.py").read_text(encoding="utf-8")
         self.assertIsNone(re.search(r'print\(f?"(Error|WARN|NOTE): ', src),
                           "legacy unnormalized stderr marker found")
+
+
+class TestV5600(_Reset):
+    """v5.6.0: CSL JSON bibliography export (Zotero/EndNote import path) +
+    dual-route --check-net probing (direct vs proxy, per-source serves/fallback)."""
+
+    CSL_ROWS = [
+        {"pmid": "24990753", "verdict": "correct", "valid": True,
+         "title": "Stimulus-triggered acquisition of pluripotency",
+         "authors": "Obokata T, Wakayama T", "journal": "Nature",
+         "pubdate": "2014 Mar 6", "volume": "505", "pages": "576-580",
+         "doi": "10.1038/nature12968"},
+        {"pmid": "300", "verdict": "partial", "valid": True,
+         "title": "Partial one", "authors": "Van Dijk M", "journal": "J X",
+         "pubdate": "2020", "details": "year differs"},
+        {"pmid": "400", "verdict": "correct", "valid": True, "retracted": True,
+         "title": "Retracted one", "authors": "A B"},
+        {"pmid": "500", "verdict": "mismatch", "valid": True,
+         "title": "Mismatch", "authors": "C D"},
+        {"pmid": "300", "verdict": "correct", "valid": True,
+         "title": "Duplicate of pmid 300", "authors": "Van Dijk M"},
+    ]
+
+    def test_csl_export_shape(self):
+        items = json.loads(vp.generate_csl_json(self.CSL_ROWS))
+        self.assertEqual(len(items), 2)   # retracted/mismatch excluded, pmid deduped
+        it = items[0]
+        self.assertEqual(it["id"], "pmid:24990753")
+        self.assertEqual(it["type"], "article-journal")
+        self.assertEqual(it["title"], "Stimulus-triggered acquisition of pluripotency")
+        self.assertEqual(it["author"][0], {"family": "Obokata", "given": "T"})
+        self.assertEqual(it["container-title"], "Nature")
+        self.assertEqual(it["issued"], {"date-parts": [[2014]]})
+        self.assertEqual(it["volume"], "505")
+        self.assertEqual(it["page"], "576-580")
+        self.assertEqual(it["DOI"], "10.1038/nature12968")
+        self.assertIn("verified by pubmed-verifier (correct; PMID 24990753)", it["note"])
+
+    def test_csl_export_partial_note_and_dedup(self):
+        items = json.loads(vp.generate_csl_json(self.CSL_ROWS))
+        self.assertIn("PARTIAL MATCH", items[1]["note"])
+        self.assertIn("verify manually", items[1]["note"])
+        pmids = [i["id"] for i in items]
+        self.assertEqual(len(pmids), len(set(pmids)))   # same PMID cited twice: one item
+
+    def test_csl_authors_edges(self):
+        # CJK names and multi-word given names fall to literal, never force-split
+        self.assertEqual(vp._csl_authors("王五, 李四"),
+                         [{"literal": "王五"}, {"literal": "李四"}])
+        self.assertEqual(vp._csl_authors("Smith J"),
+                         [{"family": "Smith", "given": "J"}])
+        self.assertEqual(vp._csl_authors("Van Dijk M"),
+                         [{"family": "Van Dijk", "given": "M"}])
+        self.assertEqual(vp._csl_authors("Maria hadi Kusuma"),
+                         [{"literal": "Maria hadi Kusuma"}])
+        # registry list-leak defense (same shape as _bib_authors)
+        self.assertEqual(vp._csl_authors(["Gattorno", "Marco"]),
+                         [{"literal": "Gattorno"}, {"literal": "Marco"}])
+        self.assertEqual(vp._csl_authors("Smith J, et al."),
+                         [{"family": "Smith", "given": "J"}])
+        self.assertEqual(vp._csl_authors(""), [])
+
+    def test_csl_valid_json_utf8(self):
+        rows = [{"pmid": "1", "verdict": "correct", "valid": True,
+                 "title": "儿童过敏性紫癜临床分析", "authors": "王五",
+                 "journal": "中华儿科杂志", "pubdate": "2020"}]
+        out = vp.generate_csl_json(rows)
+        self.assertIn("儿童过敏性紫癜临床分析", out)     # not escaped to \uXXXX
+        items = json.loads(out)
+        self.assertEqual(items[0]["container-title"], "中华儿科杂志")
+
+    def test_csl_cli_flag_wired(self):
+        src = (Path(__file__).resolve().parent.parent / "scripts"
+               / "verify_pmids.py").read_text(encoding="utf-8")
+        self.assertIn('"--export-csl"', src)            # argparse definition
+        self.assertIn("args.export_csl", src)           # main consumer
+        self.assertIn("generate_csl_json(results)", src)
+
+    def test_bundle_manifest_lists_csl(self):
+        import argparse
+        # same shape as TestBundle._args_stub — any flag the audit serializer
+        # reads defaults to False
+        class _A(argparse.Namespace):
+            def __getattr__(self, name):
+                return False
+        a = _A()
+        a.ncbi_api_key = ""
+        a.mailto = ""
+        a.output = None
+        a.export_audit = None
+        a.source = None
+        results = [{"pmid": "1", "verdict": "correct", "valid": True,
+                    "title": "T", "authors": "A B", "journal": "J",
+                    "pubdate": "2020"}]
+        stats = {"total": 1, "correct": 1, "mismatch": 0, "partial": 0, "invalid": 0,
+                 "unknown": 0, "retracted": 0, "network_errors": 0,
+                 "doi_splice": 0, "submission_readiness": {"ready": True, "summary": "x"}}
+        with tempfile.TemporaryDirectory() as td:
+            vp.write_report_bundle(results, stats, a, None, [], td)
+            man = open(os.path.join(td, "manifest.txt"), encoding="utf-8").read()
+            self.assertIn("verified-refs.csl", man)
+            csl = json.load(open(os.path.join(td, "verified-refs.csl"),
+                                 encoding="utf-8"))
+            self.assertEqual(len(csl), 1)
+
+    def test_check_net_render_four_branches(self):
+        f = vp._render_source_line
+        self.assertTrue(f("S", True, "HTTP 200 (0.1s, direct)",
+                          False, "", True).startswith("  OK S: HTTP 200"))
+        line = f("S", False, "URLError (0.1s, direct)", True,
+                 "HTTP 200 (1.0s, via proxy)", True)
+        self.assertTrue(line.startswith("  OK S: blocked direct"))
+        self.assertIn("HTTPS_PROXY", line)
+        self.assertTrue(f("S", False, "URLError", False, "", True)
+                        .startswith("  X  S: unreachable direct and via proxy"))
+        self.assertTrue(f("S", False, "URLError", False, "", False)
+                        .startswith("  X  S: unreachable (URLError"))
+
+    def test_check_net_proxy_rescue_counts_reachable(self):
+        # direct X + proxy OK on every source -> all usable -> exit 0
+        targets = [(f"src{i}", f"https://127.0.0.1:1/{i}", f"serves {i}", "")
+                   for i in range(2)]
+        buf = io.StringIO()
+        with mock.patch.object(vp, "_CHECK_NET_TARGETS", targets), \
+             mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://p:1"}, clear=False), \
+             mock.patch.object(vp, "_timed_probe",
+                               side_effect=[(False, "URLError (0.0s, direct)"),
+                                            (True, "HTTP 200 (0.1s, via proxy)")] * 2), \
+             contextlib.redirect_stdout(buf):
+            rc = vp.run_check_net()
+        out = buf.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("blocked direct, reachable via HTTPS_PROXY", out)
+        self.assertIn("All data sources reachable.", out)
+
+    def test_check_net_direct_win_skips_proxy_probe(self):
+        # direct OK consumes one probe result per source; no proxy probe issued
+        targets = [("src0", "https://127.0.0.1:1/0", "serves", "")]
+        buf = io.StringIO()
+        with mock.patch.object(vp, "_CHECK_NET_TARGETS", targets), \
+             mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://p:1"}, clear=False), \
+             mock.patch.object(vp, "_timed_probe",
+                               side_effect=[(True, "HTTP 200 (0.1s, direct)")]) as m, \
+             contextlib.redirect_stdout(buf):
+            rc = vp.run_check_net()
+        self.assertEqual(rc, 0)
+        self.assertEqual(m.call_count, 1)   # direct OK -> proxy route never probed
 
 
 if __name__ == "__main__":

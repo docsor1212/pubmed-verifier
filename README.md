@@ -32,16 +32,16 @@ Academic projects routinely contain hundreds of PMID citations. Manual verificat
 - **Content matching** — Keyword overlap scoring flags potentially irrelevant citations
 - **Three citation types in one audit** — PMIDs, DOIs and arXiv IDs (preprints) verified in a single scan; arXiv IDs checked against the official API (nonexistent = fabrication signal); claims rows keyed by DOI get full verdicts, and preprints surface their published version of record
 - **Claims lint** — `--lint-claims file.csv` validates a claims file offline (ID shapes, missing titles, unknown columns, duplicates) before any verification run
-- **Bibliography audit** — `--bibliography refs.bib` / `refs.ris` verifies BibTeX and RIS files directly (Zotero/EndNote/Mendeley exports; entries route by PMID > DOI > arXiv with full cross-checks); round-trips with `--export-bibtex` / `--export-ris`
+- **Bibliography audit** — `--bibliography refs.bib` / `refs.ris` verifies BibTeX and RIS files directly (Zotero/EndNote/Mendeley exports; entries route by PMID > DOI > arXiv with full cross-checks); round-trips with `--export-bibtex` / `--export-ris` / `--export-csl`
 - **Plain-text reference list parsing** — `--parse-text refs.txt` verifies a reference list copied straight out of a manuscript draft: numbered entries (`[1]`, `1.`) split cleanly, inline PMID/DOI/arXiv IDs route exactly, and a title-only entry resolves via PubMed title search (honestly labeled `resolved_by: title_search`, never a mismatch source)
 - **Formatted reference list export** — `--format-references out.txt --citation-style gbt|vancouver|apa|ama` renders verified entries as a ready-to-paste numbered list (GB/T 7714-2015, Vancouver, APA 7th, AMA 11th); partial entries go to a manual-review section, retracted ones are excluded with a warning — formatting that stands on registry-verified records
 - **Retraction detection for every citation** — the registry publication type ("Retracted Publication") flags retracted papers with no DOI or extra flags needed; Crossref `updated-by` adds the retraction-notice DOI
-- **Verified-bibliography export** — `--export-bibtex` writes correct entries as BibTeX, comments partial ones, excludes and counts the rest
+- **Verified-bibliography export** — `--export-bibtex` writes correct entries as BibTeX, comments partial ones, excludes and counts the rest; `--export-csl` writes the same verified set as CSL JSON (Zotero: File > Import; Mendeley/Pandoc read the same file)
 - **Submission-readiness verdict** — every report leads with `SUBMISSION READY` / `NOT SUBMISSION-READY` and per-problem counts
 - **Audit working-paper** — `--export-audit` writes a self-contained JSON trail (tool identity, redacted invocation, evidence chain, verdict trace) a third party can replay
 - **DOI-native verification** — `--dois` verifies DOIs directly (Crossref resolve, 404 = fabrication signal on explicit input); `--source` scans auto-extract DOIs; linked back to PMIDs via Europe PMC
 - **Delta audits** — `--diff previous-audit.json` reports newly retracted, degraded, improved, new and dropped citations
-- **Exports** — `--export-audit` (self-contained JSON trail), `--export-bibtex` (verified bibliography), `--export-csv` (spreadsheet audit table)
+- **Exports** — `--export-audit` (self-contained JSON trail), `--export-bibtex` / `--export-csl` (verified bibliography), `--export-csv` (spreadsheet audit table)
 - **Replacement search** — Find correct PMIDs for broken citations via PubMed search
 - **Multiple output formats** — HTML report, JSON (with per-entry metadata origin), or terminal summary
 

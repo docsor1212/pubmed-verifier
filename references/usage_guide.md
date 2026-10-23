@@ -35,6 +35,14 @@ and cross-check the claimed metadata. `--lint-claims` validates either
 format offline first. The round trip works both ways: `--export-bibtex`
 and `--export-ris` output can be fed back after edits.
 
+**Can I get the verified entries into Zotero?**
+`--export-csl library.json` writes the verified bibliography as CSL
+JSON — Zotero ingests it via File > Import (Mendeley and
+Pandoc read the same format). Correct entries land as article items;
+partial entries carry a "verify manually" note; retracted, mismatched
+and unknown entries are excluded. The evidence pack
+(`--report-bundle`) includes the same file as `verified-refs.csl`.
+
 **My claims file seems to lose rows / verdicts look weaker than expected?**
 Lint it offline first: `python3 scripts/verify_pmids.py --lint-claims
 claims.csv` reports unusable rows, ID shape errors, unknown columns
@@ -157,9 +165,10 @@ without a temp file (same parser as `--parse-text`, report source reads
 - **Two-phase workflow** — sweep with metadata-only verification first
   (no `--verify-doi`, no `--suggest`), then deep-verify only the flagged
   subset; each deep flag adds one API call per citation.
-- **Round-trip bibliographies** — `--export-bibtex` / `--export-ris`
-  write verified entries; after edits, `--bibliography refs.bib` /
-  `refs.ris` re-audits the file (the PMID re-links the full record).
+- **Round-trip bibliographies** — `--export-bibtex` / `--export-ris` /
+  `--export-csl` write verified entries; after edits, `--bibliography
+  refs.bib` / `refs.ris` re-audits the file (the PMID re-links the full
+  record); the CSL JSON imports straight into Zotero.
 - **Claims over context parsing** — whenever you know the expected titles,
   feed `--claims-file`: it enables the full verdict ladder and the DOI /
   arXiv pairing checks. Validate the file offline first:

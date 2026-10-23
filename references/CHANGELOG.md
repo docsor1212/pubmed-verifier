@@ -21,6 +21,31 @@ section reads standalone):
 Complete version history. The SKILL.md "Recent releases" section keeps the
 last three; everything older lives here verbatim.
 
+## v5.6.0 — CSL JSON export & dual-route network pre-flight
+
+Two additions aimed at where the tool meets real workflows: the library
+manager on one side, the restricted network on the other.
+
+- **`--export-csl FILE`** — the verified bibliography as CSL JSON, the
+  open citation-format standard: Zotero ingests it via File > Import,
+  and Mendeley and Pandoc read the same file. Correct entries
+  land as article items with the registry's own author/journal/year/
+  DOI fields; partial entries carry a verify-manually note; retracted,
+  mismatched and unknown entries are excluded (same inclusion rules as
+  the BibTeX and RIS exports). The evidence pack includes it as
+  `verified-refs.csl` (now eight files).
+- **`--check-net` probes every source twice** — once bypassing proxies,
+  once through your `HTTPS_PROXY`. A source that is blocked on the
+  direct route but reachable through the configured proxy now reports
+  as usable instead of unreachable, and every line names the
+  verification paths that source serves plus the in-tool fallback
+  (e.g. NCBI → `--meta-source europepmc`). Clearer answers for
+  restricted-network environments, with no new flags to learn.
+- **Boundaries surfaced**: the two limits readers had to dig into
+  reference pages for (scanned-PDF input has no extractable text; very
+  large batches need slicing) now sit in the main doc's "Know before
+  you run" table.
+
 ## v2.2.0 — network hardening
 
 | Feature | Flag | Effect |

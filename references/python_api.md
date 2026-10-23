@@ -86,6 +86,12 @@ print(res["verdict"], res.get("resolved_by"))   # correct title_search
 
 # Render verified results as a numbered reference list:
 print(vp.generate_reference_list(results, "gbt"))       # also: gbty / vancouver / apa / ama
+
+# Bibliography exports on verified results (same inclusion rules:
+# correct in, partial in with a note, retracted/mismatch/unknown out):
+print(vp.generate_bibtex(results))     # @article entries
+print(vp.generate_ris(results))        # RIS records
+print(vp.generate_csl_json(results))   # CSL JSON array (v5.6.0) — Zotero: File > Import
 ```
 
 `parse_citation_context` accepts markerless Latin references since v4.0.0

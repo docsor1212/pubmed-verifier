@@ -1,4 +1,4 @@
-> **何时读我**：被 38 个旗标劝退时。90% 的任务只需要下表里的一行。
+> **何时读我**：被 39 个旗标劝退时。90% 的任务只需要下表里的一行。
 > **回 INDEX**：[INDEX.md](INDEX.md)
 
 # Flag cheat sheet — by scenario, not alphabetically
@@ -51,7 +51,8 @@ and `--format-references` are the only "composer" flags most users ever need.
 | `--format FMT` | Force format regardless of extension |
 | `--jsonl F` | One citation per line + final `{"_stats": ...}` — agent pipelines |
 | `--export-audit / -ris / -bibtex / -csv F` | Individual artifacts |
-| `--report-bundle DIR` | All artifacts at once (the evidence pack) |
+| `--export-csl F` | Verified bibliography as CSL JSON — Zotero: File > Import (Mendeley/Pandoc read the same file) |
+| `--report-bundle DIR` | All artifacts at once (the evidence pack, incl. `verified-refs.csl`) |
 | `--format-references F` / `--citation-style` | GB/T 7714 / Vancouver / APA / AMA, verified entries only |
 | `--diff BASELINE` | Delta audit vs a previous audit.json |
 | `--sort cited` | Rows ordered by citation count instead of severity (terminal/JSON/JSONL/markdown; .html keeps severity) |
