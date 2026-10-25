@@ -63,6 +63,7 @@ and `--format-references` are the only "composer" flags most users ever need.
 |---|---|
 | `--meta-source auto\|ncbi\|europepmc` | Registry choice (auto = NCBI with Europe PMC retry) |
 | `--timeout S` / `--workers N` | Request timeout / DOI concurrency (default 4) |
+| `--retries N` | Batch-end retry sweeps for network-failed fetches (default 1; 0 = off) — recovered count lands in `retried_recovered` |
 | `--max-entries N` | Large-input guard threshold (default 2000; 0 silences) |
 | `--check-net` | Five-registry pre-flight probe |
 

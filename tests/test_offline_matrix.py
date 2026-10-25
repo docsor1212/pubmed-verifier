@@ -3670,5 +3670,113 @@ class TestV5600(_Reset):
         self.assertEqual(m.call_count, 1)   # direct OK -> proxy route never probed
 
 
+class TestV5700(_Reset):
+    """v5.7.0: in-batch retry sweeps (_retry_sweep + --retries at three fetch
+    stages) + check-net reachable-means-reachable (HTTP 429 is an answer) +
+    Quick FAQ split from anti-patterns."""
+
+    def test_retry_sweep_recovers_and_merges(self):
+        clean = {"valid": True, "title": "T", "pmid": "31018962"}
+        calls = []
+
+        def fetch(pmids, batch_size=50):
+            calls.append(list(pmids))
+            return {p: clean for p in pmids}
+
+        info = {"31018962": {"valid": False, "error": "URLError", "network_error": True}}
+        merged, rec = vp._retry_sweep(info, ["31018962"], fetch, 1, "PMID metadata")
+        self.assertEqual(rec, 1)
+        self.assertTrue(merged["31018962"]["valid"])
+        self.assertEqual(calls, [["31018962"]])       # only the failed subset re-fetched
+        # second sweep over the same map: nothing failed -> no fetch
+        merged, rec2 = vp._retry_sweep(merged, ["31018962"], fetch, 1, "PMID metadata")
+        self.assertEqual(rec2, 0)
+        self.assertEqual(len(calls), 1)
+
+    def test_retry_sweep_zero_off_and_breaker_safe(self):
+        calls = []
+
+        def fetch(pmids, batch_size=50):
+            calls.append(list(pmids))
+            return {p: {"valid": True} for p in pmids}
+
+        info = {"999": {"valid": False, "error": "x", "network_error": True}}
+        merged, rec = vp._retry_sweep(info, ["999"], fetch, 0, "X")
+        self.assertEqual((rec, calls), (0, []))       # retries=0: fetch never called
+        merged["999"]["network_error"] = True
+
+        def breaker(pmids, batch_size=50):
+            raise vp.CircuitOpenError("open")
+
+        info2 = {"999": {"valid": False, "error": "x", "network_error": True}}
+        merged2, rec2 = vp._retry_sweep(info2, ["999"], breaker, 2, "X")
+        self.assertEqual(rec2, 0)                     # breaker aborted the sweep
+        self.assertTrue(merged2["999"]["network_error"])  # first-pass answer stands
+
+    def test_retry_sweep_doi_shape(self):
+        def resolve_subset(subset):
+            return {d: {"status": "resolved", "meta": {"t": 1}, "error": ""} for d in subset}
+
+        res = {"10.1/a": {"status": "error", "meta": None, "error": "boom"},
+               "10.1/b": {"status": "not_found", "meta": None, "error": "404"}}
+        merged, rec = vp._retry_sweep(
+            res, ["10.1/a", "10.1/b"], resolve_subset, 1, "DOI",
+            failed_pred=lambda v: not v or v.get("status") == "error")
+        self.assertEqual(rec, 1)                      # only status=error re-runs
+        self.assertEqual(merged["10.1/a"]["status"], "resolved")
+        self.assertEqual(merged["10.1/b"]["status"], "not_found")  # 404 not re-fetched
+
+    def test_retries_flag_wired_three_stages(self):
+        src = (Path(__file__).resolve().parent.parent / "scripts"
+               / "verify_pmids.py").read_text(encoding="utf-8")
+        self.assertIn('"--retries"', src)
+        self.assertEqual(src.count("_retry_sweep("), 4)   # 1 def + PMID / DOI / linked-PMID
+        self.assertIn('stats["retried_recovered"]', src)  # stats observability
+        self.assertIn("args.retries = max(0, min(", src)  # clamp guard
+
+    def test_probe_http_error_counts_reachable(self):
+        import urllib.error as _ue
+
+        class _FakeOpener:
+            def __init__(self, exc=None, status=None):
+                self._exc, self._status = exc, status
+
+            def open(self, req, timeout=5):
+                if self._exc is not None:
+                    raise self._exc
+                return self._status
+
+        # an HTTP 429 response is an answer: the probe returns the code
+        with mock.patch.object(vp.urllib.request, "build_opener",
+                               return_value=_FakeOpener(
+                                   exc=_ue.HTTPError("u", 429, "Too Many Requests",
+                                                     None, None))):
+            self.assertEqual(vp._probe_url("https://x", direct=True), 429)
+        # transport-level failure still propagates
+        with mock.patch.object(vp.urllib.request, "build_opener",
+                               return_value=_FakeOpener(exc=_ue.URLError("refused"))):
+            with self.assertRaises(_ue.URLError):
+                vp._probe_url("https://x", direct=True)
+        # the timed wrapper labels a 429 as rate-limited-but-reachable
+        with mock.patch.object(vp, "_probe_url", return_value=429):
+            ok, note = vp._timed_probe("https://x", direct=True)
+        self.assertTrue(ok)
+        self.assertIn("HTTP 429 (rate-limited", note)
+        with mock.patch.object(vp, "_probe_url", return_value=200):
+            ok2, note2 = vp._timed_probe("https://x", direct=False)
+        self.assertTrue(ok2)
+        self.assertIn("via proxy", note2)
+
+    def test_quick_faq_split(self):
+        en = (Path(__file__).resolve().parent.parent / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("## Quick FAQ", en)
+        self.assertIn("retried_recovered", en)        # retry answer names the stat
+        self.assertIn("--export-csl", en)             # Zotero answer present
+        self.assertIn("question-form answers are in Quick FAQ", en)  # anti-pattern pointer
+        zh = (Path(__file__).resolve().parent.parent / "SKILL_ZH.md").read_text(encoding="utf-8")
+        self.assertIn("## 快速 FAQ", zh)
+        self.assertIn("retried_recovered", zh)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

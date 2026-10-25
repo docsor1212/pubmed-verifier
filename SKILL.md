@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 5.6.0
+version: 5.7.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v5.6.0
+# PubMed Citation Verifier v5.7.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -285,7 +285,13 @@ answered, `resolved_by` when the title-search/OpenAlex legs matched) and a
 `stats` block with the submission-readiness verdict. `--format-references`
 writes the ready-to-paste citation list (see the v4.0.0 entry in references/CHANGELOG.md).
 
-## FAQ & common mistakes
+## Quick FAQ
+
+Two different things live in this area of the docs, on purpose:
+**anti-patterns** (the wrong way vs the right way, as tables and numbered
+entries) and **FAQ** (plain questions with plain answers). The short
+answers are here; the deep versions live in
+[references/usage_guide.md](references/usage_guide.md).
 
 **Top 10 things NOT to do** (each is detailed below or in Anti-patterns):
 
@@ -302,11 +308,22 @@ writes the ready-to-paste citation list (see the v4.0.0 entry in references/CHAN
 | 9 | Expect author matching across CJK↔Latin names | They are skipped honestly (`author_check: skipped`) |
 | 10 | Ship a reference list without the audit trail | `--export-audit` writes a replayable working paper |
 
-**Large batch (hundreds of PMIDs) is slow — how to speed it up?**
-Metadata-only verification queries in batches of 50 with 0.4 s spacing
-(0.12 s with `--ncbi-api-key`); cached re-runs are ~5 s. `--verify-doi` adds
-one Crossref call *per citation* and `--suggest` adds one search *per
-mismatch* — skip them for bulk sweeps, run them on the flagged subset.
+**❓ unknown vs ❌ invalid — what's the difference?**
+`unknown` (exit 2) = "the source could not be reached, nothing was judged"
+— re-run when the network is up; `invalid` (exit 1) = "checked and the
+record does not exist". Network failures are never reported as
+not-found and never cached.
+
+**Why is my citation capped at ⚠ partial?**
+The five-state ladder caps the verdict when a claimed field could not be
+checked — most often a claim without `title` (#2 above), or a
+retracted paper (partial + human-review note, by design).
+
+**A network blip made half my batch unknown — re-run everything?**
+No. Unknowns are never cached, so a plain re-run re-fetches only those;
+and since v5.7.0 the run itself retries: `--retries N` (default 1)
+re-runs just the network-failed fetches after a 2 s cool-off and reports
+what it recovered (`retried_recovered` in the stats).
 
 **When must I use `--claims-file` instead of scanning?**
 Context parsing is heuristic (v3.3.0 guards common abbreviations, exotic formatting can still mis-split).
@@ -320,17 +337,26 @@ cross-language, so verdicts rest on year/DOI evidence. Free Chinese prose
 without a PMID marker still yields little — feed `--claims-file` for full
 verdicts regardless of language.
 
+**Can I get the verified entries into Zotero?**
+`--export-csl library.json` writes the verified bibliography as CSL JSON
+— Zotero: File > Import (Mendeley and Pandoc read the same file).
+Correct entries import as article items; partial ones carry a
+verify-manually note.
+
 **Slow or unstable network (China)?**
 Standard `HTTPS_PROXY`/`HTTP_PROXY` env vars are honored natively; raise
 `--timeout`; `--meta-source europepmc` routes via Europe PMC when NCBI is
 unreachable (per-entry `meta_source` shows which was used); cached results
-are reused for 30 days.
+are reused for 30 days. `--check-net` probes every source on both routes
+(direct + proxy) and names the fallback for each.
 
 More FAQs, the three worked scenarios and the complete tuning playbook live in [references/usage_guide.md](references/usage_guide.md).
 
 ## Anti-patterns — things done WRONG
 
-Each entry: the mistake → why it fails → the right way.
+Each entry: the mistake → why it fails → the right way. (These are usage
+mistakes, not questions — the question-form answers are in Quick FAQ
+above.)
 
 1. **Treating `--pmids` output as "fully verified"** — existence-only.
    → Wrong: "all 5 PMIDs exist, so the citations are correct."
@@ -412,6 +438,12 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v5.7.0** — in-batch retry sweeps: `--retries N` (default 1) re-runs
+  just the fetches the network lost, after a 2 s cool-off, and reports
+  what it recovered — no more full re-runs after a mid-batch blip;
+  `--check-net` treats any HTTP response (including 429) as reachable —
+  only transport failures count as outages; Quick FAQ split from
+  anti-patterns with short plain answers.
 - **v5.6.0** — `--export-csl` writes the verified bibliography as CSL
   JSON (imports straight into Zotero via File > Import; Mendeley
   Mendeley and Pandoc read the same file); `--check-net` now probes
@@ -551,7 +583,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v5.6.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v5.7.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
 | `references/flags.md` | Flag cheat sheet — scenario → one command, all 39 flags grouped |

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v5.6.0
+PMID Citation Verifier -- PubMed E-utilities API v5.7.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -86,8 +86,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "5.6.0"
-_UA_TOOL = "pubmed-verifier/5.6 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "5.7.0"
+_UA_TOOL = "pubmed-verifier/5.7 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -297,6 +297,51 @@ def fetch_summaries(pmids: list, batch_size: int = 50) -> dict:
                     results[pmid] = {"valid": False, "error": str(e), "network_error": True}
         time.sleep(batch_interval)
     return results
+
+
+def _retry_sweep(info_map: dict, keys: list, fetch_fn, retries: int,
+                 label: str, failed_pred=None) -> tuple:
+    """In-batch retry sweep (v5.7.0): re-fetch only the entries a fetch stage
+    lost to the network, after a short cool-off, instead of leaving the user
+    to re-run the whole command. Returns (merged_map, recovered_count).
+
+    A sweep never makes a run worse than its first pass: a still-open circuit
+    breaker aborts the sweep and the first-pass answers stand; entries that
+    fail again simply keep their first-pass unknown."""
+    if retries <= 0 or not keys:
+        return info_map, 0
+    failed = [k for k in keys
+              if (failed_pred(info_map.get(k)) if failed_pred
+                  else (not info_map.get(k) or info_map[k].get("network_error")))]
+    if not failed:
+        return info_map, 0
+    print(f"[NOTE] {label}: retrying {len(failed)} network-failed call(s) "
+          f"({retries} sweep{'s' if retries > 1 else ''}, 2s cool-off)",
+          file=sys.stderr, flush=True)
+    recovered = 0
+    time.sleep(2.0)
+    for sweep in range(retries):
+        try:
+            again = fetch_fn(failed)
+        except CircuitOpenError:
+            break   # breaker still open — first-pass answers stand
+        still_failed = []
+        for k in failed:
+            v = again.get(k)
+            if v and not (failed_pred(v) if failed_pred else v.get("network_error")):
+                info_map[k] = v
+                recovered += 1
+            else:
+                still_failed.append(k)
+        if not still_failed:
+            break
+        failed = still_failed
+        if sweep < retries - 1:
+            time.sleep(2.0 * (sweep + 2))
+    if recovered:
+        print(f"[NOTE] {label}: retry recovered {recovered}/{recovered + len(failed)} "
+              f"call(s)", file=sys.stderr, flush=True)
+    return info_map, recovered
 
 
 def fetch_summaries_europepmc(pmids: list, batch_size: int = 25,
@@ -3534,8 +3579,11 @@ def generate_html_report(results: list[dict], stats: dict, source: str, repro: d
     epmc_note = (f'<div style="color:#b06060;font-size:.8rem;margin:8px 0;">⚠ {epmc_count} citation(s) '
                  f'fetched via Europe PMC fallback (NCBI unreachable) — per-entry origin in JSON output.</div>'
                  if epmc_count else "")
+    _rec = stats.get("retried_recovered", 0)
     net_card = (f'<div class="stat"><div class="num" style="color:#b06060">{stats.get("network_errors", 0)}</div>'
-                f'<div class="label">Unverified (network)</div></div>' if stats.get("network_errors") else "")
+                f'<div class="label">Unverified (network)'
+                + (f' · {_rec} recovered on retry' if _rec else '')
+                + '</div></div>' if stats.get("network_errors") else "")
     ret_card = (f'<div class="stat"><div class="num" style="color:#c0392b">{stats.get("retracted", 0)}</div>'
                 f'<div class="label">Retracted</div></div>' if stats.get("retracted") else "")
     splice_card = (f'<div class="stat"><div class="num" style="color:#c0392b">{stats.get("doi_splice", 0)}</div>'
@@ -4432,12 +4480,18 @@ _CHECK_NET_TARGETS = [
 
 def _probe_url(url: str, timeout: int = 5, direct: bool = False) -> int:
     """One probe. direct=True builds an opener with an empty ProxyHandler so
-    environment proxies are bypassed; the default opener honours HTTPS_PROXY."""
+    environment proxies are bypassed; the default opener honours HTTPS_PROXY.
+    Any HTTP response — including 429/403 — means the host itself is
+    reachable: only transport-level failures (DNS, refused, timeout) count
+    as unreachable (v5.7.0; a 429 used to masquerade as an outage)."""
     req = urllib.request.Request(url, headers={"User-Agent": _UA_TOOL})
     opener = (urllib.request.build_opener(urllib.request.ProxyHandler({}))
               if direct else urllib.request.build_opener())
-    with opener.open(req, timeout=timeout) as r:
-        return r.status
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code   # an HTTP status is an answer — the host is up
 
 
 def _timed_probe(url: str, direct: bool = False) -> tuple:
@@ -4446,7 +4500,8 @@ def _timed_probe(url: str, direct: bool = False) -> tuple:
     route = "direct" if direct else "via proxy"
     try:
         code = _probe_url(url, timeout=5, direct=direct)
-        return True, f"HTTP {code} ({time.time() - t0:.1f}s, {route})"
+        lim = " (rate-limited — host reachable)" if code in (429, 403) else ""
+        return True, f"HTTP {code}{lim} ({time.time() - t0:.1f}s, {route})"
     except Exception as e:
         return False, f"{type(e).__name__} {str(e)[:60]} ({time.time() - t0:.1f}s, {route})"
 
@@ -4570,6 +4625,10 @@ def main():
     g_net.add_argument("--meta-source", choices=["auto", "ncbi", "europepmc"], default="auto",
                         help="Metadata source: auto = NCBI with Europe PMC fallback (default)")
     g_net.add_argument("--timeout", type=float, default=20, help="Per-request timeout seconds (default: 20)")
+    g_net.add_argument("--retries", type=int, default=1, metavar="N",
+                        help="Batch-end retry sweeps for fetches the network lost "
+                             "(default: 1; 0 = off, max 3) — only network-failed "
+                             "calls re-run, verified answers are never re-fetched")
     g_output.add_argument("--export-audit", metavar="PATH",
                         help="Write a self-contained JSON audit working-paper: tool identity, redacted invocation, per-citation evidence chain and verdict trace")
     g_output.add_argument("--export-ris", metavar="PATH",
@@ -4929,6 +4988,8 @@ def main():
     # nobody — the guard counts the actual de-duplicated workload and says so
     _input_guard_note(len(unique_pmids) + len(doi_inputs) + len(arxiv_inputs)
                       + len(title_queue), getattr(args, "max_entries", 0))
+    # v5.7.0 retry-sweep guard: clamp to the sane range
+    args.retries = max(0, min(int(args.retries or 0), 3))
     if unique_pmids:
         print(f"Found {len(pmid_entries)} PMID citations ({len(unique_pmids)} unique). Verifying...")
     if doi_inputs:
@@ -4948,8 +5009,14 @@ def main():
         uncached_pmids = unique_pmids
 
     # Query PubMed API for uncached PMIDs
+    _recovered_total = 0
     if uncached_pmids:
         fresh = fetch_summaries(uncached_pmids)
+        # v5.7.0 in-batch retry: re-fetch only the PMIDs the first pass lost
+        # to the network; cache save sees only recovered/valid entries
+        fresh, _rec = _retry_sweep(fresh, uncached_pmids, fetch_summaries,
+                                   args.retries, "PMID metadata")
+        _recovered_total += _rec
         # Save to cache (network failures excluded -- they are not answers)
         if use_cache:
             _cache_save_fresh(db_path, fresh)
@@ -5298,6 +5365,17 @@ def main():
     elif unique_dois:
         for d, _, _ in unique_dois:
             resolutions[d] = resolve_doi(d)
+    # v5.7.0 in-batch retry: re-resolve only the DOIs the first pass lost to
+    # the network (status=error, never a definitive 404=not_found)
+    _doi_failed = [d for d, _, _ in unique_dois
+                   if resolutions.get(d, {}).get("status") == "error"]
+    if _doi_failed:
+        def _resolve_subset(subset):
+            return {d: resolve_doi(d) for d in subset}
+        resolutions, _rec = _retry_sweep(resolutions, _doi_failed, _resolve_subset,
+                                         args.retries, "DOI resolution",
+                                         failed_pred=lambda v: not v or v.get("status") == "error")
+        _recovered_total += _rec
     # Phase 2 (v2.9.0): link resolved DOIs back to PMIDs — parallel EPMC queries
     resolved_dois = [d for d, _, _ in unique_dois
                      if resolutions.get(d, {}).get("status") == "resolved"]
@@ -5313,6 +5391,12 @@ def main():
     # 50/batch) — the linking stage never pays per-PMID serial costs
     linked_pmids = sorted({p for p in pmid_map.values() if p})
     pmid_info_map = fetch_summaries(linked_pmids) if linked_pmids else {}
+    if linked_pmids:
+        pmid_info_map, _rec = _retry_sweep(pmid_info_map, linked_pmids,
+                                           fetch_summaries, args.retries,
+                                           "linked PMID metadata")
+        _recovered_total += _rec
+    stats["retried_recovered"] = _recovered_total
     # Phase 4: build entries serially (stats stay main-thread)
     # v4.7.0 (--source only): a scanned DOI whose linked PMID is already
     # verified in the PMID leg merges into that citation — one paper, one
@@ -5596,7 +5680,9 @@ def main():
             print(f"Relevance warnings: {stats['unmatched']}")
         if stats.get("network_errors"):
             print(f"⚠ Network: {stats['network_errors']} citation(s) could NOT be verified "
-                  f"(data sources unreachable; reported as unknown, NOT invalid)")
+                  f"(data sources unreachable; reported as unknown, NOT invalid)"
+                  + (f" — {stats.get('retried_recovered', 0)} more recovered by the "
+                     f"in-batch retry sweep (--retries)" if stats.get("retried_recovered") else ""))
         if stats.get("retracted"):
             print(f"⚠ Retracted: {stats['retracted']} citation(s) point to RETRACTED papers "
                   f"(verdict capped at partial — human review required)")

@@ -18,8 +18,32 @@ section reads standalone):
 - **v2.x–v3.x — hardening era**: network hardening, retraction
   detection, DOI-native, arXiv, BibTeX/RIS, audit working-paper
 
-Complete version history. The SKILL.md "Recent releases" section keeps the
-last three; everything older lives here verbatim.
+Complete version history. The SKILL.md "Recent releases" section keeps
+the recent highlights; everything older lives here verbatim.
+
+## v5.7.0 — in-batch retry sweeps & reachable-means-reachable
+
+Shaped by the v5.6.0 audit follow-ups: reliability follow-ups asked for
+an in-batch retry mechanism, documentation follow-ups asked for the FAQ
+to stop hiding behind the anti-pattern tables.
+
+- **`--retries N` (default 1)** — after each batch fetch stage (PMID
+  metadata, DOI resolution, linked-PMID metadata), the calls the network
+  lost re-run once after a 2 s cool-off; recovered citations get real
+  verdicts in the same run instead of forcing a full re-run, and the
+  recovery count lands in `retried_recovered` (stderr `[NOTE]` lines,
+  JSON/HTML stats). A sweep never worsens a run: a still-open circuit
+  breaker aborts it and first-pass answers stand; `--retries 0` restores
+  the old single-pass behavior.
+- **`--check-net` semantics fix**: any HTTP response — including a 429 —
+  now counts as reachable (the host answered); only transport-level
+  failures (DNS, refused connection, timeout) report unreachable. A rate
+  limit is no longer misread as an outage, which matters in restricted
+  networks where 429s are common.
+- **Quick FAQ** — the main doc separates plain questions (with short
+  two-line answers: unknown vs invalid, partial caps, retry behavior,
+  claims-file timing, Zotero import, restricted networks) from the
+  anti-pattern tables, so neither has to stand in for the other.
 
 ## v5.6.0 — CSL JSON export & dual-route network pre-flight
 

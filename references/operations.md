@@ -43,6 +43,14 @@ are never cached — a cached "unknown" is impossible by construction.
 | Dead proxy env left behind | The registries look unreachable even though the network is fine — a stale env var **masquerades as an outage** | `env \| grep -i proxy`; unset and re-run `--check-net` |
 | Automation / CI direct connection | `unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy` in the job before invoking | A proxy that only handles some hosts gives partial reachability — judge by `--check-net`, not by one source |
 
+In-batch retry (v5.7.0): each batch fetch stage (PMID metadata, DOI
+resolution, linked-PMID metadata) re-runs only its network-failed calls
+after a 2 s cool-off — `--retries N` (default 1, 0 = off, max 3). A sweep
+never worsens a run: a still-open circuit breaker aborts it and the
+first-pass answers stand; recovered counts land in `stats.retried_recovered`
+and the stderr `[NOTE]` lines. Per-call transport retries (three attempts,
+429 Retry-After backoff, UA rotation) are unchanged and independent.
+
 `--check-net` is the arbiter: five registries, probed twice each (direct
 and via your `HTTPS_PROXY`, 5 s per route), one verdict line per source —
 a source blocked on the direct route but reachable through the configured

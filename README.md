@@ -42,6 +42,7 @@ Academic projects routinely contain hundreds of PMID citations. Manual verificat
 - **DOI-native verification** — `--dois` verifies DOIs directly (Crossref resolve, 404 = fabrication signal on explicit input); `--source` scans auto-extract DOIs; linked back to PMIDs via Europe PMC
 - **Delta audits** — `--diff previous-audit.json` reports newly retracted, degraded, improved, new and dropped citations
 - **Exports** — `--export-audit` (self-contained JSON trail), `--export-bibtex` / `--export-csl` (verified bibliography), `--export-csv` (spreadsheet audit table)
+- **In-batch retry sweeps** — `--retries N` (default 1) re-runs only the fetches the network lost after a cool-off; recovered citations get real verdicts in the same run (`retried_recovered`), no full re-run needed
 - **Replacement search** — Find correct PMIDs for broken citations via PubMed search
 - **Multiple output formats** — HTML report, JSON (with per-entry metadata origin), or terminal summary
 
