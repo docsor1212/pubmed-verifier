@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v5.7.0
+PMID Citation Verifier -- PubMed E-utilities API v5.8.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -86,8 +86,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "5.7.0"
-_UA_TOOL = "pubmed-verifier/5.7 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "5.8.0"
+_UA_TOOL = "pubmed-verifier/5.8 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -99,6 +99,7 @@ _UA_BROWSER = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
 _CIRCUIT_THRESHOLD = 2  # call-level consecutive transport failures per host
 _BREAKER_COOLDOWN_S = 30  # half-open: after this, admit one probe call
 _HOST_FAILS = defaultdict(int)
+_BREAKER_REJECTS = defaultdict(int)   # calls refused by an open breaker, per host (v5.8.0 visibility)
 _HOST_OPENED_AT = {}
 
 
@@ -138,6 +139,7 @@ def _api_get(url: str, max_retries: int = 3, timeout=None) -> bytes:
         opened_at = _HOST_OPENED_AT.get(hk)
         if opened_at is None:
             _HOST_OPENED_AT[hk] = time.time()
+            _BREAKER_REJECTS[hk] += 1
             raise CircuitOpenError(
                 f"{hk} 已连续 {_CIRCUIT_THRESHOLD} 次传输失败并熔断，跳过本批次后续请求。"
                 f"建议：确认网络/代理后重试；或 --timeout {_OPTS['timeout'] * 2:.0f} 放宽超时；"
@@ -147,6 +149,7 @@ def _api_get(url: str, max_retries: int = 3, timeout=None) -> bytes:
             _HOST_FAILS[hk] = _CIRCUIT_THRESHOLD - 1
             _HOST_OPENED_AT.pop(hk, None)
         else:
+            _BREAKER_REJECTS[hk] += 1
             raise CircuitOpenError(
                 f"{hk} 熔断中（{_BREAKER_COOLDOWN_S:.0f}s 冷却后自动试探）。"
                 f"建议：--meta-source europepmc 改走 Europe PMC 兜底源。")
@@ -187,6 +190,20 @@ def _api_get(url: str, max_retries: int = 3, timeout=None) -> bytes:
     if last_err is None:  # e.g. max_retries=0 — never raise None
         raise RuntimeError(f"no attempts made for {url}")
     raise last_err
+
+
+def _breaker_summary_line() -> str:
+    """End-of-run visibility for circuit-breaker skips (v5.8.0): the run
+    used to open the breaker silently and the only symptom was a pile of
+    unknowns; now one [WARN] line names the hosts, the skip counts and the
+    recovery path."""
+    if not _BREAKER_REJECTS:
+        return ""
+    parts = ", ".join(f"{h.split('//')[-1]} x{n}" for h, n in
+                      sorted(_BREAKER_REJECTS.items(), key=lambda kv: -kv[1]))
+    return (f"circuit breaker skipped {sum(_BREAKER_REJECTS.values())} call(s) "
+            f"to still-down host(s): {parts} — those citations stay unknown; "
+            f"re-run later (unknowns are never cached)")
 
 
 def _ncbi_params(extra: dict = None) -> str:
@@ -4480,7 +4497,7 @@ _CHECK_NET_TARGETS = [
 
 def _probe_url(url: str, timeout: int = 5, direct: bool = False) -> int:
     """One probe. direct=True builds an opener with an empty ProxyHandler so
-    environment proxies are bypassed; the default opener honours HTTPS_PROXY.
+    environment proxy settings are ignored; the default opener honours HTTPS_PROXY.
     Any HTTP response — including 429/403 — means the host itself is
     reachable: only transport-level failures (DNS, refused, timeout) count
     as unreachable (v5.7.0; a 429 used to masquerade as an outage)."""
@@ -4590,6 +4607,39 @@ def run_claims_lint(path: str) -> int:
         print(f"  {i}")
     print(f"{len(issues)} issue(s): {errors} error(s), {warns} warning(s), {infos} info")
     return 1 if errors else 0
+
+
+def _validate_args(args) -> None:
+    """Immediate flag validation with the written error contract (v5.8.0):
+    hard errors print [ERROR] and exit 2 before any work starts; soft
+    out-of-range values print [WARN] and proceed with the clamped value."""
+    def _hard(msg):
+        print(f"[ERROR] {msg}", file=sys.stderr)
+        sys.exit(2)
+
+    if args.timeout is None or args.timeout <= 0:
+        _hard(f"--timeout must be a positive number of seconds (got {args.timeout!r})")
+    if getattr(args, "cache_days", 30) < 0:
+        _hard(f"--cache-days must be >= 0 (got {args.cache_days})")
+    thr = getattr(args, "threshold", 0.2)
+    if not (0.0 <= thr <= 1.0):
+        _hard(f"--threshold is a 0..1 similarity cutoff (got {thr})")
+    if args.workers < 1:
+        _hard(f"--workers must be >= 1 (got {args.workers})")
+    if args.workers > 8:
+        print(f"[WARN] --workers {args.workers} exceeds the polite ceiling; clamping to 8",
+              file=sys.stderr)
+        args.workers = 8
+    ret = getattr(args, "retries", 1)
+    if ret < 0:
+        _hard(f"--retries must be >= 0 (got {ret})")
+    if ret > 3:
+        print(f"[WARN] --retries {ret} exceeds the supported range; clamping to 3",
+              file=sys.stderr)
+        args.retries = 3
+    me = getattr(args, "max_entries", 0)
+    if me and me < 0:
+        _hard(f"--max-entries must be >= 0 (0 = unlimited) (got {me})")
 
 
 def main():
@@ -4731,6 +4781,9 @@ def main():
             print("--claims-template needs SRC,OUT (comma-separated)", file=sys.stderr)
             sys.exit(1)
         sys.exit(run_claims_template(parts[0].strip(), parts[1].strip()))
+    # v5.8.0: immediate flag validation — out-of-range values fail loudly
+    # (or clamp with a [WARN]) instead of silently skewing the run
+    _validate_args(args)
 
     # Collect PMIDs with optional claimed metadata
     pmid_entries = []  # list of (pmid, source_file, context, claimed_dict)
@@ -5579,6 +5632,14 @@ def main():
         print(f"  budget: {ledger['budget']['citations_checked']} citations checked, "
               f"{ledger['budget']['network_errors']} network errors")
 
+    # v5.8.0: breaker visibility before any serialization, so
+    # stats.breaker_skipped lands in JSON/JSONL/HTML/bundle like every
+    # other stats field; the [WARN] keeps the end-of-run visibility
+    _bs = _breaker_summary_line()
+    if _bs:
+        print(f"[WARN] {_bs}", file=sys.stderr)
+        stats["breaker_skipped"] = sum(_BREAKER_REJECTS.values())
+
     # Output
     if args.output:
         ext = Path(args.output).suffix.lower()
@@ -5733,6 +5794,7 @@ def main():
             else:
                 line += f"\n   Error: {r.get('error', '?')}"
             print(line)
+
 
     # Exit codes: 2 = verification incomplete (network); 1 = problems found
     # (invalid / mismatch / retracted / DOI-splice); 0 = clean. Network-

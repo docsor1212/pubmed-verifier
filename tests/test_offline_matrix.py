@@ -35,6 +35,8 @@ def _ok(body: bytes):
 class _Reset(unittest.TestCase):
     def setUp(self):
         vp._HOST_FAILS.clear()
+        vp._HOST_OPENED_AT.clear()
+        vp._BREAKER_REJECTS.clear()
         vp._OPTS.update({"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20})
 
 
@@ -3776,6 +3778,104 @@ class TestV5700(_Reset):
         zh = (Path(__file__).resolve().parent.parent / "SKILL_ZH.md").read_text(encoding="utf-8")
         self.assertIn("## 快速 FAQ", zh)
         self.assertIn("retried_recovered", zh)
+
+
+class TestV5800(_Reset):
+    """v5.8.0: immediate flag validation (hard [ERROR]/exit 2 + soft [WARN]
+    clamps) + end-of-run circuit-breaker visibility + sample pack grows to
+    five runnable files + main-doc progressive trim."""
+
+    @staticmethod
+    def _args(**kw):
+        import argparse
+        base = dict(timeout=20, cache_days=30, threshold=0.2, workers=4,
+                    retries=1, max_entries=2000)
+        base.update(kw)
+        return argparse.Namespace(**base)
+
+    def test_validate_args_hard_errors(self):
+        import contextlib, io
+        for bad in (dict(timeout=0), dict(timeout=-3), dict(cache_days=-1),
+                    dict(threshold=1.5), dict(workers=0), dict(retries=-1),
+                    dict(max_entries=-5)):
+            buf = io.StringIO()
+            with contextlib.redirect_stderr(buf):
+                with self.assertRaises(SystemExit) as cm:
+                    vp._validate_args(self._args(**bad))
+            self.assertEqual(cm.exception.code, 2)
+            self.assertIn("[ERROR]", buf.getvalue())
+
+    def test_validate_args_soft_clamps(self):
+        import contextlib, io
+        buf = io.StringIO()
+        a = self._args(workers=99, retries=10)
+        with contextlib.redirect_stderr(buf):
+            vp._validate_args(a)
+        out = buf.getvalue()
+        self.assertEqual(a.workers, 8)
+        self.assertEqual(a.retries, 3)
+        self.assertEqual(out.count("[WARN]"), 2)
+        # clean args: no output, no exception
+        buf2 = io.StringIO()
+        with contextlib.redirect_stderr(buf2):
+            vp._validate_args(self._args())
+        self.assertEqual(buf2.getvalue(), "")
+
+    def test_breaker_summary_line(self):
+        self.assertEqual(vp._breaker_summary_line(), "")
+        vp._BREAKER_REJECTS["https://eutils.ncbi.nlm.nih.gov"] = 3
+        vp._BREAKER_REJECTS["https://api.openalex.org"] = 1
+        try:
+            line = vp._breaker_summary_line()
+            self.assertIn("skipped 4 call(s)", line)
+            self.assertIn("eutils.ncbi.nlm.nih.gov x3", line)
+            self.assertIn("unknowns are never cached", line)
+        finally:
+            vp._BREAKER_REJECTS.clear()
+
+    def test_api_get_rejection_counted(self):
+        vp._HOST_FAILS["https://eutils.ncbi.nlm.nih.gov"] = vp._CIRCUIT_THRESHOLD
+        try:
+            with self.assertRaises(vp.CircuitOpenError):
+                vp._api_get("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/einfo.fcgi",
+                            max_retries=1, timeout=1)
+            self.assertEqual(vp._BREAKER_REJECTS["https://eutils.ncbi.nlm.nih.gov"], 1)
+        finally:
+            vp._HOST_FAILS.clear()
+            vp._BREAKER_REJECTS.clear()
+            vp._HOST_OPENED_AT.clear()
+
+    def test_sample_pack_lint_clean(self):
+        ex = Path(__file__).resolve().parent.parent / "examples"
+        expected = {"claims.sample.csv", "claims.sample.json", "refs.sample.txt",
+                    "refs_list.sample.txt", "refs.sample.bib", "refs.sample.ris",
+                    "README.txt"}
+        self.assertTrue(expected.issubset({f.name for f in ex.iterdir()}))
+        # every shipped sample must lint/parse clean (mechanism lock)
+        self.assertEqual(vp.lint_claims_json(str(ex / "claims.sample.json")), [])
+        entries, issues = vp.parse_plaintext_references(str(ex / "refs.sample.txt"))
+        self.assertEqual((len(entries), issues), (3, []))
+        self.assertIn("claims.sample.json", (ex / "README.txt").read_text(encoding="utf-8"))
+        self.assertIn("refs.sample.txt", (ex / "README.txt").read_text(encoding="utf-8"))
+
+    def test_breaker_stats_before_serialization(self):
+        # stats.breaker_skipped must be assigned BEFORE every serialization
+        # point (v5.8.0 audit A6: the field was landing in no output)
+        src = (Path(__file__).resolve().parent.parent / "scripts"
+               / "verify_pmids.py").read_text(encoding="utf-8")
+        a = src.find('stats["breaker_skipped"]')
+        self.assertLess(a, src.find('"_stats": stats'))     # jsonl stats line
+        self.assertLess(a, src.find("generate_json_report(results, stats"))
+        self.assertLess(a, src.find("write_report_bundle(results, stats"))
+
+    def test_recent_releases_three_rows(self):
+        en = (Path(__file__).resolve().parent.parent / "SKILL.md").read_text(encoding="utf-8")
+        block = en[en.find("## Recent releases"):en.find("## Safety")]
+        self.assertIn("v5.8.0", block)
+        self.assertNotIn("v5.3.0", block)          # older rows live in CHANGELOG
+        self.assertNotIn("Mendeley Mendeley", en)  # duplicated-word typo
+        self.assertIn("v5.8.0", (Path(__file__).resolve().parent.parent
+                                 / "SKILL_ZH.md").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

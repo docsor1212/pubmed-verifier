@@ -21,6 +21,32 @@ section reads standalone):
 Complete version history. The SKILL.md "Recent releases" section keeps
 the recent highlights; everything older lives here verbatim.
 
+## v5.8.0 — loud flags, visible breakers, runnable samples
+
+Shaped by the v5.7.0 audit follow-ups: error-handling follow-ups asked
+for clearer feedback at the edges (flag validation, breaker state),
+documentation follow-ups asked for more runnable samples and a leaner
+main document.
+
+- **Immediate flag validation** — out-of-range values now fail before
+  any work starts with `[ERROR]` + exit 2 (`--timeout 0`,
+  `--cache-days -1`, `--threshold 1.5`, `--workers 0`, `--retries -1`),
+  and soft over-ranges clamp with a `[WARN]` (`--workers 99` -> 8,
+  `--retries 10` -> 3) instead of silently skewing the run.
+- **Circuit-breaker visibility** — when the breaker skipped calls during
+  a run, the run ends with one `[WARN]` line naming the hosts, the skip
+  counts and the recovery path (the counts also land in
+  `stats.breaker_skipped`), instead of leaving a pile of unknowns with
+  no explanation.
+- **Sample pack grows** — new `claims.sample.json` (the three claims
+  row types in JSON) and `refs.sample.txt` (the three plain-text
+  routing shapes in one list: inline PMID, inline DOI, title-only);
+  both lint/parse clean, with commands in `examples/README.txt`. The
+  `.bib`/`.ris` samples stay for GitHub/zip users.
+- **Leaner main doc** — Recent releases keeps the last three rows
+  (history lives in CHANGELOG), the Python section and the parsing note
+  condensed; nothing load-bearing was removed.
+
 ## v5.7.0 — in-batch retry sweeps & reachable-means-reachable
 
 Shaped by the v5.6.0 audit follow-ups: reliability follow-ups asked for
@@ -58,8 +84,8 @@ manager on one side, the restricted network on the other.
   mismatched and unknown entries are excluded (same inclusion rules as
   the BibTeX and RIS exports). The evidence pack includes it as
   `verified-refs.csl` (now eight files).
-- **`--check-net` probes every source twice** — once bypassing proxies,
-  once through your `HTTPS_PROXY`. A source that is blocked on the
+- **`--check-net` probes every source twice** — once ignoring proxy
+  settings, once through your `HTTPS_PROXY`. A source that is blocked on the
   direct route but reachable through the configured proxy now reports
   as usable instead of unreachable, and every line names the
   verification paths that source serves plus the in-tool fallback

@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 5.7.0
+version: 5.8.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v5.7.0
+# PubMed Citation Verifier v5.8.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -98,22 +98,16 @@ mixes both, research first, then audit the final reference list here.
 
 ## Use from Python
 
-The whole tool is one stdlib module — import it without installing
-anything (full reference: `references/python_api.md`):
+One stdlib module, nothing to install:
 
 ```python
-import sys
-sys.path.insert(0, "/path/to/pubmed-verifier/scripts")
-import verify_pmids as vp
-
+import verify_pmids as vp   # sys.path pointing at scripts/
 info = vp.fetch_summaries(["31018962"], batch_size=1)["31018962"]
-cross = vp.cross_check_citation(
-    {"claimed_title": "Classification criteria for autoinflammatory recurrent fevers",
-     "claimed_year": "2019"},
-    {"title": info["title"], "authors": info["authors"],
-     "journal": info["journal"], "pubdate": info["pubdate"]})
-print(cross["verdict"], round(cross["confidence"], 2))
+print(vp.cross_check_citation({"claimed_title": info["title"]},
+                              info)["verdict"])
 ```
+
+Full function reference and runnable examples: `references/python_api.md`.
 
 ## Know before you run
 
@@ -438,55 +432,20 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v5.8.0** — immediate flag validation (out-of-range values fail loudly
+  with `[ERROR]` + exit 2, soft ones clamp with a `[WARN]`); end-of-run
+  circuit-breaker visibility (one `[WARN]` names skipped hosts, counts
+  and the recovery path); sample pack grows
+  (`claims.sample.json`, `refs.sample.txt` new — all lint/parse clean).
 - **v5.7.0** — in-batch retry sweeps: `--retries N` (default 1) re-runs
   just the fetches the network lost, after a 2 s cool-off, and reports
   what it recovered — no more full re-runs after a mid-batch blip;
-  `--check-net` treats any HTTP response (including 429) as reachable —
-  only transport failures count as outages; Quick FAQ split from
-  anti-patterns with short plain answers.
+  `--check-net` treats any HTTP response (including 429) as reachable.
 - **v5.6.0** — `--export-csl` writes the verified bibliography as CSL
-  JSON (imports straight into Zotero via File > Import; Mendeley
-  Mendeley and Pandoc read the same file); `--check-net` now probes
-  each source twice (direct + via `HTTPS_PROXY`) and every line names
-  the verification paths it serves and the fallback source.
-- **v5.5.0** — `references/operations.md` (batching math, proxy
-  scenarios, speed checklist, CI gate, script section map) + the error
-  contract written down (exit codes + `[ERROR]/[WARN]/[NOTE]` stderr
-  vocabulary, normalized in the tool's output).
-- **v5.4.0** — `--help` grouped by task domain (38 flags, five groups);
-  `references/flags.md` scenario→command cheat sheet; `--sort cited`
-  report ordering.
-- **v5.3.0** — retraction reasons distilled from the notice record
-  (abstract > semantic title; the original title never masquerades as a
-  reason); `--doctor` environment self-check; `--jsonl` stream output;
-  HTML rows expand the full evidence trail inline.
-- **v5.2.0** — `--max-entries` quantified input guard (the de-duplicated
-  workload counted against a threshold, with a split recommendation);
-  `cited_by_count` rides Europe PMC/OpenAlex responses (zero extra
-  requests); trigger section described by pattern with a
-  combination-run table.
-- **v5.1.0** — structured retraction detail (`retraction_type` across
-  all three registries; removal newly detected and capped); explicit
-  `--pmids`/`--source` precedence warning; mainland-China usage guide
-  one-pager; boundary table gains scale/concurrency rows.
-- **v5.0.0** — paste-and-verify (`--stdin` reads a copied reference list
-  straight from the pipe) and `--quick`, the pre-submission final pass in
-  one flag (--no-cache + --verify-doi + --suggest); FAQ depth (a
-  format-specific "when parsing fails" table); main doc slimmed to ~450
-  lines.
-- **v4.9.0** — PowerPoint `.pptx` decks are read directly (slides in
-  order + speaker notes); verdict-ladder monotonicity: a scanned
-  citation whose only gap is the missing author claim (title matched,
-  journal/year never claimed) grades correct with the evidence route
-  labeled — stronger evidence can no longer grade below a bare
-  existence check.
-- **v4.8.0** — Word `.docx` and `.html` inputs are read directly by
-  `--source`/`--parse-text` (in-memory extraction; link targets kept,
-  script/style dropped); title-only citations get a second opinion via
-  PubMed title search — same-PMID corroboration upgrades to correct
-  (honestly labeled), a different-record hit surfaces a wrong-PMID
-  signal, and the leg never manufactures a mismatch.
-- Versions **v4.7.0 and older** — full entries in [references/CHANGELOG.md](references/CHANGELOG.md).
+  JSON (imports straight into Zotero via File > Import; Mendeley and
+  Pandoc read the same file); `--check-net` probes each source twice
+  (direct + via `HTTPS_PROXY`) and every line names the verification
+  paths it serves and the fallback source.
 
 ## Safety & behavior statement
 
@@ -529,10 +488,8 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
    searches PubMed with the claimed metadata and proposes top-3 candidates.
    (Suggestion search always uses NCBI, even with `--meta-source europepmc`.)
 
-Context parsing is heuristic — since v3.3.0, common abbreviations
-("U.S.", "e.g.", "vs.") no longer split a title, but exotic formatting
-still can. For precise verification, feed structured claims via
-`--claims-file`.
+Context parsing is heuristic (see "Know before you run"); `--claims-file`
+gives exact metadata.
 
 | Report | Flag | Use |
 |--------|------|-----|
@@ -583,7 +540,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v5.7.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v5.8.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
 | `references/flags.md` | Flag cheat sheet — scenario → one command, all 39 flags grouped |

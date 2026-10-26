@@ -24,3 +24,14 @@ python3 scripts/verify_pmids.py --bibliography examples/refs.sample.bib
 
 RIS (v3.7.0): refs.sample.ris audits Zotero/EndNote/Mendeley exports —
 python3 scripts/verify_pmids.py --bibliography examples/refs.sample.ris
+
+Claims JSON (v5.8.0): claims.sample.json shows the three row types in
+JSON form — a PMID row with full claimed metadata, a DOI-only row, and
+an arXiv row (v3.1.0):
+python3 scripts/verify_pmids.py --claims-file examples/claims.sample.json
+Lint it offline first: --lint-claims examples/claims.sample.json
+
+Plain-text list (v5.8.0): refs.sample.txt shows the three routing shapes
+in one list — an inline-PMID entry, an inline-DOI entry and a title-only
+entry (resolves via PubMed title search, honestly labeled):
+python3 scripts/verify_pmids.py --parse-text examples/refs.sample.txt

@@ -51,6 +51,11 @@ first-pass answers stand; recovered counts land in `stats.retried_recovered`
 and the stderr `[NOTE]` lines. Per-call transport retries (three attempts,
 429 Retry-After backoff, UA rotation) are unchanged and independent.
 
+Exit-code note (v5.8.0): exit 2 also covers invalid flag values —
+`[ERROR]` + exit 2 fires before any work (`--timeout 0`, `--threshold 1.5`,
+`--workers 0`, negative `--cache-days`/`--retries`/`--max-entries`); soft
+over-ranges clamp with a `[WARN]` (`--workers 99` -> 8, `--retries 10` -> 3).
+
 `--check-net` is the arbiter: five registries, probed twice each (direct
 and via your `HTTPS_PROXY`, 5 s per route), one verdict line per source —
 a source blocked on the direct route but reachable through the configured
