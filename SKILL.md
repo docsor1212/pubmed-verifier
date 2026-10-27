@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 5.8.0
+version: 5.9.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v5.8.0
+# PubMed Citation Verifier v5.9.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -74,7 +74,11 @@ word needed**); "这篇撤稿了该引什么" → `--suggest` on a retracted ent
   cite-holmes; run this skill on the DRAFT's reference list at the end);
 - MUST NOT invoke for: plain formatting of UNVERIFIED citations without
   verification intent — formatting stands on verified records
-  (`--format-references` verifies first by design).
+  (`--format-references` verifies first by design);
+- Mixed intent ("check the citations in my draft", "帮我润色并核对文献"):
+  when verification is named, this skill wins for the citation list
+  (run it on the draft/list first); the other task proceeds separately.
+  When only writing/polishing is named with no list, do NOT invoke.
 
 **Combination runs** (flags stack; each does one job):
 
@@ -116,7 +120,7 @@ Six limits cover 95% of surprises — each has a one-flag workaround:
 | Limit | Workaround |
 |---|---|
 | Citation-context parsing is heuristic (exotic formatting can mis-split) | `--claims-file` for exact metadata |
-| Chinese references without a PMID/DOI marker parse weakly | `--parse-text` (OpenAlex CJK leg) or supply an ID |
+| Chinese references without an ID: an ID-less Chinese line of ~12+ characters routes to OpenAlex title search; the verdict needs the registered title verbatim in the entry (a given year must match; journal is not required); short fragments and prose paragraphs stay unknown | `--parse-text` (OpenAlex CJK leg) or supply an ID |
 | Network failures stay `unknown` — never silently "not found" | `--check-net` first, retry when reachable |
 | Retraction/DOI status is as of cache time (30 days) | `--no-cache` for the final pre-submission pass |
 | Office/HTML input extracts text only — scanned PDFs and images carry no extractable text | Export to text/HTML first, or feed IDs via `--claims-file` |
@@ -132,6 +136,7 @@ Everything else below expands on these.
 | Every FAQ, scenario walkthrough and tuning knob | `references/usage_guide.md` |
 | A scenario→command cheat sheet for all 39 flags | `references/flags.md` |
 | Bulk batching, proxies, speed, CI gating and the stderr marker contract | `references/operations.md` |
+| An `[ERROR]`/`[WARN]` on screen, or results that look wrong | `references/troubleshooting.md` (one error, one row) |
 | The Python API reference / runnable examples | `references/python_api.md` / `references/api_examples.md` |
 | Which file to open for which task | `references/INDEX.md` |
 
@@ -378,7 +383,7 @@ the one-flag workaround:
 
 | Capability | What it does | Where it stops | Workaround |
 |---|---|---|---|
-| Context parsing | Splits reference text into claimed metadata; common abbreviations (U.S., e.g., vs.) protected | Exotic formatting can still mis-split; CJK without a PMID/DOI marker parses weakly | `--claims-file` for exact metadata; `--parse-text` adds the OpenAlex CJK leg |
+| Context parsing | Splits reference text into claimed metadata; common abbreviations (U.S., e.g., vs.) protected | Exotic formatting can still mis-split; an ID-less CJK line verifies via OpenAlex title search only when the registered title appears verbatim in the entry — short fragments and prose paragraphs stay unknown | `--claims-file` for exact metadata; `--parse-text` adds the OpenAlex CJK leg |
 | Five-state verdicts | correct / mismatch / partial / invalid / unknown with per-field evidence | Heuristic — a verdict is evidence-weighted, never absolute proof | Audit trail (`--export-audit`) keeps the chain replayable |
 | Retraction detection | Registry pubtype + Crossref `updated-by`, capped at partial | Status is as of cache time (30 days) | `--no-cache` for the final pass |
 | DOI verification | Crossref first, OpenAlex fallback for non-Crossref registries | DOIs absent from BOTH registries stay suspect/invalid by the 404 rule | Cross-check at doi.org before accusing |
@@ -432,20 +437,20 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v5.9.0** — `references/troubleshooting.md` (+`_ZH`): one error, one
+  row — the literal `[ERROR]`/`[WARN]` text → cause → one-command fix;
+  `python_api.md` goes Chinese-first (quick start, per-section summaries);
+  mixed-intent arbitration in the trigger section; the CJK boundary made
+  concrete (marker OR journal+year, or it cannot be verified).
 - **v5.8.0** — immediate flag validation (out-of-range values fail loudly
   with `[ERROR]` + exit 2, soft ones clamp with a `[WARN]`); end-of-run
   circuit-breaker visibility (one `[WARN]` names skipped hosts, counts
-  and the recovery path); sample pack grows
-  (`claims.sample.json`, `refs.sample.txt` new — all lint/parse clean).
+  and the recovery path); sample pack grows (`claims.sample.json`,
+  `refs.sample.txt` new — all lint/parse clean).
 - **v5.7.0** — in-batch retry sweeps: `--retries N` (default 1) re-runs
   just the fetches the network lost, after a 2 s cool-off, and reports
   what it recovered — no more full re-runs after a mid-batch blip;
   `--check-net` treats any HTTP response (including 429) as reachable.
-- **v5.6.0** — `--export-csl` writes the verified bibliography as CSL
-  JSON (imports straight into Zotero via File > Import; Mendeley and
-  Pandoc read the same file); `--check-net` probes each source twice
-  (direct + via `HTTPS_PROXY`) and every line names the verification
-  paths it serves and the fallback source.
 
 ## Safety & behavior statement
 
@@ -540,9 +545,10 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v5.8.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v5.9.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
+| `references/troubleshooting.md` | Troubleshooting index — one error, one row (literal text → cause → fix) |
 | `references/flags.md` | Flag cheat sheet — scenario → one command, all 39 flags grouped |
 | `references/operations.md` | Operations playbook — batching math, proxy scenarios, speed checklist, error contract, CI gate |
 | `references/INDEX.md` | 任务→文档 30 秒路由表 |

@@ -21,6 +21,32 @@ section reads standalone):
 Complete version history. The SKILL.md "Recent releases" section keeps
 the recent highlights; everything older lives here verbatim.
 
+## v5.9.0 — a troubleshooting index, a Chinese API page, mixed-intent rules
+
+Shaped by the v5.8.0 audit follow-ups: documentation follow-ups asked
+for the scattered error advice to meet in one place, domestic follow-ups
+asked for a Chinese Python-API page, trigger follow-ups asked who wins
+when two tasks are named in one request.
+
+- **`references/troubleshooting.md` (+`_ZH`)** — one error, one row: the
+  literal `[ERROR]`/`[WARN]` text → the cause → the one-command fix,
+  covering exit codes, the flag-validation errors, breaker skips,
+  skip-line parser messages, the wrong-looking-verdict cases, mixed
+  intent, and restricted-network quick fixes. Routed from INDEX and both
+  documentation maps.
+- **`python_api.md` goes Chinese-first** — a 30-second quick-start block,
+  a per-section Chinese summary line, and a translated notes section, so
+  a code-integrating reader works from Chinese without cross-referencing.
+- **Mixed-intent arbitration in the trigger section** — when a request
+  names verification AND another task ("润色并核对文献"), the citation
+  list belongs to this skill first; writing/polishing alone with no list
+  never triggers it.
+- **CJK boundary made concrete** — an ID-less Chinese line of ~12+
+  characters routes to OpenAlex title search, and the verdict needs the
+  registered title verbatim in the entry (a given year must match;
+  journal is not required); short fragments and prose paragraphs stay
+  unknown (`--claims-file` is the language-independent route).
+
 ## v5.8.0 — loud flags, visible breakers, runnable samples
 
 Shaped by the v5.7.0 audit follow-ups: error-handling follow-ups asked

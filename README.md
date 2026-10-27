@@ -44,6 +44,7 @@ Academic projects routinely contain hundreds of PMID citations. Manual verificat
 - **Exports** — `--export-audit` (self-contained JSON trail), `--export-bibtex` / `--export-csl` (verified bibliography), `--export-csv` (spreadsheet audit table)
 - **In-batch retry sweeps** — `--retries N` (default 1) re-runs only the fetches the network lost after a cool-off; recovered citations get real verdicts in the same run (`retried_recovered`), no full re-run needed
 - **Loud flag validation & breaker visibility** — out-of-range flags fail before the run (`[ERROR]` + exit 2) or clamp with a `[WARN]`; if the circuit breaker skipped calls, the run ends with one `[WARN]` naming hosts, counts and the recovery path
+- **Troubleshooting index** — `references/troubleshooting.md` (+`_ZH`): the `[ERROR]`/`[WARN]` texts one row each — literal text, cause, one-command fix
 - **Replacement search** — Find correct PMIDs for broken citations via PubMed search
 - **Multiple output formats** — HTML report, JSON (with per-entry metadata origin), or terminal summary
 

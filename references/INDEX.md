@@ -9,5 +9,6 @@
 | 回答审稿人「引用怎么核验的」 | --export-audit + --report-bundle | [usage_guide.md](usage_guide.md) Worked scenarios |
 | Python 代码集成 | [python_api.md](python_api.md) 第 1 节模板 | [api_examples.md](api_examples.md) 字段说明 |
 | 报错/网络/代理/提速 | SKILL.md「Know before you run」四条 | [usage_guide.md](usage_guide.md) FAQ 完整版 |
+| 终端出现 [ERROR]/[WARN]、判定全是待确认、结果与预期不符 | SKILL.md「Know before you run」 | [troubleshooting_ZH.md](troubleshooting_ZH.md)（EN=[troubleshooting.md](troubleshooting.md)）一条报错一行对策 |
 | 某版本改了什么 | SKILL.md「Recent releases」 | [CHANGELOG.md](CHANGELOG.md) 完整史 |
 | 大批量分批/代理配置/提速/CI 接入/stderr 标识 | SKILL.md「Know before you run」 | [operations.md](operations.md) 运维手册（含错误码契约表） |

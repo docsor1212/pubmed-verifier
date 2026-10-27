@@ -3878,5 +3878,75 @@ class TestV5800(_Reset):
                                  / "SKILL_ZH.md").read_text(encoding="utf-8"))
 
 
+class TestV5900(_Reset):
+    """v5.9.0: troubleshooting index (one error, one row) + Chinese-first
+    python_api + mixed-intent arbitration + concrete CJK boundary."""
+
+    def test_troubleshooting_exists_and_routed(self):
+        refs = Path(__file__).resolve().parent.parent / "references"
+        en = refs / "troubleshooting.md"
+        zh = refs / "troubleshooting_ZH.md"
+        for f in (en, zh):
+            self.assertTrue(f.exists())
+            text = f.read_text(encoding="utf-8")
+            self.assertTrue("one row" in text or "一行对策" in text, f)
+        idx = (refs / "INDEX.md").read_text(encoding="utf-8")
+        self.assertIn("troubleshooting_ZH.md", idx)
+        for name, marker in (("SKILL.md", "troubleshooting.md"),
+                             ("SKILL_ZH.md", "troubleshooting_ZH.md")):
+            self.assertIn(marker, (Path(__file__).resolve().parent.parent
+                                   / name).read_text(encoding="utf-8"))
+
+    def test_troubleshooting_drift_guard(self):
+        # the literal error strings the tool prints must appear in the page
+        src = (Path(__file__).resolve().parent.parent / "scripts"
+               / "verify_pmids.py").read_text(encoding="utf-8")
+        doc = (Path(__file__).resolve().parent.parent / "references"
+               / "troubleshooting.md").read_text(encoding="utf-8")
+        for literal in ("--stdin received no input", "mutually exclusive",
+                        "similarity cutoff", "no routable ID and no usable title"):
+            self.assertIn(literal, src)      # still what the tool prints
+            self.assertIn(literal, doc)      # the page still documents it
+
+    def test_python_api_chinese_first(self):
+        c = (Path(__file__).resolve().parent.parent / "references"
+             / "python_api.md").read_text(encoding="utf-8")
+        self.assertIn("Python API 参考（中文版）", c)
+        self.assertIn("## 快速开始（30 秒）", c)
+        self.assertIn("五态判定阶梯", c)       # per-section summary present
+        self.assertIn("报错速查", c)           # notes route to the new page
+        self.assertIn("import verify_pmids as vp", c)
+
+    def test_mixed_intent_arbitration(self):
+        en = (Path(__file__).resolve().parent.parent / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("Mixed intent", en)
+        self.assertIn("this skill wins for the citation list", en)
+        zh = (Path(__file__).resolve().parent.parent / "SKILL_ZH.md").read_text(encoding="utf-8")
+        self.assertIn("混合意图裁决", zh)
+
+    def test_cjk_boundary_concrete(self):
+        # v5.9.0 audit A4: the boundary must state the REAL gate — route on
+        # length, verdict on the registered title appearing verbatim
+        en = (Path(__file__).resolve().parent.parent / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("routes to OpenAlex title search", en)
+        self.assertIn("short fragments and prose paragraphs stay unknown", en)
+        self.assertNotIn("journal+year for title search", en)   # false gate never returns
+        zh = (Path(__file__).resolve().parent.parent / "SKILL_ZH.md").read_text(encoding="utf-8")
+        self.assertIn("注册标题逐字出现于条目原文", zh)
+        # the doc map table must stay a clean 2-column table (audit B-P1)
+        zh_map = zh[zh.find("**文档地图**"):zh.find("## 五态判定系统")]
+        for line in zh_map.splitlines():
+            if line.startswith("|"):
+                self.assertEqual(line.count("|"), 3, line)  # 2 columns = 3 pipes
+
+    def test_recent_releases_three_rows(self):
+        en = (Path(__file__).resolve().parent.parent / "SKILL.md").read_text(encoding="utf-8")
+        block = en[en.find("## Recent releases"):en.find("## Safety")]
+        self.assertIn("v5.9.0", block)
+        self.assertNotIn("v5.6.0", block)
+        self.assertIn("v5.9.0", (Path(__file__).resolve().parent.parent
+                                 / "SKILL_ZH.md").read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
