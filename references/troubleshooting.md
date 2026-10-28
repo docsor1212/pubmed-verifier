@@ -24,7 +24,8 @@
 | `--threshold is a 0..1 similarity cutoff (got 1.5)` | flag validation (v5.8.0): the run refused to start | pass a 0..1 value |
 | `--timeout must be a positive number of seconds` | flag validation | pass seconds, e.g. `--timeout 60` |
 | `--workers 99 exceeds the polite ceiling; clamping to 8` | soft clamp — the run proceeds with 8 | nothing; lower it to silence the `[WARN]` |
-| `已连续 X 次传输失败并熔断` / `circuit breaker skipped N call(s)` | a host failed repeatedly; later calls to it are skipped to avoid hammering | re-run later (unknowns are never cached); `--meta-source europepmc` switches the metadata source; `--check-net` shows which route works |
+| `无法连接 <host>（已连续 N 次传输失败）` / `circuit breaker skipped N call(s)` | a host failed repeatedly; later calls to it are skipped to avoid hammering | re-run later (unknowns are never cached); `--meta-source europepmc` switches the metadata source; `--check-net` shows which route works |
+| `[NOTE] <file>: structured parse produced no text — reading as plain text` | a structured file (docx/pptx/html/JATS) degraded to a byte scan — results from it may be incomplete | re-export to text/HTML, or ignore if the file is genuinely plain text |
 | `{source} not found` | the `--source` path does not exist | check the path |
 | `text#N: no routable ID and no usable title — skipped (...)` | the line had no PMID/DOI/arXiv ID and was too short to title-search (the parentheses quote its first 48 characters) | add an ID, or feed `--claims-file` for exact metadata |
 

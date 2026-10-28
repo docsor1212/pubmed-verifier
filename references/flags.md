@@ -28,6 +28,7 @@ and `--format-references` are the only "composer" flags most users ever need.
 | Flag | Effect |
 |---|---|
 | `--source PATH` | Scan a file/directory for PMIDs + DOIs + arXiv IDs (context parsing on) |
+| `--source file.nxml`/`.jats`/`.xml` | JATS/NLM article XML (PMC format) extracts in-memory; a non-JATS `.xml` reads as plain text with a `[NOTE]` |
 | `--pmids 1,2,3` | Verify specific PMIDs |
 | `--dois 10.1/x` | Verify DOIs via Crossref |
 | `--arxivs 2401.12345` | Verify arXiv IDs (throttled 1 call/3 s by the API) |

@@ -3904,7 +3904,8 @@ class TestV5900(_Reset):
         doc = (Path(__file__).resolve().parent.parent / "references"
                / "troubleshooting.md").read_text(encoding="utf-8")
         for literal in ("--stdin received no input", "mutually exclusive",
-                        "similarity cutoff", "no routable ID and no usable title"):
+                        "similarity cutoff", "no routable ID and no usable title",
+                        "reading as plain text"):   # v6.0.0 fallback [NOTE] (single-line fragment: the full sentence wraps in source)
             self.assertIn(literal, src)      # still what the tool prints
             self.assertIn(literal, doc)      # the page still documents it
 
@@ -3946,6 +3947,104 @@ class TestV5900(_Reset):
         self.assertNotIn("v5.6.0", block)
         self.assertIn("v5.9.0", (Path(__file__).resolve().parent.parent
                                  / "SKILL_ZH.md").read_text(encoding="utf-8"))
+
+
+class TestV6000(_Reset):
+    """v6.0.0: JATS/NLM XML input + honest fallbacks ([NOTE] on degraded
+    structured files, humanized breaker notices) + a leaner Quick start."""
+
+    JATS = """<?xml version="1.0"?>
+    <article xmlns:xlink="http://www.w3.org/1999/xlink" article-type="research-article">
+      <front><article-meta><title-group><article-title>Fevers study</article-title></title-group>
+      <abstract><p>We reviewed PMID: 31018962.</p></abstract></article-meta></front>
+      <body><sec><title>Intro</title>
+        <p>Per <ext-link xlink:href="https://pubmed.ncbi.nlm.nih.gov/22213727/">criteria</ext-link>.</p>
+        <p>PMID: 24476887 was the STAP paper. DOI: 10.1038/nature12968</p>
+      </sec></body>
+      <back><ref-list><ref>Ref with DOI: 10.4012/dmj.2020-408</ref></ref-list></back>
+    </article>
+    """
+
+    def _tmp(self, suffix, data, mode="w"):
+        import tempfile
+        f = tempfile.NamedTemporaryFile(suffix=suffix, delete=False, **({"mode": mode} if mode else {}))
+        if mode:
+            f.write(data if isinstance(data, str) else data.decode())
+        else:
+            f.write(data)
+        f.close()
+        return f.name
+
+    def test_jats_extraction(self):
+        import contextlib, io
+        path = self._tmp(".nxml", self.JATS)
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            text, fmt = vp._read_text_any(path)
+        self.assertEqual(fmt, "jats")
+        for needle in ("31018962", "22213727", "24476887", "10.1038/nature12968",
+                       "10.4012/dmj.2020-408", "Fevers study"):
+            self.assertIn(needle, text)
+        self.assertNotIn("[NOTE]", buf.getvalue())   # clean extract: no fallback note
+
+    def test_non_jats_xml_falls_through_with_note(self):
+        import contextlib, io
+        path = self._tmp(".xml", "<config><setting>a</setting></config>")
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            text, fmt = vp._read_text_any(path)
+        self.assertEqual(fmt, "text")
+        self.assertIn("<config>", text)              # raw read, not stripped
+        self.assertIn("[NOTE]", buf.getvalue())      # degradation announced
+
+    def test_damaged_docx_fallback_announced(self):
+        import contextlib, io
+        path = self._tmp(".docx", b"not a zip", mode=None)
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            text, fmt = vp._read_text_any(path)
+        self.assertEqual(fmt, "text")
+        self.assertIn("[NOTE]", buf.getvalue())
+        self.assertIn("results may be incomplete", buf.getvalue())
+
+    def test_breaker_messages_lead_with_outcome(self):
+        src = (Path(__file__).resolve().parent.parent / "scripts"
+               / "verify_pmids.py").read_text(encoding="utf-8")
+        self.assertIn("本批次跳过该数据源——受影响的引用将标记为待确认，不会误报不存在", src)
+        self.assertIn("稍候", src)                    # cooldown message humanized
+        self.assertNotIn("已连续 {_CIRCUIT_THRESHOLD} 次传输失败并熔断", src)
+
+    def test_quick_start_ten_and_structure_intact(self):
+        en = (Path(__file__).resolve().parent.parent / "SKILL.md").read_text(encoding="utf-8")
+        qs = en[en.find("## Quick start"):en.find("## What the output looks like")]
+        for cmd in ("--quick", "--stdin --suggest", "--claims-file", "--parse-text",
+                    "--format-references", "--report-bundle", "--doctor", "--check-net",
+                    "flags.md"):
+            self.assertIn(cmd, qs)
+        self.assertNotIn("JIA pathogenesis", qs)      # demo moved out of the front door
+        # structure-integrity lock: every core section survives in both docs
+        # (v6.0.0 dev incident: a ZH section was cut by a wrong boundary find)
+        zh = (Path(__file__).resolve().parent.parent / "SKILL_ZH.md").read_text(encoding="utf-8")
+        for sec in ("## 触发词", "## 快速开始", "## 快速 FAQ", "## 输出长什么样",
+                    "## 反模式", "## 边界与声明", "## 近期版本", "## 安全与行为声明"):
+            self.assertIn(sec, zh)
+        for sec in ("## Trigger words", "## Quick start", "## Quick FAQ",
+                    "## What the output looks like", "## Anti-patterns",
+                    "## Boundaries", "## Recent releases", "## Safety & behavior statement"):
+            self.assertIn(sec, en)
+
+    def test_jats_in_scan_extensions(self):
+        import inspect
+        sig = inspect.signature(vp.extract_pmids_from_directory)
+        for ext in (".nxml", ".jats", ".xml"):
+            self.assertIn(ext, sig.parameters["extensions"].default)
+        src = (Path(__file__).resolve().parent.parent / "scripts"
+               / "verify_pmids.py").read_text(encoding="utf-8")
+        # dir-scan default tuple (one line) + the main walk's continuation
+        # line both carry the new extensions
+        ext_tuple = '(".html", ".md", ".txt", ".htm", ".json", ".docx", ".pptx", ".nxml", ".jats", ".xml")'
+        self.assertEqual(src.count(ext_tuple), 1)
+        self.assertIn('".pptx", ".nxml", ".jats", ".xml"))', src)   # main walk
 
 
 if __name__ == "__main__":

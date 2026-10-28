@@ -23,7 +23,8 @@
 | `--threshold is a 0..1 similarity cutoff (got 1.5)` | 旗标校验（v5.8.0）：运行拒绝启动 | 传 0..1 之间的值 |
 | `--timeout must be a positive number of seconds` | 旗标校验 | 传秒数，如 `--timeout 60` |
 | `--workers 99 exceeds the polite ceiling; clamping to 8` | 软钳制——按 8 继续运行 | 无需处理；调低可消除 `[WARN]` |
-| `已连续 X 次传输失败并熔断` / `circuit breaker skipped N call(s)` | 某主机连续失败，后续调用被跳过以免硬打 | 稍后重跑（unknown 不写缓存）；`--meta-source europepmc` 换元数据源；`--check-net` 看哪条路通 |
+| `无法连接 <主机>（已连续 N 次传输失败）` / `circuit breaker skipped N call(s)` | 某主机连续失败，后续调用被跳过以免硬打 | 稍后重跑（unknown 不写缓存）；`--meta-source europepmc` 换元数据源；`--check-net` 看哪条路通 |
+| `[NOTE] <文件>: structured parse produced no text — reading as plain text` | 结构化文件（docx/pptx/html/JATS）解析失败已回退纯文本——来自它的结果可能不完整 | 导出为文本/HTML 重跑；或该文件本就是纯文本则忽略 |
 | `{source} not found` | `--source` 路径不存在 | 核对路径 |
 | `text#N: no routable ID and no usable title — skipped (...)` | 该行无 PMID/DOI/arXiv ID 且过短无法标题检索（括号内引用其前 48 字符） | 补 ID，或 `--claims-file` 提供精确元数据 |
 

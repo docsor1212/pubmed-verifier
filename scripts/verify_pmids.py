@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v5.9.0
+PMID Citation Verifier -- PubMed E-utilities API v6.0.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -86,8 +86,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "5.9.0"
-_UA_TOOL = "pubmed-verifier/5.9 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "6.0.0"
+_UA_TOOL = "pubmed-verifier/6.0 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -141,7 +141,8 @@ def _api_get(url: str, max_retries: int = 3, timeout=None) -> bytes:
             _HOST_OPENED_AT[hk] = time.time()
             _BREAKER_REJECTS[hk] += 1
             raise CircuitOpenError(
-                f"{hk} 已连续 {_CIRCUIT_THRESHOLD} 次传输失败并熔断，跳过本批次后续请求。"
+                f"无法连接 {hk}（已连续 {_CIRCUIT_THRESHOLD} 次传输失败），"
+                f"本批次跳过该数据源——受影响的引用将标记为待确认，不会误报不存在。"
                 f"建议：确认网络/代理后重试；或 --timeout {_OPTS['timeout'] * 2:.0f} 放宽超时；"
                 f"或 --meta-source europepmc 改走 Europe PMC 兜底源。")
         if time.time() - opened_at >= _BREAKER_COOLDOWN_S:
@@ -151,8 +152,8 @@ def _api_get(url: str, max_retries: int = 3, timeout=None) -> bytes:
         else:
             _BREAKER_REJECTS[hk] += 1
             raise CircuitOpenError(
-                f"{hk} 熔断中（{_BREAKER_COOLDOWN_S:.0f}s 冷却后自动试探）。"
-                f"建议：--meta-source europepmc 改走 Europe PMC 兜底源。")
+                f"{hk} 刚刚连续失败，稍候 {_BREAKER_COOLDOWN_S:.0f}s 会自动重试——"
+                f"本批次先跳过它。建议：--meta-source europepmc 改走 Europe PMC 兜底源。")
     last_err = None
     transport = False
     for attempt in range(max_retries):
@@ -2118,10 +2119,59 @@ def _read_text_any(filepath: str) -> tuple:
             text = re.sub(r"\n{3,}", "\n\n", text).strip()
             if text:
                 return text, "html"
+        elif lower.endswith((".nxml", ".jats", ".xml")):
+            # JATS/NLM XML (v6.0.0) — the PMC/NLM article format used by
+            # journal export pipelines. A random .xml (config, sitemap) is
+            # NOT touched: only a document whose root is an NLM <article>
+            # (or a JATS-namespace root) is extracted; everything else
+            # falls through to the raw read below.
+            if os.path.getsize(filepath) > 64 * 1024 * 1024:
+                raise ValueError("xml exceeds 64MB cap")
+            root = ET.fromstring(Path(filepath).read_bytes())
+
+            def _local(t):
+                return t.rsplit("}", 1)[-1]
+            if _local(root.tag) in ("article", "pmc-articleset") or \
+                    any(_local(el.tag) == "front" for el in root.iter()):
+                parts = []
+
+                def _walk(el):
+                    tag = _local(el.tag)
+                    if tag == "break":
+                        parts.append("\n")
+                    elif tag in ("p", "title", "article-title", "trans-title",
+                                 "subtitle", "td", "th", "li", "ref",
+                                 "contrib", "kwd", "label", "caption",
+                                 "fn", "graphic", "media"):
+                        parts.append("\n")
+                    for k, v in el.attrib.items():
+                        if k.rsplit("}", 1)[-1] == "href" and v:
+                            parts.append(" " + v + " ")
+                    if el.text:
+                        parts.append(el.text)
+                    for child in el:
+                        _walk(child)
+                    if el.tail:
+                        parts.append(el.tail)   # tail after the subtree: document order
+
+                _walk(root)
+                text = "".join(parts)
+                text = re.sub(r"[ \t]+", " ", text)
+                text = re.sub(r"\s*\n\s*", "\n", text)
+                text = re.sub(r"\n{3,}", "\n\n", text).strip()
+                if text:
+                    return text, "jats"
     except Exception:
         pass
-    # fallback: raw read (also covers damaged .docx/.pptx and empty html bodies)
-    return Path(filepath).read_text(encoding="utf-8", errors="ignore"), "text"
+    # fallback: raw read (also covers damaged .docx/.pptx and empty html
+    # bodies). v6.0.0: the fallback is announced — a structured file that
+    # silently degraded to a byte scan used to look like a clean empty run
+    text = Path(filepath).read_text(encoding="utf-8", errors="ignore")
+    if lower.endswith((".docx", ".pptx", ".html", ".htm", ".nxml", ".jats", ".xml")):
+        print(f"[NOTE] {os.path.basename(str(filepath))}: structured parse "
+              f"produced no text — reading as plain text; results may be "
+              f"incomplete", file=sys.stderr)
+    return text, "text"
 
 
 def extract_pmids_from_file(filepath: str) -> list[tuple[str, str]]:
@@ -2141,7 +2191,7 @@ def extract_pmids_from_file(filepath: str) -> list[tuple[str, str]]:
     return results
 
 
-def extract_pmids_from_directory(dirpath: str, extensions: tuple = (".html", ".md", ".txt", ".htm", ".json", ".docx", ".pptx")) -> dict:
+def extract_pmids_from_directory(dirpath: str, extensions: tuple = (".html", ".md", ".txt", ".htm", ".json", ".docx", ".pptx", ".nxml", ".jats", ".xml")) -> dict:
     """Scan directory for files containing PMIDs. Returns {filename: [(pmid, context)]}."""
     results = {}
     for root, dirs, files in os.walk(dirpath):
@@ -4991,7 +5041,7 @@ def main():
             for root, dirs, files in os.walk(source):
                 for fname in files:
                     if fname.lower().endswith((".html", ".md", ".txt", ".htm",
-                                               ".json", ".docx", ".pptx")):
+                                               ".json", ".docx", ".pptx", ".nxml", ".jats", ".xml")):
                         for doi, dctx in extract_dois_from_file(os.path.join(root, fname)):
                             cd = _clean_doi(doi)
                             doi_inputs.append((cd, os.path.join(root, fname), explicit_doi.get(cd)))

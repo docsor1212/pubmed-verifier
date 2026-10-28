@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 5.9.0
+version: 6.0.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v5.9.0
+# PubMed Citation Verifier v6.0.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -157,92 +157,38 @@ wrong this way. A binary exists/not-exists check misses them all.
 
 ## Quick start
 
+The ten commands below cover most runs; every flag has a one-row entry in
+[references/flags.md](references/flags.md) (scenario → one command, grouped
+by task) and the worked scenarios live in
+[references/usage_guide.md](references/usage_guide.md).
+
 ```bash
-# Pre-submission final pass in ONE command (v5.0.0): fresh registries
-# (--no-cache) + Crossref DOI cross-check (--verify-doi) + correct-PMID
-# suggestions (--suggest), no flags to remember
+# Pre-submission final pass in ONE command: fresh registries + Crossref
+# DOI cross-check + correct-PMID suggestions, no flags to remember
 python3 scripts/verify_pmids.py --source /path/to/draft --quick --output report.html
 
-# Environment self-check (v5.3.0): versions, cache state, key/proxy
-# config — add --check-net to include the five-registry probe
-python3 scripts/verify_pmids.py --doctor
+# Paste-and-verify: a copied reference list straight from the clipboard
+pbpaste | python3 scripts/verify_pmids.py --stdin --suggest
 
-# Behind a national firewall: --check-net (v5.6.0) probes every source
-# both direct AND through your HTTPS_PROXY, so a source blocked on the
-# direct route but fine via the proxy shows as usable; rerun with
-# --meta-source europepmc if NCBI stays blocked (full playbook:
-# references/operations.md)
-python3 scripts/verify_pmids.py --check-net
-
-# Paste-and-verify (v5.0.0): a copied reference list straight from the
-# clipboard or another command — no temp file needed
-pbpaste | python3 scripts/verify_pmids.py --stdin
-git show HEAD:refs.txt | python3 scripts/verify_pmids.py --stdin
-
-# Scan a project directory for PMIDs (parses citation context automatically)
+# Verify specific PMIDs, or a whole project directory (Word .docx, .pptx
+# decks, exported .html and JATS .nxml/.xml are read directly)
+python3 scripts/verify_pmids.py --pmids 31018962,22213727
 python3 scripts/verify_pmids.py --source /path/to/project --output report.html
 
-# Word documents and exported HTML pages are read directly (v4.8.0):
-# .docx paragraphs/tables and .html text are extracted in-memory —
-# script/style content is ignored, link targets (href) are kept
-python3 scripts/verify_pmids.py --source guideline_review.docx --output report.html
-
-# PowerPoint decks too (v4.9.0): every slide in order plus the speaker
-# notes (.pptx, a:t text) — patient-education courseware audits directly
-python3 scripts/verify_pmids.py --source lecture_deck.pptx --output report.html
-
-# Verify specific PMIDs
-python3 scripts/verify_pmids.py --pmids 31018962,22213727
-
-# Mismatch demo: PMID 34078778 is actually a dental-materials paper, so the
-# JIA claims below will NOT match it — expect ⚠️ mismatch verdicts
-python3 scripts/verify_pmids.py --claims '[{"pmid":"34078778","title":"JIA pathogenesis","authors":["Zaripova"],"journal":"Pediatr Rheumatol Online J","year":"2021"}]' --output report.html
-
-# Claims from a CSV file + suggest correct PMIDs for mismatches
+# Precise five-state verdicts: feed the expected metadata (CSV/JSON)
 python3 scripts/verify_pmids.py --claims-file claims.csv --suggest --output report.html
 
-# Crossref DOI cross-verification + audit working-paper + BibTeX + full pipeline
-python3 scripts/verify_pmids.py --source /path/to/files --verify-doi --suggest --output report.html --export-audit audit.json --export-bibtex refs.bib
-
-# Verify DOIs directly (no PMIDs) + delta audit vs a previous run
-python3 scripts/verify_pmids.py --dois "10.1038/nature12968,10.4012/dmj.2020-408" --workers 4 --export-audit audit.json --export-csv table.csv
-python3 scripts/verify_pmids.py --source /path/to/project --diff audit.json --output report.html
-
-# Verify arXiv IDs (preprints) — mixed audits supported
-python3 scripts/verify_pmids.py --arxivs "2401.12345,cs/0211004" --no-cache
-
-# Pre-flight: are the five data sources reachable right now?
-python3 scripts/verify_pmids.py --check-net
-
-# Audit a BibTeX or RIS bibliography file directly (PMID > DOI > arXiv routing)
-python3 scripts/verify_pmids.py --bibliography refs.bib --no-cache
-python3 scripts/verify_pmids.py --bibliography refs.ris --no-cache --export-ris verified.ris
-
-# Export the verified bibliography as CSL JSON (v5.6.0) — Zotero ingests it
-# via File > Import; Mendeley and Pandoc read the same file
-python3 scripts/verify_pmids.py --bibliography refs.bib --no-cache --export-csl library.json
-
-# Verify a reference list copied from a paper draft (inline IDs route
-# exactly; title-only entries resolve via PubMed title search)
+# Verify a pasted reference list, then format the verified entries
 python3 scripts/verify_pmids.py --parse-text references.txt --no-cache
-
-# Format the verified entries as a ready-to-paste reference list
-# (--citation-style: gbt | vancouver | apa | ama; default gbt)
 python3 scripts/verify_pmids.py --parse-text references.txt --format-references refs_gbt.txt --citation-style gbt
 
-# Stream results for agent pipelines (v5.3.0): one citation per line
-python3 scripts/verify_pmids.py --parse-text refs.txt --jsonl results.jsonl
-
-# Submission evidence pack: one command, every artifact (audit + HTML +
-# BibTeX/RIS/CSL + CSV + GB/T list + manifest)
+# Submission evidence pack: one command, every artifact
 python3 scripts/verify_pmids.py --parse-text references.txt --report-bundle evidence_pack
 
-# Turn a copied reference list into a claims CSV skeleton (fill the gaps,
-# then run --claims-file for exact five-state verification)
-python3 scripts/verify_pmids.py --claims-template references.txt,claims_skeleton.csv
-
-# Institutional niceties (recommended): NCBI API key + contact email
-python3 scripts/verify_pmids.py --source . --verify-doi --ncbi-api-key $NCBI_API_KEY --mailto you@lab.org
+# Health checks: environment self-check + five-source network pre-flight
+# (probes each source direct AND via your HTTPS_PROXY)
+python3 scripts/verify_pmids.py --doctor
+python3 scripts/verify_pmids.py --check-net
 ```
 
 ## What the output looks like
@@ -389,7 +335,7 @@ the one-flag workaround:
 | DOI verification | Crossref first, OpenAlex fallback for non-Crossref registries | DOIs absent from BOTH registries stay suspect/invalid by the 404 rule | Cross-check at doi.org before accusing |
 | Title-search legs (Latin + CJK) | Markerless entries resolved by PubMed/OpenAlex title search, honestly labeled | Never a mismatch source; no hit = unknown | Supply a PMID/DOI for a decisive verdict |
 | Second-opinion leg (v4.8.0) | A gated title-only claim is corroborated via PubMed title search (correct, labeled) or flagged as a wrong-PMID signal | Confirms or reports only — never manufactures a mismatch; CJK titles skip (OpenAlex CJK leg owns those) | `--claims-file` for the decisive verdict |
-| Word/HTML/PowerPoint input (v4.8.0/v4.9.0) | `.docx` paragraphs/tables, `.pptx` slides+speaker notes, and `.html` text are extracted in-memory; `href` link targets kept, script/style dropped | A damaged office file falls back to a raw read (scans bytes, finds little); scanned PDFs/images are NOT text | Export to text/HTML first for PDFs |
+| Word/HTML/PowerPoint/JATS input (v4.8.0–v6.0.0) | `.docx` paragraphs/tables, `.pptx` slides+speaker notes, `.html` text and JATS/NLM `.xml` articles are extracted in-memory; `href` targets kept, script/style dropped | A damaged structured file falls back to a raw read **with a visible `[NOTE]`** (results from it may be incomplete); scanned PDFs/images are NOT text | Export to text/HTML first for PDFs |
 | Verdict-ladder monotonicity (v4.9.0) | A scanned citation whose ONLY gap is the missing author claim (title matched, journal/year never claimed) grades correct with `route: existence_title_match` — stronger evidence than a bare existence check can never grade lower | Any claimed-but-differing author/journal/year keeps partial; explicit `--claims-file`/CLI inputs always get the full verdict | `--claims-file` with authors for the complete five-state pass |
 | Retraction reasons (v5.3.0) | A retracted citation carries `retraction_reason` — the notice abstract when the registry has one, else the notice title — plus `retraction_reason_doi` for the source statement | Many notices are just "Retraction Note: <original title>"; the original title alone NEVER masquerades as the reason — the notice is cited instead | Read `--export-audit` for the full chain |
 | Input scale & concurrency (v5.1.0/v5.2.0) | Any input size; the `--max-entries` guard (default 2000) counts the de-duplicated workload and warns with a split recommendation; DOI verification runs 4 workers; PMID batches go 50/call (0.4 s spacing, 0.12 s with an API key) | arXiv is throttled to 1 call/3 s BY THE API (1,000 arXiv IDs ≈ 50+ minutes no matter what); citation counts (`cited_by_count`) only exist on the Europe PMC/OpenAlex paths — the NCBI path reports none | `--max-entries N` raises the threshold, `0` silences it; split very large scans by section |
@@ -437,20 +383,19 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v6.0.0** — JATS/NLM XML input (`.nxml`/`.jats`/`.xml`, the PMC
+  article format; a non-JATS `.xml` falls through untouched); no more
+  silent fallbacks (a degraded structured file announces itself with a
+  `[NOTE]`); circuit-breaker messages lead with the outcome; Quick start
+  keeps the ten commands that cover most runs.
 - **v5.9.0** — `references/troubleshooting.md` (+`_ZH`): one error, one
   row — the literal `[ERROR]`/`[WARN]` text → cause → one-command fix;
   `python_api.md` goes Chinese-first (quick start, per-section summaries);
-  mixed-intent arbitration in the trigger section; the CJK boundary made
-  concrete (marker OR journal+year, or it cannot be verified).
+  mixed-intent arbitration in the trigger section.
 - **v5.8.0** — immediate flag validation (out-of-range values fail loudly
   with `[ERROR]` + exit 2, soft ones clamp with a `[WARN]`); end-of-run
   circuit-breaker visibility (one `[WARN]` names skipped hosts, counts
-  and the recovery path); sample pack grows (`claims.sample.json`,
-  `refs.sample.txt` new — all lint/parse clean).
-- **v5.7.0** — in-batch retry sweeps: `--retries N` (default 1) re-runs
-  just the fetches the network lost, after a 2 s cool-off, and reports
-  what it recovered — no more full re-runs after a mid-batch blip;
-  `--check-net` treats any HTTP response (including 429) as reachable.
+  and the recovery path); sample pack grows.
 
 ## Safety & behavior statement
 
@@ -545,7 +490,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v5.9.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v6.0.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
 | `references/troubleshooting.md` | Troubleshooting index — one error, one row (literal text → cause → fix) |

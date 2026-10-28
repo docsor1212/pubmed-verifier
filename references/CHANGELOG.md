@@ -21,6 +21,32 @@ section reads standalone):
 Complete version history. The SKILL.md "Recent releases" section keeps
 the recent highlights; everything older lives here verbatim.
 
+## v6.0.0 — JATS/NLM input, honest fallbacks, a leaner front door
+
+The first 6.x major: input coverage reaches the PMC/NLM article format
+that journal and repository pipelines actually produce, and the two
+remaining silent behaviors (a damaged structured file degrading to a
+byte scan; circuit-breaker jargon) are made visible.
+
+- **JATS/NLM XML input (`.nxml`/`.jats`/`.xml`)** — the article format
+  used by PubMed Central and journal export pipelines is extracted
+  in-memory (paragraphs, titles, table cells, refs; `xlink:href` targets
+  kept, 64 MB cap). Only a real NLM document is extracted: any other
+  `.xml` falls through to the plain-text read, now with a visible
+  `[NOTE]` (below). Directory scans include the new extensions.
+- **No more silent fallbacks** — when a structured file (`.docx`,
+  `.pptx`, `.html`, JATS `.xml`) produces no text and the tool degrades
+  to a plain-text read, a `[NOTE]` line says so; results from such a
+  file may be incomplete and the run says so up front instead of
+  looking like a clean empty scan.
+- **Circuit-breaker messages lead with the outcome** — the Chinese
+  breaker notices now open with what happened and what it means for the
+  run (source skipped, affected citations stay unknown, never false
+  not-found) before the tuning hints.
+- **A leaner front door** — Quick start keeps the ten commands that
+  cover most runs with an explicit pointer to the flag cheat sheet; the removed commands all live in the scenario
+  tables and [references/flags.md](references/flags.md).
+
 ## v5.9.0 — a troubleshooting index, a Chinese API page, mixed-intent rules
 
 Shaped by the v5.8.0 audit follow-ups: documentation follow-ups asked
