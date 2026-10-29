@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 6.0.0
+version: 6.1.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v6.0.0
+# PubMed Citation Verifier v6.1.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -383,6 +383,11 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v6.1.0** — the doc-vs-artifact consistency gate: samples demo the
+  real world (verbatim registry metadata, all rows grade correct), the
+  README File-types and Exit-codes rows match the parser, one license
+  (MIT-0) across four files, and `examples/README.txt` documents every
+  sample — each property now locked by a test.
 - **v6.0.0** — JATS/NLM XML input (`.nxml`/`.jats`/`.xml`, the PMC
   article format; a non-JATS `.xml` falls through untouched); no more
   silent fallbacks (a degraded structured file announces itself with a
@@ -390,12 +395,7 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
   keeps the ten commands that cover most runs.
 - **v5.9.0** — `references/troubleshooting.md` (+`_ZH`): one error, one
   row — the literal `[ERROR]`/`[WARN]` text → cause → one-command fix;
-  `python_api.md` goes Chinese-first (quick start, per-section summaries);
-  mixed-intent arbitration in the trigger section.
-- **v5.8.0** — immediate flag validation (out-of-range values fail loudly
-  with `[ERROR]` + exit 2, soft ones clamp with a `[WARN]`); end-of-run
-  circuit-breaker visibility (one `[WARN]` names skipped hosts, counts
-  and the recovery path); sample pack grows.
+  `python_api.md` goes Chinese-first; mixed-intent arbitration.
 
 ## Safety & behavior statement
 
@@ -490,7 +490,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v6.0.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v6.1.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
 | `references/troubleshooting.md` | Troubleshooting index — one error, one row (literal text → cause → fix) |

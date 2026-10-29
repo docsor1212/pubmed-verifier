@@ -104,9 +104,9 @@ Audited a 35-file pediatric rheumatology evidence library (225 PMID citations):
 - **Rate limit**: 3 req/s free (0.4s batch delay), 10 req/s with `--ncbi-api-key` (0.12s)
 - **Resilience**: 429 Retry-After backoff, 403/406 UA rotation, per-host circuit breaker
 - **Batch size**: 50 PMIDs per request
-- **File types**: `.html`, `.md`, `.txt`, `.json`, `.htm`
+- **File types**: `.html`, `.htm`, `.md`, `.txt`, `.json`, `.docx`, `.pptx`, `.nxml`, `.jats`, `.xml` (JATS/NLM since v6.0.0)
 - **PMID patterns**: `PMID: 12345678`, `PubMed: 12345678`, `pubmed.ncbi.nlm.nih.gov/12345678/`
-- **Exit codes**: 0 clean / 1 problems found / 2 network-incomplete
+- **Exit codes**: 0 clean / 1 problems found (or a usage error) / 2 could-not-verify (network unreachable, or an invalid flag value — `[ERROR]` + exit 2 before any work since v5.8.0)
 
 ## License
 

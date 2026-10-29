@@ -1,3 +1,6 @@
+refs_list.sample.txt — sample input for --parse-text (numbered list,
+inline PMID/DOI/arXiv routing, one title-only entry, one broken line)
+
 claims.sample.csv — reference format for --claims-file
 
 - pmid column: PubMed pipeline (full five-state verification)
@@ -21,6 +24,9 @@ Lint first (offline, v3.5.0): python3 scripts/verify_pmids.py --lint-claims exam
 
 Bibliography (v3.6.0): refs.sample.bib audits a .bib file directly —
 python3 scripts/verify_pmids.py --bibliography examples/refs.sample.bib
+(Note: the .bib/.ris samples ship in the GitHub repo and the zip package;
+ the SkillHub package list skips these extensions — the README you are
+ reading covers all channels.)
 
 RIS (v3.7.0): refs.sample.ris audits Zotero/EndNote/Mendeley exports —
 python3 scripts/verify_pmids.py --bibliography examples/refs.sample.ris

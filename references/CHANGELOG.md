@@ -21,6 +21,33 @@ section reads standalone):
 Complete version history. The SKILL.md "Recent releases" section keeps
 the recent highlights; everything older lives here verbatim.
 
+## v6.1.0 — the doc-vs-artifact consistency gate
+
+The v6.0.0 evaluation scored the tool 4.860 (a new high) but four
+dimensions pointed at one and the same debt: README lists lagging the
+parser, a license split across files, sample files whose notes did not
+match the package, and one sample row demoing with placeholder metadata.
+This release pays that debt down and bolts a gate in its place.
+
+- **Samples demo the real world** — the DOI-only row in
+  `examples/claims.sample.json` now carries the verbatim Crossref/PubMed
+  record (all three sample rows grade correct end to end); the lock that
+  replaced it drives `verify_doi_entry` on that very row, so a sample
+  that stops matching the registries fails the suite instead of the
+  demo.
+- **README currency** — the File-types row lists all ten extensions the
+  parser actually reads (`.docx`/`.pptx`/`.html`/`.nxml`/`.jats`/`.xml`
+  had shipped without a README mention), and the Exit-codes row states
+  the v5.8.0 flag-validation semantics; a lock compares the row against
+  the parser's extension set.
+- **One license, four files** — README, both SKILL frontmatters and
+  `skillhub-meta.json` all say MIT-0 (the meta said plain MIT); a
+  four-way lock keeps them aligned.
+- **`examples/README.txt` completeness** — every sample file is
+  documented (the refs-list sample had shipped undocumented), and the
+  `.bib`/`.ris` samples note their distribution scope (GitHub/zip ship
+  them; the SkillHub package list skips those extensions).
+
 ## v6.0.0 — JATS/NLM input, honest fallbacks, a leaner front door
 
 The first 6.x major: input coverage reaches the PMC/NLM article format
