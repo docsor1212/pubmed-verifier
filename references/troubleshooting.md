@@ -63,7 +63,7 @@
 
 ## Restricted-network quick fixes
 
-1. `--check-net` — see which of the five sources are reachable on which route.
+1. `--check-net` — see which of the four data sources + arXiv are reachable on which route.
 2. Set `HTTPS_PROXY`/`HTTP_PROXY` (or unset dead ones — a stale proxy
    **masquerades as an outage**).
 3. `--meta-source europepmc` when NCBI stays blocked.

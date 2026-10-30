@@ -34,6 +34,7 @@ Academic projects routinely contain hundreds of PMID citations. Manual verificat
 - **Claims lint** — `--lint-claims file.csv` validates a claims file offline (ID shapes, missing titles, unknown columns, duplicates) before any verification run
 - **Bibliography audit** — `--bibliography refs.bib` / `refs.ris` verifies BibTeX and RIS files directly (Zotero/EndNote/Mendeley exports; entries route by PMID > DOI > arXiv with full cross-checks); round-trips with `--export-bibtex` / `--export-ris` / `--export-csl`
 - **JATS/NLM XML input (v6.0.0)** — `.nxml`/`.jats`/`.xml` article files (the PubMed Central format) extract in-memory; a non-JATS `.xml` falls through to plain text with a visible `[NOTE]`, and degraded structured files are never silent
+- **`--self-check` (v6.2.0)** — the downloaded file verifies itself offline: five core promises run with one OK/FAIL line each; exit 0 = this copy is intact, no repo needed
 - **Plain-text reference list parsing** — `--parse-text refs.txt` verifies a reference list copied straight out of a manuscript draft: numbered entries (`[1]`, `1.`) split cleanly, inline PMID/DOI/arXiv IDs route exactly, and a title-only entry resolves via PubMed title search (honestly labeled `resolved_by: title_search`, never a mismatch source)
 - **Formatted reference list export** — `--format-references out.txt --citation-style gbt|vancouver|apa|ama` renders verified entries as a ready-to-paste numbered list (GB/T 7714-2015, Vancouver, APA 7th, AMA 11th); partial entries go to a manual-review section, retracted ones are excluded with a warning — formatting that stands on registry-verified records
 - **Retraction detection for every citation** — the registry publication type ("Retracted Publication") flags retracted papers with no DOI or extra flags needed; Crossref `updated-by` adds the retraction-notice DOI
@@ -59,7 +60,7 @@ openclaw skills install docsor1212/pubmed-verifier
 python3 scripts/verify_pmids.py --parse-text references.txt --no-cache          # 核验整张参考文献表
 python3 scripts/verify_pmids.py --parse-text references.txt --format-references out.txt --citation-style gbt
 python3 scripts/verify_pmids.py --pmids 31018962,22213727                       # 批量验证 PMID
-python3 scripts/verify_pmids.py --check-net                                     # 网络预检（五源）
+python3 scripts/verify_pmids.py --check-net                                     # 网络预检（四数据源+arXiv）
 
 # Verify all PMIDs in a project
 python3 scripts/verify_pmids.py --source /path/to/project --output report.html

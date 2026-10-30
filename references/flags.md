@@ -1,4 +1,4 @@
-> **何时读我**：被 39 个旗标劝退时。90% 的任务只需要下表里的一行。
+> **何时读我**：被旗标数劝退时。90% 的任务只需要下表里的一行。
 > **回 INDEX**：[INDEX.md](INDEX.md)
 
 # Flag cheat sheet — by scenario, not alphabetically
@@ -66,10 +66,11 @@ and `--format-references` are the only "composer" flags most users ever need.
 | `--timeout S` / `--workers N` | Request timeout / DOI concurrency (default 4) |
 | `--retries N` | Batch-end retry sweeps for network-failed fetches (default 1; 0 = off) — recovered count lands in `retried_recovered` |
 | `--max-entries N` | Large-input guard threshold (default 2000; 0 silences) |
-| `--check-net` | Five-registry pre-flight probe |
+| `--check-net` | Four-data-source + arXiv pre-flight probe |
 
 ### institutional & diagnostics
 | Flag | Effect |
 |---|---|
 | `--ncbi-api-key` / `--mailto` | Rate ceiling 3→10 req/s / Crossref polite pool |
 | `--doctor` | Environment self-check (add --check-net for registries) |
+| `--self-check` | Verify this copy offline: five core promises, one OK/FAIL line each; exit 0 = intact |

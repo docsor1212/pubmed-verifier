@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 6.1.0
+version: 6.2.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v6.1.0
+# PubMed Citation Verifier v6.2.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -134,7 +134,7 @@ Everything else below expands on these.
 |---|---|
 | The full version history | `references/CHANGELOG.md` (main doc keeps the recent highlights) |
 | Every FAQ, scenario walkthrough and tuning knob | `references/usage_guide.md` |
-| A scenario→command cheat sheet for all 39 flags | `references/flags.md` |
+| A scenario→command cheat sheet for every flag | `references/flags.md` |
 | Bulk batching, proxies, speed, CI gating and the stderr marker contract | `references/operations.md` |
 | An `[ERROR]`/`[WARN]` on screen, or results that look wrong | `references/troubleshooting.md` (one error, one row) |
 | The Python API reference / runnable examples | `references/python_api.md` / `references/api_examples.md` |
@@ -185,7 +185,7 @@ python3 scripts/verify_pmids.py --parse-text references.txt --format-references 
 # Submission evidence pack: one command, every artifact
 python3 scripts/verify_pmids.py --parse-text references.txt --report-bundle evidence_pack
 
-# Health checks: environment self-check + five-source network pre-flight
+# Health checks: environment self-check + four-data-source + arXiv network pre-flight
 # (probes each source direct AND via your HTTPS_PROXY)
 python3 scripts/verify_pmids.py --doctor
 python3 scripts/verify_pmids.py --check-net
@@ -383,19 +383,20 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v6.2.0** — `--self-check`: the shipped file verifies itself offline
+  (five core promises, one OK/FAIL line each; exit 0 = this copy is
+  intact — a damaged or modified copy says so and asks for a
+  re-download); numbers that rot retired (the operations line-count
+  heading, and the data-source naming unified to "four data sources +
+  the arXiv preprint API" with an anti-return lock); the .bib/.ris
+  samples state their distribution scope in the SKILL file tables.
 - **v6.1.0** — the doc-vs-artifact consistency gate: samples demo the
   real world (verbatim registry metadata, all rows grade correct), the
   README File-types and Exit-codes rows match the parser, one license
-  (MIT-0) across four files, and `examples/README.txt` documents every
-  sample — each property now locked by a test.
-- **v6.0.0** — JATS/NLM XML input (`.nxml`/`.jats`/`.xml`, the PMC
-  article format; a non-JATS `.xml` falls through untouched); no more
-  silent fallbacks (a degraded structured file announces itself with a
-  `[NOTE]`); circuit-breaker messages lead with the outcome; Quick start
-  keeps the ten commands that cover most runs.
-- **v5.9.0** — `references/troubleshooting.md` (+`_ZH`): one error, one
-  row — the literal `[ERROR]`/`[WARN]` text → cause → one-command fix;
-  `python_api.md` goes Chinese-first; mixed-intent arbitration.
+  (MIT-0) across four files; each property locked by a test.
+- **v6.0.0** — JATS/NLM XML input; no more silent fallbacks (a degraded
+  structured file announces itself with a `[NOTE]`); Quick start keeps
+  the ten commands that cover most runs.
 
 ## Safety & behavior statement
 
@@ -490,17 +491,16 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v6.1.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v6.2.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
 | `references/troubleshooting.md` | Troubleshooting index — one error, one row (literal text → cause → fix) |
-| `references/flags.md` | Flag cheat sheet — scenario → one command, all 39 flags grouped |
+| `references/flags.md` | Flag cheat sheet — scenario → one command, every flag grouped |
 | `references/operations.md` | Operations playbook — batching math, proxy scenarios, speed checklist, error contract, CI gate |
 | `references/INDEX.md` | 任务→文档 30 秒路由表 |
 | `references/python_api.md` | Calling the verifier from Python (stable surfaces + examples) |
 | `examples/claims.sample.csv` | Reference format for `--claims-file` (incl. a DOI-only row) |
-| `examples/refs.sample.bib` | Sample bibliography for `--bibliography` (DOI/PMID/arXiv routing) |
-| `examples/refs.sample.ris` | Sample RIS bibliography (Zotero/EndNote/Mendeley) |
+| `examples/refs.sample.bib` / `refs.sample.ris` | Sample bibliographies for `--bibliography` (GitHub repo and zip package; the SkillHub package list skips these extensions) |
 | `tests/` | Offline matrix + real-network acceptance (repo only, not in the package) |
 
 ## License

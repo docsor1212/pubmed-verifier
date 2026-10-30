@@ -56,7 +56,7 @@ Exit-code note (v5.8.0): exit 2 also covers invalid flag values —
 `--workers 0`, negative `--cache-days`/`--retries`/`--max-entries`); soft
 over-ranges clamp with a `[WARN]` (`--workers 99` -> 8, `--retries 10` -> 3).
 
-`--check-net` is the arbiter: five registries, probed twice each (direct
+`--check-net` is the arbiter: four data sources + arXiv, probed twice each (direct
 and via your `HTTPS_PROXY`, 5 s per route), one verdict line per source —
 a source blocked on the direct route but reachable through the configured
 proxy reports as usable, and every line names the verification paths that
@@ -118,7 +118,7 @@ exit 0   # rc=0 falls through: the gate must PASS a clean run
 missing titles and unknown columns before any API call. `--jsonl` feeds
 per-row dashboards; the `_stats` line is the totals record.
 
-## 6. Reading the main script (verify_pmids.py, ~5,500 lines)
+## 6. Reading the main script (verify_pmids.py)
 
 Approximate section map, top to bottom (extractor and bibliography
 helpers interleave near Main): config & HTTP core (retry/backoff/circuit

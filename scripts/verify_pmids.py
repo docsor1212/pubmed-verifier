@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v6.1.0
+PMID Citation Verifier -- PubMed E-utilities API v6.2.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -86,8 +86,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "6.1.0"
-_UA_TOOL = "pubmed-verifier/6.1 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "6.2.0"
+_UA_TOOL = "pubmed-verifier/6.2 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -4482,10 +4482,83 @@ def run_claims_template(src_path: str, out_path: str) -> int:
     return 0
 
 
+def run_self_check() -> int:
+    """In-package verification loop (v6.2.0, --self-check): the shipped
+    single file carries no test directory, so this runs the core promises
+    offline and prints one OK/FAIL line each. Zero network, zero writes
+    beyond a temporary cache file. Exit 0 all pass, 1 any fail — CI and
+    reviewers can verify a downloaded copy without the repo."""
+    import tempfile
+    checks = []
+
+    def check(name, fn):
+        try:
+            fn()
+            checks.append((name, True, ""))
+        except Exception as e:
+            checks.append((name, False, f"{type(e).__name__}: {str(e)[:80]}"))
+
+    def _five_state():
+        cross = cross_check_citation(
+            {"claimed_title": "Classification criteria for autoinflammatory recurrent fevers",
+             "claimed_journal": "Ann Rheum Dis", "claimed_year": "2019"},
+            {"title": "Classification criteria for autoinflammatory recurrent fevers",
+             "authors": "Gattorno M", "journal": "Ann Rheum Dis", "pubdate": "2019"})
+        assert cross["verdict"] == "correct", cross["verdict"]
+        cross2 = cross_check_citation(
+            {"claimed_title": "A completely different title about dentistry"},
+            {"title": "Classification criteria for autoinflammatory recurrent fevers",
+             "authors": "Gattorno M", "journal": "Ann Rheum Dis", "pubdate": "2019"})
+        assert cross2["verdict"] == "mismatch", cross2["verdict"]
+
+    check("five-state ladder (correct / mismatch)", _five_state)
+
+    def _honest_unknown():
+        cross = cross_check_citation(
+            {"claimed_title": "Some title", "claimed_year": "2099"},
+            {"title": "Another title", "authors": "X Y", "journal": "J", "pubdate": "2001"})
+        assert cross["verdict"] in ("mismatch", "partial"), cross["verdict"]
+
+    check("claimed-field evidence (author/journal/year)", _honest_unknown)
+
+    def _plaintext_parse():
+        entries, issues = parse_plaintext_references(
+            str(Path(__file__).resolve().parent.parent / "examples" / "refs.sample.txt"))
+        assert len(entries) == 3 and not issues, (len(entries), issues)
+
+    check("plain-text reference parsing", _plaintext_parse)
+
+    def _csl_export():
+        item = json.loads(generate_csl_json([{
+            "pmid": "1", "verdict": "correct", "valid": True,
+            "title": "T", "authors": "Smith J", "journal": "J",
+            "pubdate": "2020"}]))[0]
+        assert item["type"] == "article-journal" and item["author"][0]["family"] == "Smith"
+
+    check("CSL JSON bibliography export", _csl_export)
+
+    def _version_carriers():
+        assert _TOOL_VERSION, "empty _TOOL_VERSION"
+        assert _UA_TOOL.startswith("pubmed-verifier/"), _UA_TOOL
+
+    check("version carriers consistent", _version_carriers)
+
+    print(f"pubmed-verifier self-check (v{_TOOL_VERSION}, offline, no network):")
+    for name, ok, err in checks:
+        print(f"  {'OK' if ok else 'FAIL'}  {name}" + (f" — {err}" if err else ""))
+    n_bad = sum(1 for _, ok, _ in checks if not ok)
+    if n_bad:
+        print(f"{n_bad}/{len(checks)} self-check(s) FAILED — this copy is "
+              f"damaged or was modified after packaging; re-download.")
+        return 1
+    print(f"All {len(checks)} self-checks passed.")
+    return 0
+
+
 def run_doctor(net: bool) -> int:
     """Environment self-check (v5.3.0, --doctor): one command that answers
     "is my installation healthy?" — tool identity, Python, cache state,
-    configuration and (with --doctor --check-net) all five registries.
+    configuration and (with --doctor --check-net) all four data sources + arXiv.
     Zero writes, read-only diagnostics; exit 0 unless the network probe
     fails (same contract as --check-net)."""
     problems = []
@@ -4588,14 +4661,15 @@ def _render_source_line(name, direct_ok, direct_note, proxy_ok, proxy_note, prox
 
 
 def run_check_net() -> int:
-    """Pre-flight connectivity probe (v3.9.0; five sources since v4.1.0;
+    """Pre-flight connectivity probe (v3.9.0; four data sources + the arXiv
+    preprint API since v4.1.0;
     v5.6.0 probes each source twice — direct and via the environment proxy —
     so a source blocked on the direct route but reachable through the proxy is
     reported as usable, and every line names the verification paths the source
     serves plus the in-tool fallback). Exit 0 all reachable, 2 otherwise
     (verification would honestly mark affected citations unknown)."""
     proxy_raw = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
-    print("Network pre-flight (5s timeout per route, direct + proxy):")
+    print("Network pre-flight (four data sources + arXiv; 5s timeout per route, direct + proxy):")
     # v4.2.0: mask credentials — a proxy URL like http://user:pass@host:port
     # is echoed as http://user:****@host:port so paste-safe sharing works
     proxy = proxy_raw
@@ -4620,7 +4694,7 @@ def run_check_net() -> int:
     if reachable == len(_CHECK_NET_TARGETS):
         print("All data sources reachable.")
         return 0
-    print(f"{len(_CHECK_NET_TARGETS) - reachable}/{len(_CHECK_NET_TARGETS)} source(s) unreachable — "
+    print(f"{len(_CHECK_NET_TARGETS) - reachable}/{len(_CHECK_NET_TARGETS)} probe endpoint(s) unreachable — "
           f"verification marks affected citations as unknown (never invalid). "
           f"Practical steps: set HTTPS_PROXY/HTTP_PROXY for blocked sources, or "
           f"--meta-source europepmc when NCBI is blocked; re-run this check to confirm.")
@@ -4754,7 +4828,7 @@ def main():
                         help="Verify a bibliography file (.bib BibTeX / .ris RIS): entries "
                              "route by PMID (field or note) > DOI > arXiv eprint/ID pattern")
     g_net.add_argument("--check-net", action="store_true",
-                        help="Probe the five data sources (5s each) and print "
+                        help="Probe the four data sources + arXiv (5s each) and print "
                              "reachability + next steps — run this when results "
                              "come back unknown on a constrained network")
     g_inputs.add_argument("--parse-text", metavar="FILE",
@@ -4769,7 +4843,12 @@ def main():
     g_inst.add_argument("--doctor", action="store_true",
                         help="Environment self-check: tool/Python versions, cache state, "
                              "key/mailto/proxy configuration; add --check-net to include "
-                             "the five-registry probe. Read-only, safe to share.")
+                             "the four-data-source + arXiv probe. Read-only, safe to share.")
+    g_inst.add_argument("--self-check", action="store_true",
+                        help="Verify this copy offline: runs the core promises "
+                             "(five-state ladder, plaintext parsing, CSL export, "
+                             "version carriers) with zero network and prints one "
+                             "OK/FAIL line each. Exit 0 = this copy is intact.")
     g_output.add_argument("--sort", choices=["severity", "cited"], default="severity",
                           help="Report row order: severity (default — retraction/splice/"
                                "mismatch first, the HTML layout) or cited (citation count "
@@ -4819,6 +4898,8 @@ def main():
     _OPTS["mailto"] = args.mailto or os.environ.get("PUBMED_VERIFIER_MAILTO", "")
     _OPTS["meta_source"] = args.meta_source
     _OPTS["timeout"] = args.timeout
+    if getattr(args, "self_check", False):
+        sys.exit(run_self_check())
     if args.doctor:
         sys.exit(run_doctor(net=args.check_net))
     if args.check_net:

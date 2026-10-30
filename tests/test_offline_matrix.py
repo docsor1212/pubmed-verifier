@@ -4137,5 +4137,84 @@ class TestV6100(_Reset):
         self.assertEqual(res["verdict"], "correct")
 
 
+class TestV6200(_Reset):
+    """v6.2.0: --self-check in-package verification loop + the data-source
+    naming unification (four data sources + the arXiv preprint API) +
+    de-quantified line counts + .bib/.ris distribution notes."""
+
+    def test_self_check_passes_in_process(self):
+        import contextlib, io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = vp.run_self_check()
+        out = buf.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("All 5 self-checks passed.", out)
+        for name in ("five-state ladder", "plain-text reference parsing",
+                     "CSL JSON bibliography export", "version carriers"):
+            self.assertIn(name, out)
+
+    def test_self_check_cli_wired(self):
+        src = (Path(__file__).resolve().parent.parent / "scripts"
+               / "verify_pmids.py").read_text(encoding="utf-8")
+        self.assertIn('"--self-check"', src)
+        self.assertIn("run_self_check()", src)
+        self.assertIn('getattr(args, "self_check", False)', src)
+
+    def test_self_check_reports_damage(self):
+        # a broken export must FAIL the loop, not vanish — the check exists
+        # so a damaged copy announces itself
+        import contextlib, io
+        orig = vp.generate_csl_json
+        def broken(results):
+            raise ValueError("corrupted")
+        buf = io.StringIO()
+        with mock.patch.object(vp, "generate_csl_json", side_effect=ValueError("corrupted")), \
+             contextlib.redirect_stdout(buf):
+            rc = vp.run_self_check()
+        out = buf.getvalue()
+        self.assertEqual(rc, 1)
+        self.assertIn("CSL JSON bibliography export", out)
+        self.assertIn("ValueError", out)
+        self.assertIn("re-download", out)
+
+    def test_data_source_naming_unified(self):
+        root = Path(__file__).resolve().parent.parent
+        # the mixed "five data sources" claim is retired: arXiv is the
+        # preprint API, not a fourth/fifth data source (v6.2.0 audit: the
+        # first ban list missed 五源/five-source and three files — the lock
+        # went green while seven live residues existed; the ban is now wide)
+        banned = ("五个数据源", "五源", "five-registry", "five registries",
+                  "five sources", "five-source", "five data sources")
+        for name in ("SKILL.md", "SKILL_ZH.md", "README.md",
+                     "references/operations.md", "references/flags.md",
+                     "references/troubleshooting.md",
+                     "references/troubleshooting_ZH.md"):
+            text = (root / name).read_text(encoding="utf-8")
+            for b in banned:
+                self.assertNotIn(b, text, f"{name}: {b!r}")
+        src = (root / "scripts" / "verify_pmids.py").read_text(encoding="utf-8")
+        for b in ("five-registry", "five registries", "five sources",
+                  "five-source", "five data sources"):
+            self.assertNotIn(b, src, f"scripts: {b!r}")
+        self.assertIn("four-data-source + arXiv", src)
+        self.assertIn("probe endpoint(s) unreachable", src)
+
+    def test_line_count_dequantized(self):
+        # a hard-coded line count rots every release (the accuracy judge
+        # caught "~5,500 lines" at 5,861) — the heading stays count-free
+        ops = (Path(__file__).resolve().parent.parent / "references"
+               / "operations.md").read_text(encoding="utf-8")
+        heading = next(l for l in ops.splitlines()
+                       if l.startswith("## 6. Reading the main script"))
+        self.assertNotIn("lines", heading)
+
+    def test_bib_ris_distribution_notes(self):
+        en = (Path(__file__).resolve().parent.parent / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("SkillHub package list skips these extensions", en)
+        zh = (Path(__file__).resolve().parent.parent / "SKILL_ZH.md").read_text(encoding="utf-8")
+        self.assertEqual(zh.count("SkillHub 包清单跳过该扩展名"), 2)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

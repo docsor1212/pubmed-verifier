@@ -21,6 +21,29 @@ section reads standalone):
 Complete version history. The SKILL.md "Recent releases" section keeps
 the recent highlights; everything older lives here verbatim.
 
+## v6.2.0 — --self-check & the end of rotting numbers
+
+The v6.1.0 evaluation held at 4.853 (docQuality back to 5.0 — the
+consistency gate worked) while two dimensions asked for the same thing
+from different seats: a shipped copy that can prove itself, and numbers
+in the docs that do not rot.
+
+- **`--self-check`** — the shipped single file can now verify itself:
+  five core promises (the five-state ladder, claimed-field evidence,
+  plain-text parsing, CSL export, version carriers) run offline with one
+  OK/FAIL line each. Exit 0 = this copy is intact; a damaged or modified
+  copy says so and asks for a re-download. CI and reviewers no longer
+  need the repo to verify a download.
+- **Numbers that rot, retired** — the operations manual's hard-coded
+  "≈5,500 lines" (actual: past 5,800) loses the count; the data-source
+  naming is unified everywhere to "four data sources + the arXiv
+  preprint API" (the old mixed four/five sourcing is retired), with a
+  lock that fails any return of "five data sources"/"five registries".
+- **Distribution scope on the .bib/.ris samples** — the SKILL file
+  tables (both languages) now state what examples/README.txt already
+  said: those two samples ship with the GitHub repo and the zip, and the
+  SkillHub package list skips the extensions.
+
 ## v6.1.0 — the doc-vs-artifact consistency gate
 
 The v6.0.0 evaluation scored the tool 4.860 (a new high) but four

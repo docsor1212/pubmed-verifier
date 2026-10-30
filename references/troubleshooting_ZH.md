@@ -48,7 +48,7 @@
 
 ## 国内/受限网络速修
 
-1. `--check-net`——看五源各在哪条路（直连/代理）可达。
+1. `--check-net`——看四数据源+arXiv 各在哪条路（直连/代理）可达。
 2. 设 `HTTPS_PROXY`/`HTTP_PROXY`（死代理要 unset——残留死代理会**伪装成断网**）。
 3. NCBI 持续被墙用 `--meta-source europepmc`。
 4. 慢链路加 `--timeout 60`；缓存（30 天）吸收重复运行。
