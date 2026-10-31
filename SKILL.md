@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 6.2.0
+version: 6.3.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v6.2.0
+# PubMed Citation Verifier v6.3.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -383,20 +383,18 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
-- **v6.2.0** — `--self-check`: the shipped file verifies itself offline
-  (five core promises, one OK/FAIL line each; exit 0 = this copy is
-  intact — a damaged or modified copy says so and asks for a
-  re-download); numbers that rot retired (the operations line-count
-  heading, and the data-source naming unified to "four data sources +
-  the arXiv preprint API" with an anti-return lock); the .bib/.ris
-  samples state their distribution scope in the SKILL file tables.
+- **v6.3.0** — the bibliography samples finally travel:
+  `--bibliography`/`--lint-claims`/`--claims-template` sniff the format
+  from content (BibTeX `@type{`, RIS `TY  - ` markers), so renamed and
+  extension-less files run as-is; `refs.sample.bib.txt` and
+  `refs.sample.ris.txt` ship in the package — every documented command
+  now works on every distribution channel.
+- **v6.2.0** — `--self-check` (five offline core promises, one OK/FAIL
+  line each, damaged copies self-report); numbers that rot retired; the
+  .bib/.ris samples state their distribution scope.
 - **v6.1.0** — the doc-vs-artifact consistency gate: samples demo the
-  real world (verbatim registry metadata, all rows grade correct), the
-  README File-types and Exit-codes rows match the parser, one license
-  (MIT-0) across four files; each property locked by a test.
-- **v6.0.0** — JATS/NLM XML input; no more silent fallbacks (a degraded
-  structured file announces itself with a `[NOTE]`); Quick start keeps
-  the ten commands that cover most runs.
+  real world, README matches the parser, one license across four files;
+  each property locked by a test.
 
 ## Safety & behavior statement
 
@@ -491,7 +489,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v6.2.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v6.3.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
 | `references/troubleshooting.md` | Troubleshooting index — one error, one row (literal text → cause → fix) |
@@ -500,7 +498,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 | `references/INDEX.md` | 任务→文档 30 秒路由表 |
 | `references/python_api.md` | Calling the verifier from Python (stable surfaces + examples) |
 | `examples/claims.sample.csv` | Reference format for `--claims-file` (incl. a DOI-only row) |
-| `examples/refs.sample.bib` / `refs.sample.ris` | Sample bibliographies for `--bibliography` (GitHub repo and zip package; the SkillHub package list skips these extensions) |
+| `examples/refs.sample.bib` / `refs.sample.ris` (+`.txt` copies) | Sample bibliographies for `--bibliography`; since v6.3.0 the format sniffer reads the `.txt` copies, so the samples run on every distribution channel |
 | `tests/` | Offline matrix + real-network acceptance (repo only, not in the package) |
 
 ## License

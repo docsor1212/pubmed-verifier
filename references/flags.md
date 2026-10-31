@@ -33,7 +33,7 @@ and `--format-references` are the only "composer" flags most users ever need.
 | `--dois 10.1/x` | Verify DOIs via Crossref |
 | `--arxivs 2401.12345` | Verify arXiv IDs (throttled 1 call/3 s by the API) |
 | `--claims JSON` / `--claims-file F` | Expected title+authors → decisive five-state verdicts |
-| `--bibliography F` | Audit a .bib/.ris library (PMID > DOI > arXiv routing) |
+| `--bibliography F` | Audit a BibTeX/RIS library (PMID > DOI > arXiv routing; format sniffed from content since v6.3.0 — renamed files run as-is) |
 | `--parse-text F` / `--stdin` | A plain-text reference list (inline IDs route exactly) |
 
 ### verification depth

@@ -21,6 +21,27 @@ section reads standalone):
 Complete version history. The SKILL.md "Recent releases" section keeps
 the recent highlights; everything older lives here verbatim.
 
+## v6.3.0 — the bibliography samples finally travel
+
+The v6.2.0 evaluation kept docking four dimensions for one packaging
+fact the notes had only disclosed: the .bib/.ris sample files the docs
+reference do not ride in the SkillHub package (its upload list skips
+those extensions). Disclosure became a fix.
+
+- **Content, not extension** — `--bibliography`, `--lint-claims` and
+  `--claims-template` now sniff the bibliography format from the file's
+  own markers (a BibTeX entry opens with `@type{`; an RIS record with
+  `TY  - `), so renamed and extension-less files run as-is. Explicit
+  `.bib`/`.ris` extensions keep priority; nothing about existing
+  behavior changed for correctly-named files.
+- **The samples travel** — `refs.sample.bib.txt` and
+  `refs.sample.ris.txt` ship in the package next to the originals, and
+  every command in the docs now works on every distribution channel:
+  `--bibliography examples/refs.sample.bib.txt` runs out of the box.
+- Two locks updated to lock the fix (parity requires the .txt copies;
+  the file tables state the sniffer), and a new lock fails the suite if
+  a documented sample ever lacks its package-carriable copy again.
+
 ## v6.2.0 — --self-check & the end of rotting numbers
 
 The v6.1.0 evaluation held at 4.853 (docQuality back to 5.0 — the

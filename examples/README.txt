@@ -24,12 +24,15 @@ Lint first (offline, v3.5.0): python3 scripts/verify_pmids.py --lint-claims exam
 
 Bibliography (v3.6.0): refs.sample.bib audits a .bib file directly —
 python3 scripts/verify_pmids.py --bibliography examples/refs.sample.bib
-(Note: the .bib/.ris samples ship in the GitHub repo and the zip package;
- the SkillHub package list skips these extensions — the README you are
- reading covers all channels.)
+Since v6.3.0 the same samples also ship as refs.sample.bib.txt /
+refs.sample.ris.txt (extension-neutral copies the --bibliography format
+sniffer reads directly), so the command above runs on every distribution
+channel — try it with the .txt copy if your package has no .bib file:
+python3 scripts/verify_pmids.py --bibliography examples/refs.sample.bib.txt
 
 RIS (v3.7.0): refs.sample.ris audits Zotero/EndNote/Mendeley exports —
 python3 scripts/verify_pmids.py --bibliography examples/refs.sample.ris
+(the refs.sample.ris.txt copy works identically)
 
 Claims JSON (v5.8.0): claims.sample.json shows the three row types in
 JSON form — a PMID row with full claimed metadata, a DOI-only row, and

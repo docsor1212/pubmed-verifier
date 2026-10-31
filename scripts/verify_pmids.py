@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMID Citation Verifier -- PubMed E-utilities API v6.2.0
+PMID Citation Verifier -- PubMed E-utilities API v6.3.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -86,8 +86,8 @@ from collections import defaultdict
 # ── Options & HTTP core (v2.2.0 network hardening) ──
 
 _OPTS = {"ncbi_key": "", "mailto": "", "meta_source": "auto", "timeout": 20}
-_TOOL_VERSION = "6.2.0"
-_UA_TOOL = "pubmed-verifier/6.2 (+citation verifier; stdlib-only)"
+_TOOL_VERSION = "6.3.0"
+_UA_TOOL = "pubmed-verifier/6.3 (+citation verifier; stdlib-only)"
 
 # Star/bookmark footer links (2026-10-06 family policy: human-facing only —
 # these appear solely in the FINAL HTML/Markdown deliverables, never in
@@ -4418,6 +4418,26 @@ def lint_claims_ris(path: str) -> list:
     return issues
 
 
+def sniff_bibliography_format(path: str) -> str:
+    """'bib' | 'ris' | 'unknown' by content, not extension (v6.3.0): the
+    format markers are distinctive (a BibTeX entry opens with @type{; an
+    RIS record opens with 'TY  - '), so a renamed or extensionless sample
+    file still runs. Only the first 4 KB are inspected."""
+    try:
+        head = Path(path).read_text(encoding="utf-8-sig", errors="ignore")[:4096]
+    except OSError:
+        return "unknown"
+    for line in head.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if re.match(r"@\w+\s*\{", s):
+            return "bib"
+        if re.match(r"TY\s{1,2}-\s", s):
+            return "ris"
+    return "unknown"
+
+
 def write_claims_template(src_path: str, out_path: str) -> tuple:
     """Claims skeleton generator (v4.6.0): read any supported input (plain-text
     reference list, .bib, .ris) and write a claims CSV with every routable
@@ -4425,7 +4445,10 @@ def write_claims_template(src_path: str, out_path: str) -> tuple:
     exact --claims-file path. Lowercase header row matches _load_csv_claims.
     Returns (rows_written, notes)."""
     lower = src_path.lower()
-    if lower.endswith(".bib"):
+    fmt = ("bib" if lower.endswith(".bib")
+           else "ris" if lower.endswith(".ris")
+           else sniff_bibliography_format(src_path))
+    if fmt == "bib":
         entries, issues = parse_bibtex(src_path)
         rows = []
         for e in entries:
@@ -4438,7 +4461,7 @@ def write_claims_template(src_path: str, out_path: str) -> tuple:
                          "authors": "; ".join(f.get("authors", []))
                          if isinstance(f.get("authors"), list) else f.get("authors", ""),
                          "journal": f.get("journal", ""), "year": f.get("year", "")})
-    elif lower.endswith(".ris"):
+    elif fmt == "ris":
         raw, issues = parse_ris(src_path)
         rows = []
         for e in raw:
@@ -4704,11 +4727,15 @@ def run_check_net() -> int:
 def run_claims_lint(path: str) -> int:
     """Print a lint report for a claims file; returns process exit code."""
     print(f"Linting claims file: {path}")
-    if path.lower().endswith(".csv"):
+    lower = path.lower()
+    fmt = ("bib" if lower.endswith(".bib")
+           else "ris" if lower.endswith(".ris")
+           else sniff_bibliography_format(path))
+    if lower.endswith(".csv"):
         issues = lint_claims_csv(path)
-    elif path.lower().endswith(".bib"):
+    elif fmt == "bib":
         issues = lint_claims_bib(path)
-    elif path.lower().endswith(".ris"):
+    elif fmt == "ris":
         issues = lint_claims_ris(path)
     else:
         issues = lint_claims_json(path)
@@ -5031,11 +5058,16 @@ def main():
     # BibTeX bibliography input (v3.6.0): entries route PMID > DOI > arXiv,
     # each carrying its claimed metadata for the full cross-check
     if args.bibliography:
-        if args.bibliography.lower().endswith(".ris"):
+        bib_fmt = ("ris" if args.bibliography.lower().endswith(".ris")
+                   else "bib" if args.bibliography.lower().endswith(".bib")
+                   else sniff_bibliography_format(args.bibliography))
+        if bib_fmt == "ris":
             raw_entries, bib_issues = parse_ris(args.bibliography)
             bib_entries = [dict(e, fields=ris_to_bib_fields(e["fields"]))
                            for e in raw_entries]
         else:
+            # explicit .bib and sniffed-bib both land here; a sniffed-unknown
+            # file fails BibTeX parsing with the usual report (v3.6.0 shape)
             bib_entries, bib_issues = parse_bibtex(args.bibliography)
         for msg in bib_issues:
             print(f"  bibliography: {msg}", file=sys.stderr)

@@ -4090,8 +4090,9 @@ class TestV6100(_Reset):
                       if f.name not in ("README.txt",) and not f.name.startswith(".")]
         for name in data_files:
             self.assertIn(name, doc, f"{name} undocumented in examples/README.txt")
-        # the two bibliography samples note their distribution scope
-        self.assertIn("SkillHub package list skips these extensions", doc)
+        # v6.3.0: the sniffer makes the samples run on every channel
+        self.assertIn("refs.sample.bib.txt", doc)
+        self.assertIn("refs.sample.ris.txt", doc)
 
     def test_no_placeholder_metadata_in_samples(self):
         # the accuracy judge caught a synthetic title demoing as real
@@ -4210,10 +4211,77 @@ class TestV6200(_Reset):
         self.assertNotIn("lines", heading)
 
     def test_bib_ris_distribution_notes(self):
+        # v6.3.0: the note evolved from "skipped on SkillHub" (disclosure)
+        # to "the .txt copies run everywhere" (the fix)
         en = (Path(__file__).resolve().parent.parent / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("SkillHub package list skips these extensions", en)
+        self.assertIn("(+`.txt` copies)", en)
+        self.assertIn("the format sniffer reads the `.txt` copies", en)
         zh = (Path(__file__).resolve().parent.parent / "SKILL_ZH.md").read_text(encoding="utf-8")
-        self.assertEqual(zh.count("SkillHub 包清单跳过该扩展名"), 2)
+        self.assertEqual(zh.count("格式嗅探直接读 `.txt` 副本"), 2)
+
+
+class TestV6300(_Reset):
+    """v6.3.0: --bibliography / --lint-claims / --claims-template route by
+    content, not extension (sniff_bibliography_format) — the .txt copies of
+    the bibliography samples run on every distribution channel."""
+
+    def test_sniffer_detects_both_formats(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            bib = Path(td, "s.bib.txt")
+            bib.write_text("@article{key2020,\n  title = {Something},\n  year = {2020}\n}\n",
+                           encoding="utf-8")
+            ris = Path(td, "s.ris.txt")
+            ris.write_text("TY  - JOUR\nTI  - Something\nER  - \n", encoding="utf-8")
+            empty = Path(td, "s.txt")
+            empty.write_text("plain prose, no markers\n", encoding="utf-8")
+            self.assertEqual(vp.sniff_bibliography_format(str(bib)), "bib")
+            self.assertEqual(vp.sniff_bibliography_format(str(ris)), "ris")
+            self.assertEqual(vp.sniff_bibliography_format(str(empty)), "unknown")
+            self.assertEqual(vp.sniff_bibliography_format("/nonexistent/x.txt"), "unknown")
+
+    def test_sniffer_sees_through_bom(self):
+        # Windows exporters (EndNote/Notepad) prepend a BOM; the sniffer
+        # must not go blind on it (v6.3.0 audit P2)
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td, "bom.ris.txt")
+            f.write_bytes("\ufeffTY  - JOUR\nTI  - X\nER  - \n".encode("utf-8"))
+            self.assertEqual(vp.sniff_bibliography_format(str(f)), "ris")
+
+    def test_bibliography_runs_txt_copies(self):
+        ex = Path(__file__).resolve().parent.parent / "examples"
+        for name in ("refs.sample.bib.txt", "refs.sample.ris.txt"):
+            self.assertTrue((ex / name).exists())
+        # the real shipped samples, parsed through the sniffer path
+        raw, issues = vp.parse_ris(str(ex / "refs.sample.ris.txt"))
+        self.assertTrue(raw)
+        entries, issues = vp.parse_bibtex(str(ex / "refs.sample.bib.txt"))
+        self.assertTrue(entries)
+
+    def test_lint_routes_by_content(self):
+        import contextlib, io
+        ex = Path(__file__).resolve().parent.parent / "examples"
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = vp.run_claims_lint(str(ex / "refs.sample.bib.txt"))
+        self.assertEqual(rc, 0)
+        self.assertIn("no issues", buf.getvalue())
+
+    def test_all_sample_files_in_package_channel(self):
+        # the reason that drove this release: five dimensions pointed at
+        # "the docs mention .bib/.ris samples the package does not carry".
+        # Every sample referenced anywhere must now exist as a .txt (the
+        # extension the package whitelist always carries).
+        ex = Path(__file__).resolve().parent.parent / "examples"
+        for base in ("refs.sample.bib", "refs.sample.ris"):
+            self.assertTrue((ex / (base + ".txt")).exists(),
+                            f"{base}.txt missing — package sample gap returns")
+
+    def test_sniff_flag_documented(self):
+        src = (Path(__file__).resolve().parent.parent / "scripts"
+               / "verify_pmids.py").read_text(encoding="utf-8")
+        self.assertEqual(src.count("sniff_bibliography_format("), 4)  # 1 def + 3 routes
 
 
 if __name__ == "__main__":
