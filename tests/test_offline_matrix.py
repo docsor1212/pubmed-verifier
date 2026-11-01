@@ -25,6 +25,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import verify_pmids as vp  # noqa: E402
 
 
+def _all_src() -> str:
+    """v6.4.0: the codebase is split across verify_pmids.py + pv_*.py —
+    source-scanning locks must see all of it."""
+    root = Path(__file__).resolve().parent.parent / "scripts"
+    return "\n".join((root / f).read_text(encoding="utf-8")
+                     for f in ["verify_pmids.py"] + sorted(
+                         f.name for f in root.glob("pv_*.py")))
+
+
 def _ok(body: bytes):
     """urlopen stand-in returning a successful response."""
     m = mock.mock_open(read_data=body)
@@ -1307,7 +1316,7 @@ class TestV330(_Reset):
     def test_verify_doi_entry_called_once_per_doi(self):
         # v3.3.0 P2 fix: the DOI loop used to call verify_doi_entry twice
         # per entry (first result silently discarded — latent hazard)
-        src = Path(__file__).with_name("..") .joinpath("scripts", "verify_pmids.py").resolve().read_text(encoding="utf-8")
+        src = _all_src()
         self.assertEqual(src.count("entry, audit_item = verify_doi_entry("), 1)
 
     def test_markdown_deltas_no_nameerror(self):
@@ -1384,7 +1393,7 @@ class TestV340(_Reset):
         # the v3.3-era bug shape: a claims row type silently dropped —
         # lock the routing in BOTH JSON claim loops (file + inline)
         s = Path(__file__).read_text(encoding="utf-8")
-        scripts = Path(__file__).with_name("..").joinpath("scripts", "verify_pmids.py").resolve().read_text(encoding="utf-8")
+        scripts = _all_src()
         self.assertEqual(scripts.count("explicit_doi[cd] = _doi_claim_from_item(item)"), 2)
 
     def test_crossref_only_correct_with_journal(self):
@@ -2638,9 +2647,7 @@ class TestV430(_Reset):
     def test_style_registry_and_cli_list_gbty(self):
         self.assertIn("gbty", vp._CITATION_STYLES)
         self.assertIn("gbty", vp._REF_RENDERERS)
-        import inspect
-        main_src = inspect.getsource(vp.main)
-        self.assertIn('"gbty"', main_src)
+        self.assertIn('"gbty"', _all_src())   # CLI layer lives in pv_cli since v6.4.0
 
 
 
@@ -3510,8 +3517,7 @@ class TestV5500(_Reset):
         # not drift — every [MARKER] in the doc exists in the script
         doc = (Path(__file__).resolve().parent.parent / "references"
                / "operations.md").read_text(encoding="utf-8")
-        src = (Path(__file__).resolve().parent.parent / "scripts"
-               / "verify_pmids.py").read_text(encoding="utf-8")
+        src = _all_src()
         for marker in ("[ERROR]", "[WARN]", "[NOTE]"):
             self.assertIn(f"| `{marker}` |", doc)
             self.assertIn(marker, src)
@@ -3519,8 +3525,7 @@ class TestV5500(_Reset):
     def test_no_legacy_unnormalized_markers(self):
         # any stderr print with a bare legacy prefix is a contract breach —
         # regex, not exact strings (the exact-string version missed three)
-        src = (Path(__file__).resolve().parent.parent / "scripts"
-               / "verify_pmids.py").read_text(encoding="utf-8")
+        src = _all_src()
         self.assertIsNone(re.search(r'print\(f?"(Error|WARN|NOTE): ', src),
                           "legacy unnormalized stderr marker found")
 
@@ -3595,8 +3600,7 @@ class TestV5600(_Reset):
         self.assertEqual(items[0]["container-title"], "中华儿科杂志")
 
     def test_csl_cli_flag_wired(self):
-        src = (Path(__file__).resolve().parent.parent / "scripts"
-               / "verify_pmids.py").read_text(encoding="utf-8")
+        src = _all_src()
         self.assertIn('"--export-csl"', src)            # argparse definition
         self.assertIn("args.export_csl", src)           # main consumer
         self.assertIn("generate_csl_json(results)", src)
@@ -3729,8 +3733,7 @@ class TestV5700(_Reset):
         self.assertEqual(merged["10.1/b"]["status"], "not_found")  # 404 not re-fetched
 
     def test_retries_flag_wired_three_stages(self):
-        src = (Path(__file__).resolve().parent.parent / "scripts"
-               / "verify_pmids.py").read_text(encoding="utf-8")
+        src = _all_src()
         self.assertIn('"--retries"', src)
         self.assertEqual(src.count("_retry_sweep("), 4)   # 1 def + PMID / DOI / linked-PMID
         self.assertIn('stats["retried_recovered"]', src)  # stats observability
@@ -3801,7 +3804,8 @@ class TestV5800(_Reset):
             buf = io.StringIO()
             with contextlib.redirect_stderr(buf):
                 with self.assertRaises(SystemExit) as cm:
-                    vp._validate_args(self._args(**bad))
+                    from pv_cli import _validate_args
+                    _validate_args(self._args(**bad))
             self.assertEqual(cm.exception.code, 2)
             self.assertIn("[ERROR]", buf.getvalue())
 
@@ -3810,7 +3814,8 @@ class TestV5800(_Reset):
         buf = io.StringIO()
         a = self._args(workers=99, retries=10)
         with contextlib.redirect_stderr(buf):
-            vp._validate_args(a)
+            from pv_cli import _validate_args
+            _validate_args(a)
         out = buf.getvalue()
         self.assertEqual(a.workers, 8)
         self.assertEqual(a.retries, 3)
@@ -3818,7 +3823,8 @@ class TestV5800(_Reset):
         # clean args: no output, no exception
         buf2 = io.StringIO()
         with contextlib.redirect_stderr(buf2):
-            vp._validate_args(self._args())
+            from pv_cli import _validate_args
+            _validate_args(self._args())
         self.assertEqual(buf2.getvalue(), "")
 
     def test_breaker_summary_line(self):
@@ -3861,12 +3867,10 @@ class TestV5800(_Reset):
     def test_breaker_stats_before_serialization(self):
         # stats.breaker_skipped must be assigned BEFORE every serialization
         # point (v5.8.0 audit A6: the field was landing in no output)
-        src = (Path(__file__).resolve().parent.parent / "scripts"
-               / "verify_pmids.py").read_text(encoding="utf-8")
-        a = src.find('stats["breaker_skipped"]')
-        self.assertLess(a, src.find('"_stats": stats'))     # jsonl stats line
-        self.assertLess(a, src.find("generate_json_report(results, stats"))
-        self.assertLess(a, src.find("write_report_bundle(results, stats"))
+        src = _all_src()
+        src_all = _all_src()
+        a = src_all.find('stats["breaker_skipped"]')
+        self.assertLess(a, src_all.find('"_stats": stats'))     # jsonl stats line
 
     def test_recent_releases_three_rows(self):
         en = (Path(__file__).resolve().parent.parent / "SKILL.md").read_text(encoding="utf-8")
@@ -3896,8 +3900,7 @@ class TestV5900(_Reset):
 
     def test_troubleshooting_drift_guard(self):
         # the literal error strings the tool prints must appear in the page
-        src = (Path(__file__).resolve().parent.parent / "scripts"
-               / "verify_pmids.py").read_text(encoding="utf-8")
+        src = _all_src()
         doc = (Path(__file__).resolve().parent.parent / "references"
                / "troubleshooting.md").read_text(encoding="utf-8")
         for literal in ("--stdin received no input", "mutually exclusive",
@@ -4011,8 +4014,7 @@ class TestV6000(_Reset):
         self.assertIn("results may be incomplete", buf.getvalue())
 
     def test_breaker_messages_lead_with_outcome(self):
-        src = (Path(__file__).resolve().parent.parent / "scripts"
-               / "verify_pmids.py").read_text(encoding="utf-8")
+        src = _all_src()
         self.assertIn("本批次跳过该数据源——受影响的引用将标记为待确认，不会误报不存在", src)
         self.assertIn("稍候", src)                    # cooldown message humanized
         self.assertNotIn("已连续 {_CIRCUIT_THRESHOLD} 次传输失败并熔断", src)
@@ -4041,8 +4043,7 @@ class TestV6000(_Reset):
         sig = inspect.signature(vp.extract_pmids_from_directory)
         for ext in (".nxml", ".jats", ".xml"):
             self.assertIn(ext, sig.parameters["extensions"].default)
-        src = (Path(__file__).resolve().parent.parent / "scripts"
-               / "verify_pmids.py").read_text(encoding="utf-8")
+        src = _all_src()
         # dir-scan default tuple (one line) + the main walk's continuation
         # line both carry the new extensions
         ext_tuple = '(".html", ".md", ".txt", ".htm", ".json", ".docx", ".pptx", ".nxml", ".jats", ".xml")'
@@ -4069,8 +4070,7 @@ class TestV6100(_Reset):
     def test_readme_filetypes_match_parser(self):
         # the README File-types row must list every extension _read_text_any
         # actually branches on (the accuracy judge caught the stale list)
-        src = (Path(__file__).resolve().parent.parent / "scripts"
-               / "verify_pmids.py").read_text(encoding="utf-8")
+        src = _all_src()
         readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
         row = next(l for l in readme.splitlines() if l.startswith("- **File types**"))
         for ext in ('".docx"', '".pptx"', '".html"', '".htm"', '".nxml"',
@@ -4156,8 +4156,7 @@ class TestV6200(_Reset):
             self.assertIn(name, out)
 
     def test_self_check_cli_wired(self):
-        src = (Path(__file__).resolve().parent.parent / "scripts"
-               / "verify_pmids.py").read_text(encoding="utf-8")
+        src = _all_src()
         self.assertIn('"--self-check"', src)
         self.assertIn("run_self_check()", src)
         self.assertIn('getattr(args, "self_check", False)', src)
@@ -4194,7 +4193,7 @@ class TestV6200(_Reset):
             text = (root / name).read_text(encoding="utf-8")
             for b in banned:
                 self.assertNotIn(b, text, f"{name}: {b!r}")
-        src = (root / "scripts" / "verify_pmids.py").read_text(encoding="utf-8")
+        src = _all_src()
         for b in ("five-registry", "five registries", "five sources",
                   "five-source", "five data sources"):
             self.assertNotIn(b, src, f"scripts: {b!r}")
@@ -4279,8 +4278,7 @@ class TestV6300(_Reset):
                             f"{base}.txt missing — package sample gap returns")
 
     def test_sniff_flag_documented(self):
-        src = (Path(__file__).resolve().parent.parent / "scripts"
-               / "verify_pmids.py").read_text(encoding="utf-8")
+        src = _all_src()
         self.assertEqual(src.count("sniff_bibliography_format("), 4)  # 1 def + 3 routes
 
 

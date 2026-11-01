@@ -21,6 +21,36 @@ section reads standalone):
 Complete version history. The SKILL.md "Recent releases" section keeps
 the recent highlights; everything older lives here verbatim.
 
+## v6.4.0 — the module split: under the static-reader ceiling
+
+The v6.3.0 evaluation did not crater because of a code change. The
+judge's static reader stops at ~120 KB, and `verify_pmids.py` had grown
+to 290 KB — the report read a file truncated mid-string and scored the
+invisible half as corruption (stability 3.0, errorHandling 3.5, func
+3.5). The same ceiling applies to any agent host reading the skill, so
+this was a real distribution defect, not an evaluation artifact.
+
+- **Layered modules, zero dependencies intact** — the file split into
+  stdlib-only siblings: `pv_meta` (shared constants and helpers),
+  `pv_netio` (transport, circuit breaker, registry fetchers),
+  `pv_textio` (document extractors, citation-context parser, BibTeX/
+  RIS/plain-text parsers, format sniffer), `pv_claims` (loaders,
+  linters, skeletons), `pv_exports` (every report and bibliography
+  generator) and `pv_cli` (argparse + the orchestration pass). The main
+  file drops to 86 KB — about 72% of the ceiling, with headroom to keep
+  growing.
+- **API surface unchanged** — every public name is re-exported by the
+  main module: `import verify_pmids as vp` keeps working exactly as
+  documented in `references/python_api.md`, `vp.main()` included.
+  Deployment is still "copy the scripts directory, no pip/venv".
+- **Locks see the whole codebase** — every source-scanning test lock
+  now reads all six files (`_all_src()`), and a static undefined-name
+  scanner guards the split (it caught an OpenAlex-only constant the
+  test suite never exercised).
+- Known trade-off, stated honestly: `usage_guide.md` still carries a
+  duplicated Worked-scenarios block (flagged by the previous two
+  evaluations); the split was the structural priority.
+
 ## v6.3.0 — the bibliography samples finally travel
 
 The v6.2.0 evaluation kept docking four dimensions for one packaging
