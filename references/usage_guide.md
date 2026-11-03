@@ -93,26 +93,6 @@ details name that record (evidence key `wrong_pmid_signal`) while the
 verdict stays unknown: the cited PMID points to another paper. Feed
 `--claims-file` with title+authors for the decisive verdict.
 
-### Worked scenarios
-
-- **"The reviewer asked how I checked my references."** — run the audit
-  with `--export-audit audit.json --verify-doi`: the JSON working-paper
-  contains tool identity, version, the exact (API-key-redacted) invocation,
-  and the per-citation evidence chain a reviewer or editor can replay.
-  Submit it alongside the manuscript.
-- **"Checking the reference list of my thesis."** — copy the list into a
-  plain-text file (one reference per line, or keep the `[1]` numbering) and
-  run `--parse-text refs.txt`: inline PMIDs/DOIs route exactly; English
-  entries resolve via PubMed title search; Chinese entries resolve via the
-  OpenAlex CJK leg. Finish with
-  `--format-references refs_clean.txt --citation-style gbt` for a corrected,
-  uniformly formatted list.
-- **"Screening a systematic review's bibliography (PRISMA)."** — verify the
-  full list once, export the audit as the baseline, then re-run
-  `--diff audit.json` before each resubmission: newly retracted, degraded
-  and new citations are reported as deltas, so you only re-read what
-  changed.
-
 ## Worked scenarios — reviewer evidence / thesis check / PRISMA
 
 
@@ -134,6 +114,14 @@ verdict stays unknown: the cited PMID points to another paper. Feed
   and new citations are reported as deltas, so you only re-read what
   changed.
 
+
+## Deployment shape (v6.4.0+)
+
+The verifier is one entry file (`scripts/verify_pmids.py`) plus six
+stdlib-only sibling modules (`scripts/pv_meta.py` … `pv_cli.py`). Copy the
+whole `scripts/` directory to any Python 3.9+ machine — no pip, no venv.
+`python3 scripts/verify_pmids.py --self-check` verifies a downloaded copy
+offline.
 
 ## Piping input — paste-and-verify
 
@@ -182,7 +170,7 @@ without a temp file (same parser as `--parse-text`, report source reads
   `--cache-days` to tune; `--no-cache` for the final pre-submission pass.
 - **Scale expectations** — metadata-only throughput is API-bound
   (~1–2 min per 1000 PMIDs with an API key); DOI resolution adds one
-  Crossref call per DOI. One deliberate trade-off: the verifier is a
-  single stdlib-only file — copy `scripts/verify_pmids.py` anywhere with
-  Python 3.9+ and it runs, no pip, no venv (that portability is why the
-  code is not split into modules).
+  Crossref call per DOI. One deliberate trade-off: zero dependencies —
+  copy the whole `scripts/` directory (entry file + six sibling modules,
+  since v6.4.0) to any Python 3.9+ machine and it runs, no pip, no venv.
+  `--self-check` verifies the copy offline.

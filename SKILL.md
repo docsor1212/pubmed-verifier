@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 6.4.0
+version: 6.5.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v6.4.0
+# PubMed Citation Verifier v6.5.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -383,18 +383,18 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
-- **v6.4.0** — **the module split**: the main script had grown to 290 KB,
-  past the ~120 KB static-reader ceiling (an evaluation judge read the
-  truncated tail as corruption and cratered the reliability dimensions) —
-  the file is now six stdlib-only sibling modules (meta/netio/textio/
-  claims/exports/cli) and the main file sits at 86 KB; `import
-  verify_pmids as vp` keeps the exact API surface and deployment is still
-  "copy the scripts directory"; source-scanning locks read all six files.
+- **v6.5.0** — the documentation debt cleared: the Worked-scenarios
+  walkthrough (flagged verbatim-duplicated by three evaluations) now
+  appears once; the stale "single stdlib-only file … not split into
+  modules" claim retired in favor of a real "Deployment shape" section
+  (entry file + six siblings, --self-check verifies the copy); README and
+  SKILL state the exact module count, locked against the scripts
+  directory.
+- **v6.4.0** — the module split: 290 KB past the ~120 KB static-reader
+  ceiling, now six stdlib-only sibling modules and an 86 KB entry file,
+  API surface unchanged.
 - **v6.3.0** — the bibliography samples finally travel: format sniffing
-  by content, `.txt` copies ship in the package, every documented command
-  works on every distribution channel.
-- **v6.2.0** — `--self-check` (five offline core promises, damaged copies
-  self-report); numbers that rot retired.
+  by content, `.txt` copies ship in the package.
 
 ## Safety & behavior statement
 
@@ -489,7 +489,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v6.4.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v6.5.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
 | `references/troubleshooting.md` | Troubleshooting index — one error, one row (literal text → cause → fix) |

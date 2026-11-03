@@ -28,9 +28,9 @@ from difflib import SequenceMatcher
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
-_TOOL_VERSION = "6.4.0"
+_TOOL_VERSION = "6.5.0"
 
-_UA_TOOL = "pubmed-verifier/6.4 (+citation verifier; stdlib-only)"
+_UA_TOOL = "pubmed-verifier/6.5 (+citation verifier; stdlib-only)"
 
 _GITHUB_URL = "https://github.com/docsor1212/pubmed-verifier"
 

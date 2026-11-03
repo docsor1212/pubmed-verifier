@@ -21,6 +21,26 @@ section reads standalone):
 Complete version history. The SKILL.md "Recent releases" section keeps
 the recent highlights; everything older lives here verbatim.
 
+## v6.5.0 — the documentation debt cleared where the judges read it
+
+The v6.4.0 evaluation recovered to 4.873 (stability and errorHandling
+back to 5.0 — the module split did exactly what it was built for). The
+remaining notes all pointed at stale prose, so this release is a
+documentation-debt payoff:
+
+- **Worked scenarios, once** — usage_guide.md had carried the
+  three-scenario walkthrough verbatim twice (three evaluations flagged
+  it). One section remains, promoted to a top-level heading.
+- **The stale single-file claim retired** — the tuning playbook still
+  said "the verifier is a single stdlib-only file … (that portability is
+  why the code is not split into modules)", directly contradicting
+  v6.4.0. It now describes the real deployment shape (entry file + six
+  siblings, copy the directory, --self-check verifies the copy) in a
+  dedicated "Deployment shape" section.
+- **Module counts made exact** — README and SKILL say "one entry file
+  plus six stdlib-only sibling modules" (the scripts directory holds
+  exactly seven Python files; a lock enforces the count and the wording).
+
 ## v6.4.0 — the module split: under the static-reader ceiling
 
 The v6.3.0 evaluation did not crater because of a code change. The

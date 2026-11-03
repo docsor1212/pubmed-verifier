@@ -4282,5 +4282,43 @@ class TestV6300(_Reset):
         self.assertEqual(src.count("sniff_bibliography_format("), 4)  # 1 def + 3 routes
 
 
+class TestV6500(_Reset):
+    """v6.5.0: the Worked-scenarios duplicate removed (flagged three
+    evaluations running), README/SKILL module counts made exact (one entry
+    file + six siblings), and the deployment shape documented where the
+    judges read it."""
+
+    def test_worked_scenarios_appears_once(self):
+        # three evaluations running flagged the verbatim duplicate section —
+        # the file held THREE copies (### stub + untitled ## + titled ##)
+        c = (Path(__file__).resolve().parent.parent / "references"
+             / "usage_guide.md").read_text(encoding="utf-8")
+        self.assertEqual(c.count("Worked scenarios"), 1)   # exactly one section
+        self.assertEqual(c.count('"The reviewer asked how I checked my references."'), 1)
+        self.assertEqual(c.count('"Screening a systematic review'), 1)
+        self.assertIn("## Worked scenarios — reviewer evidence", c)
+        # the single-file deployment claim (contradicting v6.4.0) is retired
+        self.assertNotIn("single stdlib-only file", c)
+        self.assertNotIn("the code is not split into modules", c)
+        self.assertIn("entry file + six sibling modules", c)
+
+    def test_module_count_exact(self):
+        # README/SKILL must say "one entry file plus six siblings" — the
+        # actual scripts/ dir holds exactly 7 python files (1+6)
+        readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
+        self.assertIn("one entry file plus six stdlib-only sibling modules", readme)
+        scripts = Path(__file__).resolve().parent.parent / "scripts"
+        pys = list(scripts.glob("*.py"))
+        self.assertEqual(len(pys), 7, sorted(f.name for f in pys))
+        self.assertEqual(len(list(scripts.glob("pv_*.py"))), 6)
+
+    def test_deployment_shape_documented(self):
+        c = (Path(__file__).resolve().parent.parent / "references"
+             / "usage_guide.md").read_text(encoding="utf-8")
+        self.assertIn("## Deployment shape (v6.4.0+)", c)
+        self.assertIn("one entry file (`scripts/verify_pmids.py`) plus six", c)
+        self.assertIn("--self-check", c)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
