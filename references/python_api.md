@@ -1,7 +1,7 @@
 # python_api.md — Python API 参考（中文版）
 
 > **何时读我**：在 Python 代码/流水线里直接调用 verify_pmids 模块（而非命令行）时。
-> 整个工具是纯标准库 Python 模块（v6.4.0 起分为主文件+五个 pv_* 同级模块，公共 API 逐名重导出）——`import` 即用，无需安装任何依赖。
+> 整个工具是纯标准库 Python 模块（v6.4.0 起分为入口文件+六个 pv_* 同级模块，公共 API 逐名重导出）——`import` 即用，无需安装任何依赖。
 > 可运行示例：[api_examples.md](api_examples.md)；EN 用户读同目录 `python_api.md` 历史
 > 版本或直接读本页代码块（代码即接口）。
 > **回** [INDEX.md](INDEX.md)

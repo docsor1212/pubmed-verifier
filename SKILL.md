@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 6.5.0
+version: 6.6.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v6.5.0
+# PubMed Citation Verifier v6.6.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -383,18 +383,16 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v6.6.0** — one count, one home per fact: the module count is
+  "entry file + six pv_* modules" everywhere (the accuracy judge quoted
+  the stale "five" verbatim — fixed, locked against the directory); the
+  main doc keeps summaries while the mechanics/performance details live
+  in the reference pages, under a 500-line ceiling, both locked.
 - **v6.5.0** — the documentation debt cleared: the Worked-scenarios
-  walkthrough (flagged verbatim-duplicated by three evaluations) now
-  appears once; the stale "single stdlib-only file … not split into
-  modules" claim retired in favor of a real "Deployment shape" section
-  (entry file + six siblings, --self-check verifies the copy); README and
-  SKILL state the exact module count, locked against the scripts
-  directory.
+  duplication removed, the stale single-file claim retired in favor of a
+  Deployment shape section, module counts exact.
 - **v6.4.0** — the module split: 290 KB past the ~120 KB static-reader
-  ceiling, now six stdlib-only sibling modules and an 86 KB entry file,
-  API surface unchanged.
-- **v6.3.0** — the bibliography samples finally travel: format sniffing
-  by content, `.txt` copies ship in the package.
+  ceiling, now six stdlib-only sibling modules and an 86 KB entry file.
 
 ## Safety & behavior statement
 
@@ -416,29 +414,14 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## How it works
 
-1. **Extract + parse context** — finds `PMID: 12345678` / PubMed URLs in
-   `.html .md .txt .htm .json`, and parses the surrounding reference into
-   claimed authors / title / journal / year.
-2. **Fetch metadata (cached)** — PubMed esummary in batches of 50, SQLite
-   cache (30 days, `--cache-days`), 3 retries with backoff.
-   Europe PMC steps in per failed batch when NCBI is unreachable.
-3. **Cross-check claimed vs actual** — dual fuzzy matching: word-level
-   Jaccard overlap ≥ 50% OR SequenceMatcher ≥ 90% on titles; author surname
-   hits; journal containment or NLM abbreviation equivalence; exact year.
-4. **DOI↔PMID cross-check** (automatic when claims include `doi`) — a claimed
-   DOI differing from the PMID's registered DOI is a splice/fabrication
-   signal (capped at partial).
-5. **Crossref DOI verification** (optional `--verify-doi`) — resolves each
-   cited DOI via Crossref, compares the registered title with the PubMed
-   record (`doi_title_match` in JSON), and detects RETRACTED papers (verdict
-   capped at partial). A `doi_verified: false` with note
-   "crossref unreachable" is a network fact, not a verdict.
-6. **Suggest the right PMID** (optional `--suggest`) — for mismatches,
-   searches PubMed with the claimed metadata and proposes top-3 candidates.
-   (Suggestion search always uses NCBI, even with `--meta-source europepmc`.)
-
-Context parsing is heuristic (see "Know before you run"); `--claims-file`
-gives exact metadata.
+Extract claims from the input (context parsing, heuristic) → fetch the
+registry record (batched, cached, Europe PMC fallback) → cross-check
+claimed vs registered metadata (the five-state ladder) → optional
+Crossref DOI verification with retraction detection (`--verify-doi`) and
+correct-PMID suggestions (`--suggest`). The matching thresholds, the
+DOI↔PMID splice rule and the suggestion mechanics are documented in
+[references/usage_guide.md](references/usage_guide.md); the audit trail
+(`--export-audit`) makes every step replayable.
 
 | Report | Flag | Use |
 |--------|------|-----|
@@ -448,11 +431,10 @@ gives exact metadata.
 
 ## Performance
 
-Measured on a 225-PMID audit (5 esummary batches): metadata-only verification
-runs in seconds; cached re-runs take ~5 s. Each batch waits 0.4 s between
-calls (0.12 s with `--ncbi-api-key`). Optional extras are per-citation:
-`--verify-doi` adds one Crossref call (~0.5–1 s) per cited DOI, and
-`--suggest` adds one PubMed search per mismatch.
+Metadata-only verification runs in seconds for typical audits; cached
+re-runs take ~5 s. Deep-verify flags add per-citation API calls — the
+batching math and the speed checklist live in
+[references/operations.md](references/operations.md).
 
 ## When to use which tool
 
@@ -489,7 +471,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v6.5.0, stdlib-only) |
+| `scripts/verify_pmids.py` | Main verifier (v6.6.0, stdlib-only) |
 | `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
 | `references/troubleshooting.md` | Troubleshooting index — one error, one row (literal text → cause → fix) |

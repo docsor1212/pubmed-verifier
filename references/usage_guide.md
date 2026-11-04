@@ -115,6 +115,36 @@ verdict stays unknown: the cited PMID points to another paper. Feed
   changed.
 
 
+## Matching mechanics — thresholds, splice rule, suggestions
+
+The five-state ladder rests on a dual fuzzy match between the claimed and
+the registered metadata:
+
+- **Title**: word-level Jaccard overlap ≥ 50% OR character-sequence
+  similarity ≥ 90% (SequenceMatcher) — either passes. Word overlap
+  tolerates reordering and abbreviation expansion; the sequence score
+  catches near-identical strings.
+- **Author**: at least one claimed surname hits the registered author
+  list. Single initials never count as a mismatch ("Smith J" vs
+  "Smith John" is not an accusation).
+- **Journal**: containment match or NLM abbreviation equivalence.
+- **Year**: exact match.
+
+**DOI↔PMID splice rule** (automatic when a claims row carries `doi`): a
+claimed DOI differing from the PMID's registered DOI is a splice /
+fabrication signal and caps the verdict at partial — the tool reports the
+inconsistency, it does not judge who is right.
+
+**Suggestion mechanics** (`--suggest`): for every mismatch, the claimed
+metadata is searched against PubMed (always NCBI, even under
+`--meta-source europepmc`) and the top-3 candidates are proposed in the
+report and in `suggestions` (JSON). Suggestions are candidates to check,
+not verdicts.
+
+Context parsing is heuristic (common abbreviations protected, exotic
+formatting can still mis-split); `--claims-file` feeds exact metadata and
+bypasses the heuristics entirely.
+
 ## Deployment shape (v6.4.0+)
 
 The verifier is one entry file (`scripts/verify_pmids.py`) plus six
