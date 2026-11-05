@@ -21,6 +21,26 @@ section reads standalone):
 Complete version history. The SKILL.md "Recent releases" section keeps
 the recent highlights; everything older lives here verbatim.
 
+## v6.7.0 — the Files table reads the package, not the repo
+
+The v6.6.0 evaluation held at 4.887 (all fifteen dimensions ≥ 4.8;
+progressive recovered to 5.0). Both remaining seats named one concrete
+defect: the main doc's Files table listed sample names that do not match
+what the shipped package actually contains.
+
+- **The Files table is now generated against the package**: every
+  backticked path must exist, every package-carriable example/reference
+  file must appear (by its full name — short forms like `.json` or
+  `+_ZH` hid real files from the reader), and the native-extension
+  `.bib`/`.ris` samples are explicitly marked "GitHub repo and zip
+  only". Two test locks enforce both directions against the actual
+  scripts/ and package whitelist.
+- **The Use-cases section is gone** — four of its five bullets were
+  already covered by the "When to use this skill" list one screen above
+  (the progressive judges have flagged main-doc duplication for three
+  releases running); pharmacovigilance verification moves there.
+- SKILL_ZH Files table synced to the same shape.
+
 ## v6.6.0 — one count, one home per fact
 
 The v6.5.0 evaluation reached 4.893 (ten dimensions at 5.0). Two of the

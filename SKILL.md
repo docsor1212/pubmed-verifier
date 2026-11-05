@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 6.6.0
+version: 6.7.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v6.6.0
+# PubMed Citation Verifier v6.7.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -35,6 +35,7 @@ Invoke it whenever citation truth matters:
 - Spot-checking a systematic review's bibliography
 - "Does PMID 12345678 really say X?" — point-of-doubt verification
 - Batch QA of a knowledge base's PMID/DOI citations
+- Pharmacovigilance literature verification
 - Automatic invocation: trigger this skill whenever the user asks to
   "verify/check/audit" citations, PMIDs, DOIs, arXiv preprints or
   references — no flags needed for a first pass; add `--claims-file`
@@ -383,16 +384,17 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
-- **v6.6.0** — one count, one home per fact: the module count is
-  "entry file + six pv_* modules" everywhere (the accuracy judge quoted
-  the stale "five" verbatim — fixed, locked against the directory); the
-  main doc keeps summaries while the mechanics/performance details live
-  in the reference pages, under a 500-line ceiling, both locked.
+- **v6.7.0** — the Files table reads the package: every backticked path
+  must exist, every package-carriable sample must appear by its full
+  name (short forms like `.json` or `+_ZH` hid real files from the
+  reader), native-extension `.bib`/`.ris` samples are explicitly marked
+  "GitHub repo and zip only" — two test locks enforce both directions;
+  the Use-cases section (a duplicate of When-to-use) is gone.
+- **v6.6.0** — one count, one home per fact: module counts unified
+  everywhere, locked against the directory; the main doc keeps summaries
+  under a 500-line ceiling.
 - **v6.5.0** — the documentation debt cleared: the Worked-scenarios
-  duplication removed, the stale single-file claim retired in favor of a
-  Deployment shape section, module counts exact.
-- **v6.4.0** — the module split: 290 KB past the ~120 KB static-reader
-  ceiling, now six stdlib-only sibling modules and an 86 KB entry file.
+  duplication removed, the Deployment shape section added.
 
 ## Safety & behavior statement
 
@@ -445,14 +447,6 @@ batching math and the speed checklist live in
 
 They share the same five-state philosophy and are safe to use together.
 
-## Use cases
-
-- Systematic review / meta-analysis reference audits
-- Verifying citations in AI-generated content
-- Pre-submission self-check of a manuscript's reference list
-- Medical knowledge base / teaching material QA
-- Pharmacovigilance literature verification
-
 ## Related tools
 
 Each tool solves one step of reference work; use whichever fits the task.
@@ -471,16 +465,20 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Main verifier (v6.6.0, stdlib-only) |
-| `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
-| `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook |
-| `references/troubleshooting.md` | Troubleshooting index — one error, one row (literal text → cause → fix) |
+| `scripts/verify_pmids.py` | Entry file + orchestration (v6.7.0, stdlib-only; six `pv_*.py` sibling modules beside it) |
+| `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook, matching mechanics |
+| `references/troubleshooting.md` / `troubleshooting_ZH.md` | Troubleshooting index — one error, one row (literal text → cause → fix) |
 | `references/flags.md` | Flag cheat sheet — scenario → one command, every flag grouped |
 | `references/operations.md` | Operations playbook — batching math, proxy scenarios, speed checklist, error contract, CI gate |
-| `references/INDEX.md` | 任务→文档 30 秒路由表 |
+| `references/INDEX.md` | Task → document routing table |
 | `references/python_api.md` | Calling the verifier from Python (stable surfaces + examples) |
-| `examples/claims.sample.csv` | Reference format for `--claims-file` (incl. a DOI-only row) |
-| `examples/refs.sample.bib` / `refs.sample.ris` (+`.txt` copies) | Sample bibliographies for `--bibliography`; since v6.3.0 the format sniffer reads the `.txt` copies, so the samples run on every distribution channel |
+| `references/api_examples.md` | PubMed / Europe PMC / Crossref / arXiv API notes |
+| `references/CHANGELOG.md` | Full version history |
+| `examples/README.txt` | What each sample is for, with one command each |
+| `examples/claims.sample.csv` / `claims.sample.json` | Reference formats for `--claims-file` (PMID / DOI-only / arXiv row types) |
+| `examples/refs.sample.txt` / `refs_list.sample.txt` | Sample inputs for `--parse-text` (inline-ID routing + a title-only entry) |
+| `examples/refs.sample.bib.txt` / `refs.sample.ris.txt` | Sample bibliographies for `--bibliography` (format sniffed from content) |
+| `examples/refs.sample.bib` / `refs.sample.ris` | Same samples under their native extensions (GitHub repo and zip only) |
 | `tests/` | Offline matrix + real-network acceptance (repo only, not in the package) |
 
 ## License

@@ -143,7 +143,7 @@ not verdicts.
 
 Context parsing is heuristic (common abbreviations protected, exotic
 formatting can still mis-split); `--claims-file` feeds exact metadata and
-bypasses the heuristics entirely.
+skips the heuristics entirely.
 
 ## Deployment shape (v6.4.0+)
 
