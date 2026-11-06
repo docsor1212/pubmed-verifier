@@ -21,6 +21,20 @@ section reads standalone):
 Complete version history. The SKILL.md "Recent releases" section keeps
 the recent highlights; everything older lives here verbatim.
 
+## v6.8.0 — one home per fact, reader-facing docs lean
+
+The Top-10 NOT-to-do table lived twice: a table in Quick FAQ plus the
+numbered entries in Anti-patterns said the same things. The table is now
+the speed index at the top of the Anti-patterns section and Quick FAQ
+routes there — one fact, one home (EN+ZH, test-locked in both
+directions).
+
+The README restated large parts of the main doc. Its feature list is
+grouped into four sections (verification core / outputs & audits /
+resilience & honesty / shape & docs) with a leaner quick start, so the
+repo landing page stays self-sufficient while the details live once, in
+the main doc they belong to.
+
 ## v6.7.0 — the Files table reads the package, not the repo
 
 The v6.6.0 evaluation held at 4.887 (all fifteen dimensions ≥ 4.8;

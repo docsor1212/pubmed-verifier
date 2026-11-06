@@ -4420,5 +4420,73 @@ class TestV6700(_Reset):
         self.assertNotIn("## Use cases", en)   # duplicate of "When to use this skill"
 
 
+class TestV6800(_Reset):
+    """v6.8.0: the Top-10 NOT-to-do table lives in ONE home (the speed index
+    at the top of Anti-patterns — the convention/usability judges read the
+    same content twice: a table in Quick FAQ plus numbered entries in
+    Anti-patterns), and the README carries grouped features instead of the
+    flat list duplicating the main doc."""
+
+    def test_top10_table_single_home_en(self):
+        root = Path(__file__).resolve().parent.parent
+        en = (root / "SKILL.md").read_text(encoding="utf-8")
+        self.assertEqual(en.count("Top 10 things NOT to do"), 1,
+                         "the Top-10 table title must appear exactly once")
+        faq = en.find("## Quick FAQ")
+        ap = en.find("## Anti-patterns")
+        title = en.find("Top 10 things NOT to do")
+        self.assertTrue(0 < faq < ap < title,
+                        "the speed-index table must live inside the Anti-patterns section")
+        self.assertNotIn("| 1 |", en[faq:ap],
+                         "the Top-10 table must not stay in Quick FAQ")
+
+    def test_top10_table_single_home_zh(self):
+        root = Path(__file__).resolve().parent.parent
+        zh = (root / "SKILL_ZH.md").read_text(encoding="utf-8")
+        faq = zh.find("## 快速 FAQ")
+        ap = zh.find("## 反模式")
+        title = zh.find("**十件不该做的事**——速查表")
+        self.assertTrue(0 < faq < ap < title,
+                        "速查表必须住在「反模式」节内")
+        row = "| 1 | 把 `--pmids` 的存在性输出当"
+        self.assertEqual(zh.count(row), 1)
+        self.assertNotIn(row, zh[faq:ap], "速查表不得留在快速 FAQ 节")
+
+    def test_readme_features_grouped(self):
+        root = Path(__file__).resolve().parent.parent
+        rm = (root / "README.md").read_text(encoding="utf-8")
+        for group in ("**Verification core**", "**Outputs & audits**",
+                      "**Resilience & honesty**", "**Shape & docs**"):
+            self.assertIn(group, rm, f"README features group missing: {group}")
+        # the old flat items are retired — their details live in the main doc
+        for retired in ("- **Batch verification**", "- **Mismatch detection**",
+                        "- **Documentation debt cleared", "- **One fact, one home"):
+            self.assertNotIn(retired, rm)
+        self.assertLessEqual(len(rm.splitlines()), 105,
+                             "README regressed past the grouped shape")
+
+    def test_faq_routes_to_antipatterns_index(self):
+        root = Path(__file__).resolve().parent.parent
+        en = (root / "SKILL.md").read_text(encoding="utf-8")
+        faq_body = en[en.find("## Quick FAQ"):en.find("## Anti-patterns")]
+        self.assertIn("Anti-patterns", faq_body,
+                      "Quick FAQ must route readers to the table's single home")
+
+    def test_files_entry_row_version_matches_frontmatter(self):
+        # v6.8.0 audit P1 防复发闸：pv_release bump 的 Files-row carrier was a
+        # dead anchor (v6.7.0 renamed the wording) and silently no-opped —
+        # the shipped rows kept v6.7.0 while frontmatter said 6.8.0. The row
+        # version must always equal the frontmatter version in both docs.
+        root = Path(__file__).resolve().parent.parent
+        pat = re.compile(r"\| `scripts/verify_pmids\.py` \| [^|\n]*?v(\d+(?:\.\d+)+)")
+        for name in ("SKILL.md", "SKILL_ZH.md"):
+            text = (root / name).read_text(encoding="utf-8")
+            fm = re.search(r"^version: ([\d.]+)", text, re.M).group(1)
+            m = pat.search(text)
+            self.assertTrue(m, f"{name}: Files entry row not found")
+            self.assertEqual(m.group(1), fm,
+                             f"{name}: Files entry row says v{m.group(1)} but frontmatter is {fm}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -21,38 +21,29 @@ Academic projects routinely contain hundreds of PMID citations. Manual verificat
 
 ## Features
 
-> **核心能力（中文速览）**：五态判定（正确/不匹配/部分匹配/无效/待确认）· 撤稿检测全覆盖+撤稿替代推荐 · DOI/arXiv/PMID 三类一站审计 · OpenAlex 兜底（DataCite/Zenodo DOI 可判定）· 中文文献 OpenAlex 标题检索 · 参考文献格式化导出（GB/T 7714/Vancouver/APA/AMA）· 差分审计（PRISMA 复跑只看变化）· 审计底稿可复放 · 网络故障诚实标注绝不误报不存在
+Grouped by job. The scenario→command cheat sheet is `references/flags.md`, the full capability×limit table lives in the main `SKILL.md`, and `--help` prints the complete per-flag contract — one fact, one home.
 
+**Verification core**
 
-- **Batch verification** — Scan entire project directories, extract all PMIDs, verify against PubMed in one run
-- **Mismatch detection** — Five-state verdicts catch a REAL PMID pointing to a DIFFERENT paper (the most common AI hallucination)
-- **Metadata validation** — Title, authors, journal and date fuzzy-compared against your claims (DOI cross-checked via Crossref with `--verify-doi`)
-- **Dual sources** — NCBI E-utilities primary, Europe PMC automatic fallback when NCBI is unreachable
-- **Network hardening** — Optional NCBI API key (3x faster batches), Crossref polite pool, 429 Retry-After backoff, UA rotation, per-host circuit breaker
-- **Content matching** — Keyword overlap scoring flags potentially irrelevant citations
-- **Three citation types in one audit** — PMIDs, DOIs and arXiv IDs (preprints) verified in a single scan; arXiv IDs checked against the official API (nonexistent = fabrication signal); claims rows keyed by DOI get full verdicts, and preprints surface their published version of record
-- **Claims lint** — `--lint-claims file.csv` validates a claims file offline (ID shapes, missing titles, unknown columns, duplicates) before any verification run
-- **Bibliography audit** — `--bibliography refs.bib` / `refs.ris` verifies BibTeX and RIS files directly (Zotero/EndNote/Mendeley exports; entries route by PMID > DOI > arXiv with full cross-checks); round-trips with `--export-bibtex` / `--export-ris` / `--export-csl`
-- **JATS/NLM XML input (v6.0.0)** — `.nxml`/`.jats`/`.xml` article files (the PubMed Central format) extract in-memory; a non-JATS `.xml` falls through to plain text with a visible `[NOTE]`, and degraded structured files are never silent
-- **`--self-check` (v6.2.0)** — the downloaded file verifies itself offline: five core promises run with one OK/FAIL line each; exit 0 = this copy is intact, no repo needed
-- **Layered modules (v6.4.0)** — the verifier is one entry file plus six stdlib-only sibling modules under `scripts/` (the entry file sits at 86 KB, far under static-reader ceilings); `import verify_pmids as vp` keeps the identical API surface
-- **Format sniffing (v6.3.0)** — `--bibliography` reads BibTeX/RIS by content markers, not extension; the sample bibliographies ship as `.txt` copies too, so every documented command runs on every distribution channel
-- **Documentation debt cleared (v6.5.0)** — the duplicated scenario walkthrough removed, the stale single-file claim retired in favor of a real Deployment-shape section, module counts exact and test-locked
-- **One fact, one home (v6.6.0)** — module counts unified everywhere and locked to the directory; the main doc keeps summaries with details in the reference pages
-- **Plain-text reference list parsing** — `--parse-text refs.txt` verifies a reference list copied straight out of a manuscript draft: numbered entries (`[1]`, `1.`) split cleanly, inline PMID/DOI/arXiv IDs route exactly, and a title-only entry resolves via PubMed title search (honestly labeled `resolved_by: title_search`, never a mismatch source)
-- **Formatted reference list export** — `--format-references out.txt --citation-style gbt|vancouver|apa|ama` renders verified entries as a ready-to-paste numbered list (GB/T 7714-2015, Vancouver, APA 7th, AMA 11th); partial entries go to a manual-review section, retracted ones are excluded with a warning — formatting that stands on registry-verified records
-- **Retraction detection for every citation** — the registry publication type ("Retracted Publication") flags retracted papers with no DOI or extra flags needed; Crossref `updated-by` adds the retraction-notice DOI
-- **Verified-bibliography export** — `--export-bibtex` writes correct entries as BibTeX, comments partial ones, excludes and counts the rest; `--export-csl` writes the same verified set as CSL JSON (Zotero: File > Import; Mendeley/Pandoc read the same file)
-- **Submission-readiness verdict** — every report leads with `SUBMISSION READY` / `NOT SUBMISSION-READY` and per-problem counts
-- **Audit working-paper** — `--export-audit` writes a self-contained JSON trail (tool identity, redacted invocation, evidence chain, verdict trace) a third party can replay
-- **DOI-native verification** — `--dois` verifies DOIs directly (Crossref resolve, 404 = fabrication signal on explicit input); `--source` scans auto-extract DOIs; linked back to PMIDs via Europe PMC
-- **Delta audits** — `--diff previous-audit.json` reports newly retracted, degraded, improved, new and dropped citations
-- **Exports** — `--export-audit` (self-contained JSON trail), `--export-bibtex` / `--export-csl` (verified bibliography), `--export-csv` (spreadsheet audit table)
-- **In-batch retry sweeps** — `--retries N` (default 1) re-runs only the fetches the network lost after a cool-off; recovered citations get real verdicts in the same run (`retried_recovered`), no full re-run needed
-- **Loud flag validation & breaker visibility** — out-of-range flags fail before the run (`[ERROR]` + exit 2) or clamp with a `[WARN]`; if the circuit breaker skipped calls, the run ends with one `[WARN]` naming hosts, counts and the recovery path
-- **Troubleshooting index** — `references/troubleshooting.md` (+`_ZH`): the `[ERROR]`/`[WARN]` texts one row each — literal text, cause, one-command fix
-- **Replacement search** — Find correct PMIDs for broken citations via PubMed search
-- **Multiple output formats** — HTML report, JSON (with per-entry metadata origin), or terminal summary
+- Five-state verdicts (correct / mismatch / partial / invalid / unknown) — catches the most common AI hallucination: a REAL PMID pointing to a DIFFERENT paper
+- Three ID types in one audit — PMIDs, DOIs (Crossref first, OpenAlex fallback for DataCite/Zenodo registries), arXiv preprints (published version surfaced); retraction detection on every citation plus correct-PMID replacement suggestions
+- Inputs — project directories (`.docx`, `.pptx`, `.html`, JATS `.nxml`/`.xml`), pasted reference lists (`--parse-text`, numbered or prose, GB/T 7714 Chinese included), BibTeX/RIS bibliographies (format sniffed from content), structured claims JSON/CSV with offline `--lint-claims`
+
+**Outputs & audits**
+
+- HTML dashboard / JSON evidence chain / terminal summary, each led by a submission-readiness verdict
+- `--report-bundle` one-command evidence pack; `--export-audit` replayable JSON working paper; `--diff` delta audits (a re-run sees only what changed)
+- Verified-bibliography exports — BibTeX / RIS / CSL JSON (Zotero: File > Import); formatted reference lists (GB/T 7714 / Vancouver / APA / AMA) built from registry-verified records only
+
+**Resilience & honesty**
+
+- NCBI → Europe PMC automatic fallback; 429 Retry-After backoff, UA rotation, per-host circuit breaker, in-batch retry sweeps (`--retries`)
+- Network failures grade `unknown` — never silently "not found", never cached; `--check-net` probes every source direct AND via proxy; `--self-check` verifies a downloaded copy offline
+
+**Shape & docs**
+
+- Zero dependencies, pure standard library, fully local; layered modules — one entry file plus six stdlib-only sibling modules under `scripts/`, far under static-reader ceilings; identical API via `import verify_pmids`
+- Troubleshooting index (one error, one row), flags cheat sheet, operations playbook, Python API reference — routed from `references/INDEX.md`
 
 ## Quick Start
 
@@ -60,27 +51,19 @@ Academic projects routinely contain hundreds of PMID citations. Manual verificat
 # Install
 openclaw skills install docsor1212/pubmed-verifier
 
-# 中文场景速览
-python3 scripts/verify_pmids.py --parse-text references.txt --no-cache          # 核验整张参考文献表
-python3 scripts/verify_pmids.py --parse-text references.txt --format-references out.txt --citation-style gbt
-python3 scripts/verify_pmids.py --pmids 31018962,22213727                       # 批量验证 PMID
-python3 scripts/verify_pmids.py --check-net                                     # 网络预检（四数据源+arXiv）
-
-# Verify all PMIDs in a project
-python3 scripts/verify_pmids.py --source /path/to/project --output report.html
+# Paste-and-verify a whole reference list (numbered or prose; GB/T 7714 Chinese included)
+python3 scripts/verify_pmids.py --parse-text references.txt
 
 # Verify specific PMIDs
-python3 scripts/verify_pmids.py --pmids 31018962,22213727,999999999
+python3 scripts/verify_pmids.py --pmids 31018962,22213727
 
-# Verify a reference list copied from a paper draft
-python3 scripts/verify_pmids.py --parse-text references.txt --no-cache
-
-# Format verified entries as a citation list (gbt | vancouver | apa | ama)
-python3 scripts/verify_pmids.py --parse-text references.txt --format-references refs_gbt.txt --citation-style gbt
-
-# Institutional mode: API key + polite pool
-python3 scripts/verify_pmids.py --source ./papers --verify-doi --ncbi-api-key $NCBI_API_KEY --mailto you@lab.org
+# Network pre-flight: all four registries + arXiv, direct AND via your proxy
+python3 scripts/verify_pmids.py --check-net
 ```
+
+The skill's `SKILL.md` carries the ten-command quick start — the one-flag
+pre-submission pass (`--quick`), claims-file verdicts, evidence bundles
+(`--report-bundle`) and verified-list formatting (`--format-references`).
 
 **China mirror (ModelScope 魔搭)**: <https://modelscope.cn/skills/Docsor/pubmed-verifier> — if you find this skill useful, a like there helps others find it.
 

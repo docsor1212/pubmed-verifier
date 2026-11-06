@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 6.7.0
+version: 6.8.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -20,7 +20,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v6.7.0
+# PubMed Citation Verifier v6.8.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -233,26 +233,10 @@ writes the ready-to-paste citation list (see the v4.0.0 entry in references/CHAN
 
 ## Quick FAQ
 
-Two different things live in this area of the docs, on purpose:
-**anti-patterns** (the wrong way vs the right way, as tables and numbered
-entries) and **FAQ** (plain questions with plain answers). The short
-answers are here; the deep versions live in
-[references/usage_guide.md](references/usage_guide.md).
-
-**Top 10 things NOT to do** (each is detailed below or in Anti-patterns):
-
-| # | Don't | Do instead |
-|---|-------|------------|
-| 1 | Treat `--pmids` existence output as "verified" | Feed `--claims-file` with titles for real verification |
-| 2 | Submit claims without `title` | Always include titles — the verdict caps at partial without one |
-| 3 | Trust cached verdicts on publication day | Final check with `--no-cache` |
-| 4 | Read "not found" as "fabricated" for auto-extracted DOIs | Check doi.org / arxiv.org by hand first |
-| 5 | Treat the leading `'` in CSV cells as corruption | It is the formula-injection guard — strip after import |
-| 6 | Read the READY line as a quality score | It means "no problems among the checks that ran" |
-| 7 | Pass `--source` together with `--pmids` | `--source` is ignored entirely when `--pmids` is given |
-| 8 | Deep-verify (`--verify-doi` / `--suggest`) a thousand-entry sweep | Sweep first, deep-verify the flagged subset |
-| 9 | Expect author matching across CJK↔Latin names | They are skipped honestly (`author_check: skipped`) |
-| 10 | Ship a reference list without the audit trail | `--export-audit` writes a replayable working paper |
+Plain questions with plain answers; the deep versions live in
+[references/usage_guide.md](references/usage_guide.md). The ten mistake
+patterns with their one-line fixes are the speed-index table at the top
+of the Anti-patterns section below — one fact, one home.
 
 **❓ unknown vs ❌ invalid — what's the difference?**
 `unknown` (exit 2) = "the source could not be reached, nothing was judged"
@@ -300,9 +284,22 @@ More FAQs, the three worked scenarios and the complete tuning playbook live in [
 
 ## Anti-patterns — things done WRONG
 
-Each entry: the mistake → why it fails → the right way. (These are usage
-mistakes, not questions — the question-form answers are in Quick FAQ
-above.)
+**Top 10 things NOT to do** — the speed index; each numbered entry below expands the why. (Usage mistakes, not questions — the question-form answers are in Quick FAQ above.)
+
+| # | Don't | Do instead |
+|---|-------|------------|
+| 1 | Treat `--pmids` existence output as "verified" | Feed `--claims-file` with titles for real verification |
+| 2 | Submit claims without `title` | Always include titles — the verdict caps at partial without one |
+| 3 | Trust cached verdicts on publication day | Final check with `--no-cache` |
+| 4 | Read "not found" as "fabricated" for auto-extracted DOIs | Check doi.org / arxiv.org by hand first |
+| 5 | Treat the leading `'` in CSV cells as corruption | It is the formula-injection guard — strip after import |
+| 6 | Read the READY line as a quality score | It means "no problems among the checks that ran" |
+| 7 | Pass `--source` together with `--pmids` | `--source` is ignored entirely when `--pmids` is given |
+| 8 | Deep-verify (`--verify-doi` / `--suggest`) a thousand-entry sweep | Sweep first, deep-verify the flagged subset |
+| 9 | Expect author matching across CJK↔Latin names | They are skipped honestly (`author_check: skipped`) |
+| 10 | Ship a reference list without the audit trail | `--export-audit` writes a replayable working paper |
+
+Each entry: the mistake → why it fails → the right way.
 
 1. **Treating `--pmids` output as "fully verified"** — existence-only.
    → Wrong: "all 5 PMIDs exist, so the citations are correct."
@@ -384,6 +381,9 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v6.8.0** — the Top-10 NOT-to-do table has one home: the speed index
+  atop the Anti-patterns section (Quick FAQ routes there instead of
+  repeating it, EN+ZH); README features grouped, quick start leaner.
 - **v6.7.0** — the Files table reads the package: every backticked path
   must exist, every package-carriable sample must appear by its full
   name (short forms like `.json` or `+_ZH` hid real files from the
@@ -393,8 +393,6 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 - **v6.6.0** — one count, one home per fact: module counts unified
   everywhere, locked against the directory; the main doc keeps summaries
   under a 500-line ceiling.
-- **v6.5.0** — the documentation debt cleared: the Worked-scenarios
-  duplication removed, the Deployment shape section added.
 
 ## Safety & behavior statement
 
@@ -465,7 +463,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Entry file + orchestration (v6.7.0, stdlib-only; six `pv_*.py` sibling modules beside it) |
+| `scripts/verify_pmids.py` | Entry file + orchestration (v6.8.0, stdlib-only; six `pv_*.py` sibling modules beside it) |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook, matching mechanics |
 | `references/troubleshooting.md` / `troubleshooting_ZH.md` | Troubleshooting index — one error, one row (literal text → cause → fix) |
 | `references/flags.md` | Flag cheat sheet — scenario → one command, every flag grouped |
