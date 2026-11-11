@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 6.8.0
+version: 6.9.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -10,7 +10,8 @@ description: >-
   mismatch / partial / invalid / unknown), citation-context parsing, Crossref
   DOI cross-check, retraction detection (capped at partial), correct-PMID
   suggestion, arXiv ID verification, plain-text reference list parsing,
-  formatted reference lists (GB/T 7714 / Vancouver / APA / AMA), OpenAlex DOI
+  formatted reference lists (GB/T 7714 / Vancouver / APA / AMA / Harvard /
+  Chicago), OpenAlex DOI
   fallback for non-Crossref registries, Chinese-reference title search,
   CSV/JSON claims, HTML/JSON/text reports. Four data sources: NCBI, Europe PMC
   fallback, Crossref, OpenAlex. Network failures are honestly reported as
@@ -20,7 +21,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v6.8.0
+# PubMed Citation Verifier v6.9.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -338,7 +339,7 @@ the one-flag workaround:
 | Retraction reasons (v5.3.0) | A retracted citation carries `retraction_reason` — the notice abstract when the registry has one, else the notice title — plus `retraction_reason_doi` for the source statement | Many notices are just "Retraction Note: <original title>"; the original title alone NEVER masquerades as the reason — the notice is cited instead | Read `--export-audit` for the full chain |
 | Input scale & concurrency (v5.1.0/v5.2.0) | Any input size; the `--max-entries` guard (default 2000) counts the de-duplicated workload and warns with a split recommendation; DOI verification runs 4 workers; PMID batches go 50/call (0.4 s spacing, 0.12 s with an API key) | arXiv is throttled to 1 call/3 s BY THE API (1,000 arXiv IDs ≈ 50+ minutes no matter what); citation counts (`cited_by_count`) only exist on the Europe PMC/OpenAlex paths — the NCBI path reports none | `--max-entries N` raises the threshold, `0` silences it; split very large scans by section |
 | Explicit precedence (v5.1.0) | `--pmids` outranks `--source` when both are given | The ignored input is announced on stderr, never silently dropped | Give only the input you mean |
-| Formatted reference lists | GB/T (numeric + author-date), Vancouver, APA, AMA — verified entries only | Registry-truncated author lists close with et-al, not invented names | Verify first, then format (`--format-references`) |
+| Formatted reference lists | GB/T (numeric + author-date), Vancouver, APA, AMA, Harvard, Chicago (author-date) — verified entries only | Registry-truncated author lists close with et-al, not invented names | Verify first, then format (`--format-references`) |
 | Network honesty | Failures are unknown + retry hints, never "not found"; nothing cached on failure | Cannot verify anything while registries are unreachable | `--check-net` first |
 
 ## Claims reference format
@@ -381,6 +382,10 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v6.9.0** — two more verified-list styles: `--citation-style harvard` and
+  `chicago` render the registry-verified bibliography as author–date
+  entries (7 styles total, GB/T author-date / Harvard / Chicago sorted by
+  first author).
 - **v6.8.0** — the Top-10 NOT-to-do table has one home: the speed index
   atop the Anti-patterns section (Quick FAQ routes there instead of
   repeating it, EN+ZH); README features grouped, quick start leaner.
@@ -463,7 +468,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Entry file + orchestration (v6.8.0, stdlib-only; six `pv_*.py` sibling modules beside it) |
+| `scripts/verify_pmids.py` | Entry file + orchestration (v6.9.0, stdlib-only; six `pv_*.py` sibling modules beside it) |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook, matching mechanics |
 | `references/troubleshooting.md` / `troubleshooting_ZH.md` | Troubleshooting index — one error, one row (literal text → cause → fix) |
 | `references/flags.md` | Flag cheat sheet — scenario → one command, every flag grouped |

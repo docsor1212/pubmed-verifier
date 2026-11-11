@@ -21,6 +21,19 @@ section reads standalone):
 Complete version history. The SKILL.md "Recent releases" section keeps
 the recent highlights; everything older lives here verbatim.
 
+## v6.9.0 — two more verified-list styles: Harvard and Chicago
+
+`--format-references` rendered five citation styles; two author–date
+styles join: `--citation-style harvard` (`Surname, F.M. and Surname, F.M.
+(Year) 'Title', Journal, Vol(Issue), pp. Pages.`) and
+`--citation-style chicago` (`Surname, First, and First Surname. "Title."
+Journal Vol, no. Issue (Year): Pages.`).
+
+Both follow the verify-then-format loop: entries stand on
+registry-verified records, author-date lists are sorted by first author
+and printed unnumbered (as GB/T author-date already was), and
+registry-truncated author lists close with et-al — never invented names.
+
 ## v6.8.0 — one home per fact, reader-facing docs lean
 
 The Top-10 NOT-to-do table lived twice: a table in Quick FAQ plus the

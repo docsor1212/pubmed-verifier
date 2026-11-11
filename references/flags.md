@@ -54,7 +54,7 @@ and `--format-references` are the only "composer" flags most users ever need.
 | `--export-audit / -ris / -bibtex / -csv F` | Individual artifacts |
 | `--export-csl F` | Verified bibliography as CSL JSON — Zotero: File > Import (Mendeley/Pandoc read the same file) |
 | `--report-bundle DIR` | All artifacts at once (the evidence pack, incl. `verified-refs.csl`) |
-| `--format-references F` / `--citation-style` | GB/T 7714 / Vancouver / APA / AMA, verified entries only |
+| `--format-references F` / `--citation-style` | GB/T 7714 (numeric + author-date) / Vancouver / APA / AMA / Harvard / Chicago, verified entries only |
 | `--diff BASELINE` | Delta audit vs a previous audit.json |
 | `--sort cited` | Rows ordered by citation count instead of severity (terminal/JSON/JSONL/markdown; .html keeps severity) |
 | `--claims-template SRC,OUT` / `--lint-claims F` | Offline claims tooling |
@@ -74,3 +74,4 @@ and `--format-references` are the only "composer" flags most users ever need.
 | `--ncbi-api-key` / `--mailto` | Rate ceiling 3→10 req/s / Crossref polite pool |
 | `--doctor` | Environment self-check (add --check-net for registries) |
 | `--self-check` | Verify this copy offline: five core promises, one OK/FAIL line each; exit 0 = intact |
+| `--version` | Print the tool version and exit |

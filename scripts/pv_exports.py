@@ -288,6 +288,8 @@ _CITATION_STYLES = {
     "vancouver": "Vancouver (ICMJE numeric)",
     "apa": "APA 7th edition",
     "ama": "AMA 11th edition (numeric)",
+    "harvard": "Harvard (author-date, unnumbered, sorted by first author)",
+    "chicago": "Chicago 17th (author-date, unnumbered, sorted by first author)",
 }
 
 def _split_ref_authors(authors_str: str) -> list:
@@ -332,6 +334,27 @@ def _fmt_authors_for_style(authors_str: str, style: str, truncated: bool) -> str
         if truncated or len(out) > 6:
             return ", ".join(out[:6]) + ", et al"
         return ", ".join(out)
+    if style in ("harvard", "chicago"):
+        # Author-date author lists. Harvard: "Surname, F.M." (dotted initials);
+        # Chicago: "Surname, F" (undotted). Joiners follow each manual: Harvard
+        # "J. and M." without a serial comma, Chicago "J., and M." with one.
+        def sd_one(a, dotted):
+            parts = a.split()
+            if len(parts) < 2:
+                return a
+            sep = ". " if dotted else ""
+            inits = sep.join(p[0].upper() for p in parts[1:] if p) + ("." if dotted else "")
+            return f"{parts[0]}, {inits}"
+        out = [sd_one(a, style == "harvard") for a in authors]
+        if truncated:
+            return ", ".join(out) + ", et al."
+        if len(out) == 1:
+            return out[0]
+        if len(out) == 2:
+            joiner = " and " if style == "harvard" else ", and "
+            return out[0] + joiner + out[1]
+        joiner = " and " if style == "harvard" else ", and "
+        return ", ".join(out[:-1]) + joiner + out[-1]
     # APA 7th: "Surname, L. N." with "&" before the last author
     def apa_one(a):
         parts = a.split()
@@ -459,6 +482,71 @@ def _ref_apa(r: dict, idx: int) -> str:
         line += " [registry returned a truncated author list]"
     return " ".join(line.split())
 
+def _ref_harvard(r: dict, idx: int) -> str:
+    """Harvard (author–date): 'Surname, F.M. and Surname, F.M. (Year) 'Title',
+    Journal, Vol(Issue), pp. Pages. doi: ...' — quoted title, pp. page prefix,
+    unnumbered entry (the list is sorted by first author)."""
+    authors = _fmt_authors_for_style(r.get("authors", ""), "harvard",
+                                     bool(r.get("authors_truncated")))
+    title = _ref_title(r)
+    journal = " ".join(str(r.get("journal", "") or "").split())
+    year = _ref_year(r)
+    vol, issue, pages = _ref_locator(r)
+    line = ""
+    if authors:
+        line += authors + " "
+    if year:
+        line += f"({year}) "
+    if title:
+        line += f"'{title}', "
+    mid = journal
+    if vol:
+        mid += f", {vol}({issue})" if issue else f", {vol}"
+        if pages:
+            mid += f", pp. {pages}"
+    elif pages and mid:
+        mid += f", pp. {pages}"
+    if mid:
+        line += mid + "."
+    if r.get("doi"):
+        line += f" doi: {r['doi']}."
+    if r.get("authors_truncated"):
+        line += " [registry returned a truncated author list]"
+    return " ".join(line.split())
+
+def _ref_chicago(r: dict, idx: int) -> str:
+    """Chicago 17th (author–date): 'Surname, First, and First Surname. "Title."
+    Journal Vol, no. Issue (Year): Pages. https://doi.org/...' — double-quoted
+    title, no. issue prefix, unnumbered entry sorted by first author."""
+    authors = _fmt_authors_for_style(r.get("authors", ""), "chicago",
+                                     bool(r.get("authors_truncated")))
+    title = _ref_title(r)
+    journal = " ".join(str(r.get("journal", "") or "").split())
+    year = _ref_year(r)
+    vol, issue, pages = _ref_locator(r)
+    line = ""
+    if authors:
+        # a truncated list already closes with "et al." — don't double the dot
+        line += authors + ". " if not authors.endswith(".") else authors + " "
+    if title:
+        line += f'"{title}." '
+    if journal:
+        line += journal
+        if vol:
+            line += f" {vol}" + (f", no. {issue}" if issue else "")
+        elif issue:
+            line += f", no. {issue}"
+    if year:
+        line += f" ({year})"
+        if pages:
+            line += f": {pages}"
+    line += "."
+    if r.get("doi"):
+        line += f" https://doi.org/{r['doi']}."
+    if r.get("authors_truncated"):
+        line += " [registry returned a truncated author list]"
+    return " ".join(line.split())
+
 def _ref_gbty(r: dict, idx: int) -> str:
     """GB/T 7714-2015 author-date rendering (v4.3.0): same entry shape as
     the numeric style minus the [n] index and the [J] type tag — the
@@ -471,7 +559,8 @@ def _ref_gbty(r: dict, idx: int) -> str:
 
 _REF_RENDERERS = {"gbt": _ref_gbt, "gbty": _ref_gbty,
                   "vancouver": _ref_vancouver,
-                  "apa": _ref_apa, "ama": _ref_ama}
+                  "apa": _ref_apa, "ama": _ref_ama,
+                  "harvard": _ref_harvard, "chicago": _ref_chicago}
 
 def generate_reference_list(results: list, style: str = "gbt") -> str:
     """Formatted reference list export (v4.0.0): verified (correct) entries
@@ -501,7 +590,7 @@ def generate_reference_list(results: list, style: str = "gbt") -> str:
              f"{len(review)} need manual review, {len(excluded)} excluded. "
              "Every entry below was checked against its registry (PubMed / Europe PMC / Crossref).",
              ""]
-    if style == "gbty":
+    if style in ("gbty", "harvard", "chicago"):
         # author-date lists sort by first author (Latin casefold; CJK stays
         # in Unicode order — true pinyin sorting needs an external lib and is
         # documented as a manual step)

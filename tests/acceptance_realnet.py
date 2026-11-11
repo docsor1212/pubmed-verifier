@@ -522,6 +522,27 @@ except Exception as e:
 record("T34 CSL JSON export e2e (registry-true fields)",
        rc == 0 and csl_ok, csl_note)
 
+# ── T35/T36: --citation-style harvard / chicago (v6.9.0): verified real
+# records render as author–date entries (unnumbered, first-author sorted) ──
+for _style, _markers in (
+    ("harvard", ("(2019)", "'", "Ann Rheum Dis", "pp. ")),
+    ("chicago", ('."', "Ann Rheum Dis 78", "(2019):")),
+):
+    _fmt = tempfile.mktemp(suffix=".txt")
+    rc, so, data = run_cli(["--pmids", "31018962", "--no-cache",
+                            "--format-references", _fmt,
+                            "--citation-style", _style])
+    _txt = Path(_fmt).read_text(encoding="utf-8") if Path(_fmt).exists() else ""
+    Path(_fmt).unlink(missing_ok=True)
+    _ok = (rc == 0
+           and f"Reference list — " in _txt
+           and all(m in _txt for m in _markers)
+           and not re.search(r"^\[1\] ", _txt, re.M))
+    record(f"T35/36 citation-style {_style} e2e",
+           rc == 0 and _ok,
+           f"markers={sum(1 for m in _markers if m in _txt)}/{len(_markers)} "
+           f"unnumbered={'no [1] row' if _ok else 'CHECK'}")
+
 # ── 汇总 ──
 passed = sum(1 for r in RESULTS if r["ok"])
 failed = sum(1 for r in RESULTS if not r["ok"])

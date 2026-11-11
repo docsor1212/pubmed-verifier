@@ -144,7 +144,8 @@ def main():
                              "DOI cross-check, correct-PMID suggestions)")
     g_output.add_argument("--format-references", metavar="PATH",
                         help="Write verified entries as a formatted reference list — "
-                             "GB/T 7714-2015 / Vancouver / APA 7 / AMA 11 via --citation-style; "
+                             "GB/T 7714-2015 / Vancouver / APA 7 / AMA 11 / Harvard / "
+                             "Chicago 17 via --citation-style; "
                              "correct = numbered list, partial = review section, "
                              "retracted = excluded with a warning")
     g_output.add_argument("--claims-template", metavar="SRC,OUT",
@@ -159,10 +160,12 @@ def main():
                              "audit-table.csv + references-gbt.txt + manifest.txt — "
                              "one command, everything a reviewer may ask for")
     g_output.add_argument("--citation-style",
-                        choices=["gbt", "gbty", "vancouver", "apa", "ama"],
+                        choices=["gbt", "gbty", "vancouver", "apa", "ama",
+                                 "harvard", "chicago"],
                         default="gbt",
                         help="Style for --format-references (default: gbt = GB/T 7714-2015 "
-                             "numeric; gbty = GB/T author-date, unnumbered, sorted by first author)")
+                             "numeric; gbty = GB/T author-date; harvard/chicago = author-date, "
+                             "unnumbered, sorted by first author)")
     g_output.add_argument("--lint-claims", metavar="FILE",
                         help="Offline lint of a claims file (JSON/CSV/BibTeX/RIS): ID shapes, "
                              "missing titles, unknown columns, duplicate keys — no network")

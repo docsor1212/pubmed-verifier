@@ -4488,5 +4488,68 @@ class TestV6800(_Reset):
                              f"{name}: Files entry row says v{m.group(1)} but frontmatter is {fm}")
 
 
+class TestV6900(_Reset):
+    """v6.9.0: two more verified-list citation styles — Harvard and Chicago
+    (author-date, unnumbered, first-author sorted) join the format leg of
+    the verify-then-format loop."""
+
+    RECORD = {"authors": "Gattorno M; Federici S",
+              "title": "Classification criteria for autoinflammatory recurrent fevers",
+              "journal": "Ann Rheum Dis", "pubdate": "2019 Sep",
+              "volume": "78", "issue": "9", "pages": "1234-1240",
+              "doi": "10.1136/annrheumdis-2019-215048",
+              "verdict": "correct", "valid": True}
+
+    def test_seven_styles_registered(self):
+        self.assertEqual(set(vp._CITATION_STYLES),
+                         {"gbt", "gbty", "vancouver", "apa", "ama",
+                          "harvard", "chicago"})
+        self.assertEqual(set(vp._REF_RENDERERS), set(vp._CITATION_STYLES),
+                         "every registered style must have a renderer")
+
+    def test_harvard_shape(self):
+        line = vp._ref_harvard(dict(self.RECORD), 1)
+        self.assertIn("Gattorno, M. and Federici, S. (2019) ", line)
+        self.assertIn("'Classification criteria for autoinflammatory recurrent fevers', ", line)
+        self.assertIn("Ann Rheum Dis, 78(9), pp. 1234-1240.", line)
+        self.assertIn("doi: 10.1136/annrheumdis-2019-215048.", line)
+        self.assertFalse(line.startswith("[1]"), "author-date entries are unnumbered")
+
+    def test_harvard_truncated_et_al(self):
+        r = dict(self.RECORD, authors="Gattorno M; Federici S; Anton J; Hofer M",
+                 authors_truncated=True)
+        line = vp._ref_harvard(r, 1)
+        self.assertIn("Anton, J., Hofer, M., et al. ", line)
+        self.assertIn("[registry returned a truncated author list]", line)
+
+    def test_chicago_shape(self):
+        r = dict(self.RECORD, authors="Gattorno M; Federici S; Anton J")
+        line = vp._ref_chicago(r, 1)
+        self.assertIn('Gattorno, M, Federici, S, and Anton, J. "', line)
+        self.assertIn('recurrent fevers." Ann Rheum Dis 78, no. 9 (2019): 1234-1240.', line)
+        self.assertIn("https://doi.org/10.1136/annrheumdis-2019-215048.", line)
+        # issue-less record keeps the Chicago volume shape
+        r2 = dict(r, issue="")
+        self.assertIn("Ann Rheum Dis 78 (2019): 1234-1240.", vp._ref_chicago(r2, 1))
+
+    def test_author_date_lists_sorted_unnumbered(self):
+        recs = [dict(self.RECORD, pmid="111", authors="Zhang A"),
+                dict(self.RECORD, pmid="222", authors="Adams B")]
+        out = vp.generate_reference_list(recs, "harvard")
+        first_entry = out.split("\n")[3]
+        self.assertTrue(first_entry.startswith("Adams, B"),
+                        f"first-author sort expected, got: {first_entry[:40]}")
+        out2 = vp.generate_reference_list(recs, "chicago")
+        self.assertIn("Adams", out2.split("\n")[3])
+
+    def test_flags_sheet_lists_all_styles(self):
+        root = Path(__file__).resolve().parent.parent
+        flags = (root / "references" / "flags.md").read_text(encoding="utf-8")
+        for style in ("GB/T 7714 (numeric + author-date)", "Harvard", "Chicago"):
+            self.assertIn(style, flags)
+        self.assertIn("`--version`", flags,
+                      "the flag map must carry --version (audit-leaked gap)")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
