@@ -21,6 +21,31 @@ section reads standalone):
 Complete version history. The SKILL.md "Recent releases" section keeps
 the recent highlights; everything older lives here verbatim.
 
+## v7.0.0 — a healthier self-check, a one-liner claim, one CI command
+
+Feedback-driven release (an independent test line exercised v6.9.0 for
+real: all five verdict states, honest degradation and the 363-test
+matrix held; no P0/P1 defects found). Three refinements landed:
+
+- **Retraction-source health probe** — `--self-check` now runs six
+  promises: five offline ones plus a live probe that picks a retracted
+  record from PubMed's retracted pool and requires Europe PMC to agree.
+  Upstream policies change (the Crossref Labs RW-annotations deprecation
+  is the precedent); reachable-but-disagreeing sources FAIL loudly
+  instead of drifting silently. Unreachable registries SKIP honestly —
+  the offline promises still carry exit 0.
+- **`--title` one-liner claim** — "is PMID X the paper titled T?" needs
+  no claims file anymore: `--pmids X --title "T"` (optionally
+  `--journal` / `--year`). A wrong title grades mismatch (the claim is
+  user-typed, not heuristic parsing); a matching bare title grades
+  correct via the existence+title route; adding `--year`/`--journal`
+  keeps the conservative partial cap until authors are claimed.
+- **One CI command** — `python3 tests/run_tests.py` runs the offline
+  matrix with a milestone line (`--verbose` prints every test); the file
+  ships in the package and guides package copies to `--self-check`.
+  `MAILTO` joins `PUBMED_VERIFIER_MAILTO` as the polite-pool env
+  fallback.
+
 ## v6.9.0 — two more verified-list styles: Harvard and Chicago
 
 `--format-references` rendered five citation styles; two author–date

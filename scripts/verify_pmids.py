@@ -1,5 +1,5 @@
 """
-PMID Citation Verifier -- PubMed E-utilities API v6.9.0
+PMID Citation Verifier -- PubMed E-utilities API v7.0.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
@@ -1417,12 +1417,15 @@ def verify_title_entry(entry: dict, src: str) -> tuple:
                    "evidence": {"route": "title_search", "candidates": n_valid}})
     return res, audit0
 
-def run_self_check() -> int:
+def run_self_check(net_probe: bool = True) -> int:
     """In-package verification loop (v6.2.0, --self-check): the shipped
     single file carries no test directory, so this runs the core promises
-    offline and prints one OK/FAIL line each. Zero network, zero writes
-    beyond a temporary cache file. Exit 0 all pass, 1 any fail — CI and
-    reviewers can verify a downloaded copy without the repo."""
+    and prints one OK/FAIL line each — five offline promises (zero network,
+    zero writes beyond a temporary cache file) plus one network-optional
+    live probe (v7.0.0: retraction-source health, SKIPs honestly when
+    net_probe=False or the registries are unreachable). Exit 0 all pass,
+    1 any fail — CI and reviewers can verify a downloaded copy without
+    the repo."""
     import tempfile
     checks = []
 
@@ -1431,7 +1434,10 @@ def run_self_check() -> int:
             fn()
             checks.append((name, True, ""))
         except Exception as e:
-            checks.append((name, False, f"{type(e).__name__}: {str(e)[:80]}"))
+            if str(e).startswith("SKIP-NETWORK:"):
+                checks.append((name, True, f"skipped — {str(e)[13:].strip()[:70]}"))
+            else:
+                checks.append((name, False, f"{type(e).__name__}: {str(e)[:80]}"))
 
     def _five_state():
         cross = cross_check_citation(
@@ -1478,7 +1484,57 @@ def run_self_check() -> int:
 
     check("version carriers consistent", _version_carriers)
 
-    print(f"pubmed-verifier self-check (v{_TOOL_VERSION}, offline, no network):")
+    def _retraction_source_health():
+        # v7.0.0 (test-line P3): the retraction layer rests on registry
+        # publication types — PubMed pubtype + Europe PMC. Upstream policy
+        # CAN change (the Crossref Labs RW-annotations deprecation is the
+        # precedent), so this probe checks BOTH live sources and requires
+        # agreement. The probe sample is picked LIVE from the NCBI retracted
+        # pool (a fixed PMID proved brittle: retraction flags can live on
+        # the Crossref leg instead of the pubtype), then both sources must
+        # agree on it. Network-optional: unreachable sources SKIP honestly
+        # (the offline promises above still carry exit 0);
+        # reachable-but-disagreeing sources FAIL — that is the "silent
+        # data-source drift" this probe exists to catch.
+        if not net_probe:
+            raise AssertionError("SKIP-NETWORK: live probe disabled (offline mode)")
+        try:
+            hits = search_pubmed("Retracted Publication[ptyp]", max_results=1)
+        except Exception as e:
+            raise AssertionError(f"SKIP-NETWORK: sample search failed ({type(e).__name__})")
+        sample = next((h for h in hits if h.get("pmid")), None)
+        if not sample:
+            raise AssertionError("SKIP-NETWORK: retracted pool returned no record")
+        pmid = str(sample["pmid"])
+        verdicts, errors = {}, {}
+        for label, rec in (("pubmed", sample),):
+            verdicts[label] = bool(rec.get("retracted"))
+        try:
+            recs = fetch_summaries_europepmc([pmid], batch_size=1)
+            rec = recs.get(pmid)
+            verdicts["europepmc"] = bool(rec.get("retracted")) if rec else None
+            if rec is None:
+                errors["europepmc"] = "no record returned"
+        except Exception as e:
+            errors["europepmc"] = f"{type(e).__name__}: {str(e)[:50]}"
+            verdicts["europepmc"] = None
+        if verdicts.get("europepmc") is None:
+            raise AssertionError("SKIP-NETWORK: europepmc unreachable — " +
+                                 "; ".join(f"{k}: {v}" for k, v in errors.items()))
+        if verdicts["pubmed"] != verdicts["europepmc"]:
+            raise AssertionError(
+                f"RETRACTION-SOURCE DRIFT — pubmed={verdicts['pubmed']} "
+                f"europepmc={verdicts['europepmc']} on PMID {pmid}: the "
+                "retraction layer is drifting, investigate before trusting retraction caps")
+        return (f"pubmed+europepmc agree (retracted={verdicts['pubmed']}, "
+                f"PMID {pmid})")
+
+    check("retraction-source health (pubmed × europepmc, live)",
+          _retraction_source_health)
+
+    n_offline = sum(1 for name, _, _ in checks if "live" not in name)
+    print(f"pubmed-verifier self-check (v{_TOOL_VERSION}, "
+          f"{n_offline} offline promises + {len(checks) - n_offline} live probe):")
     for name, ok, err in checks:
         print(f"  {'OK' if ok else 'FAIL'}  {name}" + (f" — {err}" if err else ""))
     n_bad = sum(1 for _, ok, _ in checks if not ok)

@@ -4147,13 +4147,15 @@ class TestV6200(_Reset):
         import contextlib, io
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            rc = vp.run_self_check()
+            rc = vp.run_self_check(net_probe=False)   # offline matrix: no live probe
         out = buf.getvalue()
         self.assertEqual(rc, 0)
-        self.assertIn("All 5 self-checks passed.", out)
+        self.assertIn("All 6 self-checks passed.", out)
         for name in ("five-state ladder", "plain-text reference parsing",
-                     "CSL JSON bibliography export", "version carriers"):
+                     "CSL JSON bibliography export", "version carriers",
+                     "retraction-source health"):
             self.assertIn(name, out)
+        self.assertIn("skipped", out)   # the live probe skips honestly offline
 
     def test_self_check_cli_wired(self):
         src = _all_src()
@@ -4549,6 +4551,79 @@ class TestV6900(_Reset):
             self.assertIn(style, flags)
         self.assertIn("`--version`", flags,
                       "the flag map must carry --version (audit-leaked gap)")
+
+
+class TestV7000(_Reset):
+    """v7.0.0 (test-line feedback round): a network-optional retraction-source
+    health probe joins --self-check (five offline promises + one live probe,
+    SKIPs honestly offline), a lightweight direct claim (--title/--journal/
+    --year for ONE --pmids entry) spares the claims-file round-trip, MAILTO
+    joins the mailto env fallbacks, and tests/run_tests.py gives CI one
+    command with a --verbose milestone line."""
+
+    def test_probe_wired_and_offline_honest(self):
+        src = _all_src()
+        self.assertIn("def _retraction_source_health", src)
+        self.assertIn("SKIP-NETWORK", src)
+        self.assertIn("RETRACTION-SOURCE DRIFT", src)
+        self.assertIn("search_pubmed(\"Retracted Publication[ptyp]\"", src)
+        self.assertIn("net_probe: bool = True", src)
+
+    def test_direct_claim_flags_registered(self):
+        import subprocess, sys
+        root = Path(__file__).resolve().parent.parent
+        r = subprocess.run([sys.executable, str(root / "scripts" / "verify_pmids.py"),
+                            "--help"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0)
+        for flag in ("--title", "--journal", "--year"):
+            self.assertIn(flag, r.stdout)
+
+    def test_direct_claim_hard_errors(self):
+        import subprocess, sys
+        root = Path(__file__).resolve().parent.parent
+        cli = str(root / "scripts" / "verify_pmids.py")   # absolute: cwd-proof
+        # --title without --pmids → hard error exit 2
+        r = subprocess.run([sys.executable, cli, "--title", "Some title"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("exactly one PMID", r.stderr)
+        # --title + --claims-file → hard error
+        r2 = subprocess.run([sys.executable, cli, "--pmids", "31018962",
+                             "--title", "T", "--claims-file", "claims.json"],
+                            capture_output=True, text=True)
+        self.assertEqual(r2.returncode, 2)
+        self.assertIn("cannot be combined", r2.stderr)
+        # --journal alone (no --title) → hard error
+        r3 = subprocess.run([sys.executable, cli, "--pmids", "31018962",
+                             "--journal", "J"],
+                            capture_output=True, text=True)
+        self.assertEqual(r3.returncode, 2)
+        self.assertIn("companions to --title", r3.stderr)
+
+    def test_run_tests_ci_entry(self):
+        # v7.0.0 recursion guard: run_tests.py re-runs this matrix, and this
+        # matrix contains THIS test — without the marker the CI entry would
+        # nest forever (240 s subprocess timeout proved it first run).
+        if os.environ.get("PV_RUNTESTS_CHILD") == "1":
+            self.skipTest("nested CI entry (we are inside run_tests.py)")
+        import subprocess, sys
+        root = Path(__file__).resolve().parent.parent
+        runner = root / "tests" / "run_tests.py"
+        self.assertTrue(runner.exists())
+        src = runner.read_text(encoding="utf-8")
+        self.assertIn("--verbose", src)
+        self.assertIn("milestone:", src)
+        self.assertIn("--self-check", src)   # package-copy guidance line
+        env = dict(os.environ, PV_RUNTESTS_CHILD="1")
+        r = subprocess.run([sys.executable, str(runner)],
+                           capture_output=True, text=True, timeout=180, env=env)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("milestone:", r.stdout)
+
+    def test_mailto_env_fallback_chain(self):
+        src = _all_src()
+        self.assertIn('os.environ.get("PUBMED_VERIFIER_MAILTO", "")', src)
+        self.assertIn('os.environ.get("MAILTO", "")', src)
 
 
 if __name__ == "__main__":

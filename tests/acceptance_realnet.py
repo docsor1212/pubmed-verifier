@@ -543,6 +543,27 @@ for _style, _markers in (
            f"markers={sum(1 for m in _markers if m in _txt)}/{len(_markers)} "
            f"unnumbered={'no [1] row' if _ok else 'CHECK'}")
 
+# ── T37: --title direct claim (v7.0.0): one-liner three-leg semantics ──
+# judged from the JSON stats (run_cli's --output suppresses the terminal
+# Results line): correct leg (bare title match upgrades), mismatch leg
+# (user-typed wrong title accuses), conservative leg (+--year partial cap)
+_r37c, _, _d37c = run_cli(["--pmids", "31018962", "--title",
+                           "Classification criteria for autoinflammatory recurrent fevers",
+                           "--no-cache"])
+_r37m, _, _d37m = run_cli(["--pmids", "31018962", "--title",
+                           "A completely different dentistry paper about implants",
+                           "--no-cache"])
+_r37p, _, _d37p = run_cli(["--pmids", "31018962", "--title",
+                           "Classification criteria for autoinflammatory recurrent fevers",
+                           "--year", "2019", "--no-cache"])
+_s = lambda d: (d or {}).get("stats", {})
+record("T37 --title direct claim three-leg",
+       _r37c == 0 and _s(_d37c).get("correct") == 1
+       and _s(_d37m).get("mismatch") == 1
+       and _s(_d37p).get("partial") == 1,
+       f"correct={_s(_d37c).get('correct')} mismatch={_s(_d37m).get('mismatch')} "
+       f"partial_cap={_s(_d37p).get('partial')}")
+
 # ── 汇总 ──
 passed = sum(1 for r in RESULTS if r["ok"])
 failed = sum(1 for r in RESULTS if not r["ok"])

@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 6.9.0
+version: 7.0.0
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -21,7 +21,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v6.9.0
+# PubMed Citation Verifier v7.0.0
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -60,7 +60,8 @@ document, a PowerPoint `.pptx` deck, an exported `.html` page, or a
 claims CSV are all direct inputs.
 
 Three quick mappings: "帮我验证这几个 PMID 31018962、22213727" →
-`--pmids`; "检查我论文参考文献" + a pasted list → `--parse-text` (or pipe
+`--pmids`; "is this PMID the paper titled T?" one-liner →
+`--pmids X --title "T"` (v7.0.0, no claims file); "检查我论文参考文献" + a pasted list → `--parse-text` (or pipe
 it to `--stdin` — **a pasted list IS the input, no explicit "verify"
 word needed**); "这篇撤稿了该引什么" → `--suggest` on a retracted entry.
 
@@ -88,6 +89,7 @@ word needed**); "这篇撤稿了该引什么" → `--suggest` on a retracted ent
 |---|---|
 | Pre-submission final pass | `--source DRAFT --quick --output report.html` |
 | Paste-and-verify from clipboard | `pbpaste \| ... --stdin --suggest` |
+| Quick one-liner check | `--pmids 12345678 --title "Expected title"` (no claims file needed) |
 | Knowledge-base audit + evidence pack | `--source KB --report-bundle DIR` |
 | Bibliography round-trip | `--bibliography refs.bib --export-bibtex out.bib` |
 | Bibliography into Zotero | `--source KB --export-csl library.json` (Zotero: File > Import) |
@@ -382,6 +384,11 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v7.0.0** — `--self-check` gains a live retraction-source health probe
+  (six promises; unreachable registries SKIP honestly); `--title` gives
+  a one-liner claim for a single PMID (wrong title → mismatch, no
+  claims file needed); `python3 tests/run_tests.py` is the one CI
+  command.
 - **v6.9.0** — two more verified-list styles: `--citation-style harvard` and
   `chicago` render the registry-verified bibliography as author–date
   entries (7 styles total, GB/T author-date / Harvard / Chicago sorted by
@@ -468,7 +475,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Entry file + orchestration (v6.9.0, stdlib-only; six `pv_*.py` sibling modules beside it) |
+| `scripts/verify_pmids.py` | Entry file + orchestration (v7.0.0, stdlib-only; six `pv_*.py` sibling modules beside it) |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook, matching mechanics |
 | `references/troubleshooting.md` / `troubleshooting_ZH.md` | Troubleshooting index — one error, one row (literal text → cause → fix) |
 | `references/flags.md` | Flag cheat sheet — scenario → one command, every flag grouped |

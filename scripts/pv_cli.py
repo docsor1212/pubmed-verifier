@@ -41,6 +41,18 @@ def _validate_args(args) -> None:
     me = getattr(args, "max_entries", 0)
     if me and me < 0:
         _hard(f"--max-entries must be >= 0 (0 = unlimited) (got {me})")
+    # v7.0.0 (test-line P1): --title is a direct claim for ONE PMID entry
+    if getattr(args, "title", None):
+        if getattr(args, "claims", None) or getattr(args, "claims_file", None):
+            _hard("--title is a lightweight direct claim — it cannot be combined "
+                  "with --claims/--claims-file (give the metadata in one place)")
+        pmids = getattr(args, "pmids", None) or ""
+        if len([p for p in pmids.split(",") if p.strip()]) != 1:
+            _hard("--title applies to exactly one PMID — pass one entry in --pmids "
+                  "or use --claims/--claims-file for batches")
+    elif getattr(args, "journal", None) or getattr(args, "year", None):
+        _hard("--journal/--year are companions to --title — a claim without a title "
+              "caps the verdict at partial; pass --title as well")
 
 def main():
     parser = argparse.ArgumentParser(
@@ -58,6 +70,10 @@ def main():
     g_inputs.add_argument("--pmids", help="Comma-separated PMIDs to verify directly")
     g_inputs.add_argument("--claims", help="JSON string with claimed metadata: [{pmid,title,authors,journal,year},...]")
     g_inputs.add_argument("--claims-file", help="JSON or CSV file with claimed metadata")
+    g_inputs.add_argument("--title", help="v7.0.0 lightweight direct claim for ONE --pmids entry "
+                                          "(no claims file needed): expected title for the five-state verdict")
+    g_inputs.add_argument("--journal", help="optional companion to --title: expected journal")
+    g_inputs.add_argument("--year", help="optional companion to --title: expected year")
     g_verify.add_argument("--verify-doi", action="store_true",
                         help="Also verify DOIs via Crossref; flags RETRACTED papers (verdict capped at partial)")
     g_verify.add_argument("--match-keywords", action="store_true", 
@@ -174,7 +190,8 @@ def main():
     # v5.3.0 audit P1-1: these must be set BEFORE the --doctor dispatch,
     # or doctor always reports key/mailto as unset
     _OPTS["ncbi_key"] = args.ncbi_api_key or os.environ.get("NCBI_API_KEY", "")
-    _OPTS["mailto"] = args.mailto or os.environ.get("PUBMED_VERIFIER_MAILTO", "")
+    _OPTS["mailto"] = (args.mailto or os.environ.get("PUBMED_VERIFIER_MAILTO", "")
+                       or os.environ.get("MAILTO", ""))
     _OPTS["meta_source"] = args.meta_source
     _OPTS["timeout"] = args.timeout
     if getattr(args, "self_check", False):
@@ -259,6 +276,24 @@ def main():
         except (json.JSONDecodeError, ValueError) as e:
             print(f"[ERROR] parsing --claims JSON: {e}", file=sys.stderr)
             sys.exit(1)
+
+    # v7.0.0 (test-line P1): lightweight direct claim — one PMID + --title.
+    # Deliberately NOT an explicit claim row: a bare title claim rides the
+    # same semantics as a scanned inline claim (title ✓ with authors/journal/
+    # year unclaimed upgrades via route=existence_title_match), so the quick
+    # one-liner answers "is this the right paper?" with correct — while a
+    # wrong title still grades mismatch. Adding --year/--journal claims
+    # fields explicitly and keeps the conservative full-verdict cap (partial
+    # without authors), same as --claims-file rows.
+    direct_claim = None
+    if getattr(args, "title", None):
+        direct_claim = {
+            "claimed_title": args.title,
+            "claimed_authors": [],
+            "claimed_journal": getattr(args, "journal", "") or "",
+            "claimed_year": str(getattr(args, "year", "") or ""),
+            "claimed_doi": "",
+        }
 
     # Collect PMIDs from sources
     # v5.0.0 --quick: the pre-submission final pass as one flag — fresh
@@ -383,8 +418,14 @@ def main():
         for p in args.pmids.split(","):
             p = p.strip()
             if p.isdigit():
-                claimed = explicit_claims.get(p, {})
-                pmid_entries.append((p, "cli", "", claimed))
+                if direct_claim and p == args.pmids.split(",")[0].strip():
+                    # v7.0.0 quick lane: src="cli-quick" is deliberately NOT in
+                    # the explicit set, so the v4.9 existence_title_match upgrade
+                    # applies (a bare title claim behaves like a scanned inline
+                    # claim — wrong title still grades mismatch)
+                    pmid_entries.append((p, "cli-quick", "", direct_claim))
+                else:
+                    pmid_entries.append((p, "cli", "", explicit_claims.get(p, {})))
     elif args.source:
         source = args.source
         if os.path.isfile(source):
@@ -646,7 +687,12 @@ def main():
                 if (cross["verdict"] == "mismatch"
                         and not (claimed.get("claimed_title")
                                  and claimed.get("claimed_authors"))
-                        and src not in ("cli", "claims")):
+                        and src not in ("cli", "claims", "cli-quick")):
+                        # v7.0.0: "cli-quick" (--title direct claim) joins the
+                        # explicit set HERE — the title is user-typed verbatim,
+                        # not heuristic context parsing, so a wrong title is a
+                        # REAL mismatch, never degraded to unknown (the v3.8
+                        # guard only exists for parsed-context ambiguity)
                     cross["verdict"] = "unknown"
                     cross["details"] = (
                         cross["details"] + "; claimed metadata incomplete "
