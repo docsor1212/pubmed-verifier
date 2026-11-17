@@ -1,5 +1,5 @@
 """
-PMID Citation Verifier -- PubMed E-utilities API v7.0.0
+PMID Citation Verifier -- PubMed E-utilities API v7.1.0
 Verifies existence, metadata cross-check, and optional content-matching of PMID citations.
 Three citation types in one audit (v3.0.0): PMIDs, DOIs, and arXiv IDs.
 arXiv IDs (arXiv:2401.12345 / arxiv.org/abs/...) are verified against the
