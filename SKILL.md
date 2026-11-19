@@ -2,7 +2,7 @@
 name: pubmed-verifier
 author: DoctorQ Lab
 license: MIT-0
-version: 7.2.0
+version: 7.2.1
 description: >-
   Reference checker for AI-fabricated citations: batch-verify PMIDs against
   PubMed and catch the hallucination existence checks miss — a REAL PMID
@@ -21,7 +21,7 @@ description: >-
   DOI check, citation formatting, reference formatter, GB/T 7714.
 ---
 
-# PubMed Citation Verifier v7.2.0
+# PubMed Citation Verifier v7.2.1
 
 Batch verification of PMID citations via the PubMed E-utilities API. Not just
 "does this PMID exist" — **does this PMID point to the paper you claim?**
@@ -383,6 +383,8 @@ Full playbook: [references/usage_guide.md](references/usage_guide.md) (caching, 
 
 ## Recent releases (full history in references/CHANGELOG.md)
 
+- **v7.2.1** — privacy hotfix: the package metadata file no longer
+  carries a publisher phone field (chain gate blocks it from returning).
 - **v7.2.0** — leftover bare module imports deleted (notes match source);
   package `tests/run_tests.py` runs a real sealed offline matrix (13).- **v7.1.0** — consistency: the shipped INTEGRITY_MANIFEST always matches
   the delivered files (rewritten on SH-whitelist strip); package-mode
@@ -461,7 +463,7 @@ translate PDFs (doc-holmes) — pick whichever step you need.
 
 | File | Purpose |
 |------|---------|
-| `scripts/verify_pmids.py` | Entry file + orchestration (v7.2.0, stdlib-only; six `pv_*.py` sibling modules beside it) |
+| `scripts/verify_pmids.py` | Entry file + orchestration (v7.2.1, stdlib-only; six `pv_*.py` sibling modules beside it) |
 | `references/usage_guide.md` | full FAQ, worked scenarios, tuning playbook, matching mechanics |
 | `references/troubleshooting.md` / `troubleshooting_ZH.md` | Troubleshooting index — one error, one row (literal text → cause → fix) |
 | `references/flags.md` | Flag cheat sheet — scenario → one command, every flag grouped |

@@ -28,7 +28,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
-_TOOL_VERSION = "7.2.0"
+_TOOL_VERSION = "7.2.1"
 
 _UA_TOOL = "pubmed-verifier/7.2 (+citation verifier; stdlib-only)"
 

@@ -21,6 +21,17 @@ section reads standalone):
 Complete version history. The SKILL.md "Recent releases" section keeps
 the recent highlights; everything older lives here verbatim.
 
+## v7.2.1 — privacy hotfix: no phone field in the package metadata
+
+An external audit flagged that `skillhub-meta.json` shipped with the
+SkillHub package still carried the publisher phone field in plaintext.
+A family-wide scan proved the other eight sibling skills never carried
+it — the platform's identity verification lives at the account level,
+not in this file — so the field is dropped entirely and a chain gate
+(`PKG-PII-PHONE-FIELD`) blocks it from ever coming back. GitHub and
+ClawHub channels were already stripping it (09-25 compliance round);
+this closes the SkillHub channel too.
+
 ## v7.2.0 — release notes and source finally agree
 
 The v7.1.0 notes said the duplicated import block was removed, but the
